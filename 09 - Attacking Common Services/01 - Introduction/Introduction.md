@@ -1,197 +1,81 @@
-# Methodology
-
-1. **Service Identification**: Determine if the target is **SMB**, **Email** (SMTP/IMAP), or a **Database** (MSSQL/MySQL)
-2. **Access Method**:
-    - **SMB (Windows)**: Use `net use` or `New-PSDrive` to map shares for local-like interaction
-    - **SMB (Linux)**: Use `mount -t cifs` to attach shares to the local filesystem
-    - **Databases**: Use `sqsh` (MSSQL/Linux), `sqlcmd` (MSSQL/Windows), or `mysql` binaries
-    - **Email**: Configure `evolution` for IMAP/SMTP access
-3. **Data Extraction**:
-    - **File Search**: Use `dir /s`, `Get-ChildItem -Recurse`, or `find` to locate sensitive filenames like **credentials** or **secrets**
-    - **Content Search**: Use `findstr`, `Select-String`, or `grep` to identify patterns within files
-    - **Database Enumeration**: Use Transact-SQL statements via CLI or GUI (dbeaver) to extract tables
+# Interacting with Common Services — SMB, Email, Databases
 
 ---
 
-## SMB Interaction (Windows)
+## SMB — Windows
 
-Accessing remote shares when local GUI is unavailable or automated file discovery is required
+Mount a share:
 
-List remote share contents anonymously or with current session tokens
-
-```
-dir \\<TARGET_IP>\<SHARE_NAME>\
+```cmd
+net use n: \\<TARGET>\<SHARE> /user:<USER> <PASS>
 ```
 
-Map a remote share to a local drive letter for persistent CLI access
+Hunt files by name pattern:
 
-```
-net use <DRIVE_LETTER>: \\<TARGET_IP>\<SHARE_NAME>
-```
-
-Authenticate to a share using specific credentials and map it
-
-```
-net use <DRIVE_LETTER>: \\<TARGET_IP>\<SHARE_NAME> /user:<USERNAME> <PASSWORD>
+```cmd
+dir n:\*cred* /s /b
+dir n:\*secret* /s /b
 ```
 
-Recursive search for specific strings in filenames via CMD
+Hunt content inside files:
 
-```
-dir <DRIVE_LETTER>:*<STRING>* /s /b
-```
-
-Count total files in a mapped share and subdirectories
-
-```
-dir <DRIVE_LETTER>: /a-d /s /b | find /c ":"
+```cmd
+findstr /s /i cred n:\*.*
 ```
 
-Search for a specific pattern inside all files in a mapped share
+PowerShell equivalents:
 
+```powershell
+New-PSDrive -Name "N" -Root "\\<TARGET>\<SHARE>" -PSProvider "FileSystem" -Credential $cred
+Get-ChildItem -Recurse -Path N:\ -Include *cred* -File
+Get-ChildItem -Recurse -Path N:\ | Select-String "cred" -List
 ```
-findstr /s /i <PATTERN> <DRIVE_LETTER>:*.*
-```
-
-### PowerShell Variants
-
-Map a share using the PowerShell provider
-
-```
-New-PSDrive -Name "<DRIVE_LETTER>" -Root "\\<TARGET_IP>\<SHARE_NAME>" -PSProvider "FileSystem"
-```
-
-Map a share using a PSCredential object for authenticated access
-
-```
-$secpassword = ConvertTo-SecureString <PASSWORD> -AsPlainText -Force
-$cred = New-Object System.Management.Automation.PSCredential <USERNAME>, $secpassword
-New-PSDrive -Name "<DRIVE_LETTER>" -Root "\\<TARGET_IP>\<SHARE_NAME>" -PSProvider "FileSystem" -Credential $cred
-```
-
-Recursive file count in PowerShell
-
-```
-(<DRIVE_LETTER>: Get-ChildItem -File -Recurse | Measure-Object).Count
-```
-
-Search for text patterns within files using regex matching
-
-```
-Get-ChildItem -Recurse -Path <DRIVE_LETTER>:\ | Select-String "<PATTERN>" -List
-```
-
-- **Tool Comparison**
-    
-    - `net use` -> `net use n: \\<IP>\<SHARE>` -> Prefer for legacy CMD environments
-    - `New-PSDrive` -> `New-PSDrive -Name "N" -Root "\\<IP>\<SHARE>" -PSProvider "FileSystem"` -> Prefer for complex scripting or passing credential objects
-- **Gotchas**
-    
-    - **Authentication failure** occurs if the share requires credentials and none are provided, triggering a security prompt
 
 ---
 
-## SMB Interaction (Linux)
+## SMB — Linux
 
-Accessing Windows or Samba shares from a Linux attack host to use native tools like grep or find
+Mount with cifs:
 
-Mount a remote SMB share to a local directory using credentials
-
-```
-sudo mount -t cifs -o username=<USERNAME>,password=<PASSWORD>,domain=<DOMAIN> //<TARGET_IP>/<SHARE_NAME> <FILE_PATH>
-```
-
-Mount a share using a credential file to avoid plaintext passwords in process lists
-
-```
-mount -t cifs //<TARGET_IP>/<SHARE_NAME> <FILE_PATH> -o credentials=<FILE_PATH>
+```bash
+sudo mkdir /mnt/<SHARE>
+sudo mount -t cifs -o username=<USER>,password=<PASS>,domain=. //<TARGET>/<SHARE> /mnt/<SHARE>
 ```
 
-Structure for the credential file
+Hunt files / content:
 
+```bash
+find /mnt/<SHARE>/ -name *cred*
+grep -rn /mnt/<SHARE>/ -ie cred
 ```
-username=<USERNAME>
-password=<PASSWORD>
-domain=<DOMAIN>
-```
-
-Recursive filename search on a mounted share
-
-```
-find <FILE_PATH> -name *<STRING>*
-```
-
-Recursive case-insensitive string search within files
-
-```
-grep -rn <FILE_PATH> -ie <STRING>
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - **Anonymous authentication** allowed on sensitive shares
-- **Gotchas**
-    
-    - **Missing cifs-utils** will cause the mount command to fail; requires manual installation
 
 ---
 
-## Database Interaction
+## Databases
 
-Executing SQL queries or system commands after obtaining database credentials
+MSSQL from Linux:
 
-Connect to MSSQL from Linux using sqsh
-
-```
-sqsh -S <TARGET_IP> -U <USERNAME> -P <PASSWORD>
-```
-
-Connect to MSSQL from Windows using sqlcmd
-
-```
-sqlcmd -S <TARGET_IP> -U <USERNAME> -P <PASSWORD>
+```bash
+sqsh -S <TARGET> -U <USER> -P <PASS>
+mssqlclient.py <USER>@<TARGET> -windows-auth
 ```
 
-Connect to MySQL from Linux or Windows
+MSSQL from Windows:
 
-```
-mysql -u <USERNAME> -p<PASSWORD> -h <TARGET_IP>
-```
-
-Install dbeaver for multi-platform GUI database management
-
-```
-sudo dpkg -i dbeaver-<VERSION>.deb
-dbeaver &
+```cmd
+sqlcmd -S <TARGET> -U <USER> -P <PASS>
 ```
 
-- **Tool Comparison**
-    
-    - `sqsh`/`sqlcmd` -> `sqsh -S <IP> -U <USER>` -> Prefer for quick CLI enumeration or piping output
-    - `dbeaver` -> `dbeaver &` -> Prefer for visual exploration of large schemas across multiple database engines (MSSQL, MySQL, PostgreSQL)
-- **Edge Cases**
-    
-    - **High privileges** (e.g., sysadmin) on MSSQL may allow command execution as the service account
+MySQL from Linux/Windows:
+
+```bash
+mysql -u <USER> -p<PASS> -h <TARGET>
+```
+
+GUI options: dbeaver (cross-platform), MySQL Workbench (MySQL), SSMS (Windows/MSSQL only).
 
 ---
 
-## Email Interaction
+## Key Strings to Hunt on Any Share
 
-Accessing mailboxes for sensitive information or verifying credentials via mail protocols
-
-Install Evolution mail client on Linux
-
-```
-sudo apt-get install evolution
-```
-
-- **Gotchas**
-    - **Bwrap error** prevents Evolution from starting; bypass by forcing the WebKit sandbox off
-
-```
-export WEBKIT_FORCE_SANDBOX=0 && evolution
-```
-
-```
-- **Encryption mismatch** will prevent connection; use "Check for Supported Types" to verify if TLS or STARTTLS is required
-```
+`cred`, `password`, `secret`, `key`, `users` — plus extensions: `.config`, `.xml`, `.ini`, `.ps1`, `.bat`, `.vbs`, `.sql`, `.conf`

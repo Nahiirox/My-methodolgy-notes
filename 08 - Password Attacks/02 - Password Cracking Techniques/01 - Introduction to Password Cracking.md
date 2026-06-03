@@ -1,73 +1,18 @@
-1. Capture hash and identify algorithm (**MD5**, **SHA-256**).
-2. Check for **salting**; if unsalted, prioritize **rainbow tables** for near-instant identification.
-3. If salted or no table match, execute a **dictionary attack** using `rockyou.txt` or **SecLists**.
-4. If dictionary fails and password length is estimated <9 characters, initiate a **brute-force attack**.
-5. Adjust expectations based on algorithm; **MD5** allows high-speed guessing, while **DCC2** significantly throttles attempts.
+# Password Cracking — Intro
 
----
+Hash speed varies wildly by algorithm — determines whether brute-force is viable or you stick to wordlist:
 
-## Manual Hash Generation
+MD5 → ~5M/s on a laptop. DCC2 → ~10K/s. Know the mode before deciding how to attack.
 
-Verification of cleartext candidates against captured hashes.
+<9 char passwords = viable brute-force target. Anything longer → wordlist only unless you have a strong mask.
 
-Verify a suspected cleartext matches an **MD5** hash
+Generate a hash to verify a cracked result or test a format:
 
-```
-echo -n <PASSWORD> | md5sum
+```bash
+echo -n '<PASS>' | md5sum
+echo -n '<PASS>' | sha256sum
 ```
 
-Verify a suspected cleartext matches a **SHA-256** hash
+Wordlists: `/usr/share/wordlists/rockyou.txt` for general use, SecLists for targeted/curated lists.
 
-```
-echo -n <PASSWORD> | sha256sum
-```
-
-Generate a hash with a known prepended salt
-
-```
-echo -n <SALT><PASSWORD> | md5sum
-```
-
-**Gotchas** **Missing -n flag** in `echo` will include a trailing newline in the input, resulting in an incorrect hash value.
-
-## Rainbow Table Attacks
-
-Captured hash is unsalted and exists in pre-compiled mappings.
-
-**Dangerous / misconfigured settings**
-
-- **Lack of salting** allows attackers to bypass computational requirements via pre-compiled input/output maps.
-
-**Gotchas** **Salting** invalidates rainbow tables by requiring attackers to re-map the entire table for every possible salt value.
-
-## Dictionary Attacks
-
-Default technique for time-constrained engagements using statistical likelihood.
-
-Preview the first 20 entries of a wordlist to verify format
-
-```
-head --lines=20 <FILE_PATH>
-```
-
-**Edge cases**
-
-- **rockyou.txt** contains over 14 million real-world passwords and is the standard starting point for most assessments.
-
-**Gotchas** **Incomplete wordlists** will fail to identify any password not present in the specific statistical set being used.
-
-## Brute-Force Attacks
-
-Exhaustive character combination attempts when dictionary attacks fail.
-
-**When to use** Last resort for **short passwords** (<9 characters) where 100% effectiveness is required despite time costs.
-
-**Tool comparison**
-
-- **hashcat**
-    - `hashcat`
-    - Prefer for high-speed cracking on local hardware; performance varies by algorithm.
-
-**Gotchas** **High-iteration algorithms** like **DCC2** drastically reduce cracking speeds compared to simple algorithms like **MD5**, making brute-force non-viable.
-
-> ⚠️ Gap: Source lacks specific **hashcat** command syntax for executing dictionary or brute-force attacks; only mentions the tool's performance capabilities. ⚠️ Gap: Source mentions **mask attacks** as a more efficient alternative to brute-force but provides no implementation details.
+> [!tip] Salted hashes won't hit rainbow tables — don't bother. Go straight to hashcat with the right mode and a wordlist.

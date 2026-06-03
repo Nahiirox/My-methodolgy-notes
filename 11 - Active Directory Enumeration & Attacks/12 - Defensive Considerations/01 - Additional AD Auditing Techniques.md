@@ -1,95 +1,55 @@
-## AD Database Snapshotting
+# Additional AD Auditing Techniques
 
-Need to navigate the AD database or compare object attributes before and after changes. Any **valid domain user** credentials grant access to browse or save the database.
+These are reporting and evidence-gathering tools — run them when you want to give clients a comprehensive picture or make sure your own enum didn't miss anything.
 
-1. Connect to the domain using valid credentials
-2. Navigate to File --> Create Snapshot
-3. Enter a name for the snapshot and move it offline for analysis
+---
 
-**AD Explorer**
+## AD Explorer (Sysinternals)
 
-- [GUI Interaction]
-- Prefer when requiring a portable, offline copy of the directory for reporting or comparing attribute changes over time.
+Snapshot AD at a point in time for offline analysis and before/after comparison. Any valid domain user can log in and browse all objects without elevated privileges.
 
-**Gotchas** **Invalid domain credentials** prevent tool connection to the DC.
+File → Create Snapshot → name it → pull it offline for the reporting phase. Useful for documenting the state of AD at time of assessment.
 
-## AD Healthcheck and Risk Assessment
+---
 
-Target needs a host inventory, visual domain maps, or maturity-based risk scoring. Minimum access requires a network path to a DC and standard user context.
+## PingCastle
 
-Launch interactive TUI for menu-driven auditing
+Domain security risk scoring based on CMMI maturity model. Generates HTML report with misconfig findings, trust maps, delegation issues, vulnerability susceptibility — much faster than manually enumerating everything.
 
-```
+Run interactively:
+
+```cmd
 PingCastle.exe
 ```
 
-Execute with specific credentials and protocol preference
+Option 1 (healthcheck) → full domain risk report. Option 3 (carto) → trust relationship map across all interconnected domains.
 
-```
-PingCastle.exe --server <DC_IP> --user <USERNAME> --password <PASSWORD> --protocol ADWSOnly
-```
+Scanner submenu worth running: `nullsession`, `spooler`, `zerologon`, `smb`, `laps_bitlocker`, `aclcheck`.
 
-- **PingCastle** → `PingCastle.exe --interactive` → Prefer for CMMI risk scoring and host inventory maps.
-- **BloodHound / PowerView** → Prefer for identifying specific attack paths and granular object enumeration.
+Good client deliverable — gives them a numeric risk score they can act on and benchmark against over time.
 
-**Gotchas** **System date after July 31, 2023** prevents the tool from starting. **Mass workstation scanning** via the scanner menu will likely trigger security alerts.
+---
 
-## AD Security Scanning
+## Group3r
 
-Individual workstation checks or specific vulnerability lookups are required after a baseline is established. Accessed via the `Scanner` option in the main menu.
+GPO-specific vulnerability finder. Needs a domain-joined host or `runas /netonly` context. Finds misconfigured policy settings, interesting permissions, writable paths — things other tools miss:
 
-Run specific workstation security checks (e.g., Zerologon, LAPS, SMB)
-
-```
-PingCastle.exe --scanner <SERVICE_NAME> --server <DOMAIN>
+```cmd
+group3r.exe -f <OUTFILE>.log
 ```
 
-**Dangerous / misconfigured settings**
+Read output by indentation level: GPO → policy setting → finding. Each finding box explains the issue and why it matters.
 
-- Null sessions and null session trusts
-- Lack of LAPS or BitLocker coverage
-- Spooler service enabled on sensitive hosts
+---
 
-**Gotchas** **Missing -f or -s flag** in related GPO tools or output redirection causes immediate execution failure.
+## ADRecon
 
-## Group Policy Auditing
+Broad sweep collector — dumps users, groups, SPNs, GPOs, trusts, OUs, DNS, computers, LAPS, BitLocker keys (privileged), printers into CSV + HTML report. Run it when you want confidence nothing was missed:
 
-Targeting GPO misconfigurations like registry-based settings or user rights assignments. Must run from a domain-joined host or via `runas /netonly` as a domain user.
-
-Run audit and redirect output to a log file
-
-```
-group3r.exe -f <FILE_PATH>
-```
-
-Run audit and output results directly to stdout
-
-```
-group3r.exe -s
-```
-
-**Edge cases**
-
-- Use `-h` to find additional flags if standard file output fails.
-
-**Gotchas** **Missing -f or -s flag** causes the tool to fail without processing any data.
-
-## Automated AD Data Collection
-
-Stealth is not a requirement and a full dump of forest details, LAPS, and DNS is needed for broad analysis.
-
-Execute main collection script
-
-```
+```powershell
 .\ADRecon.ps1
 ```
 
-Regenerate Excel report from existing CSV data on a host with Excel installed
+Output drops to a timestamped folder. Requires Excel for auto-generated report; otherwise use `-GenExcel` from another host against the CSV output folder. Requires GroupPolicy PS module for GPO report.
 
-```
-.\ADRecon.ps1 -GenExcel -Path <FILE_PATH>
-```
-
-**Gotchas** **Excel not installed** on the execution host prevents automatic report generation, leaving only raw CSVs. **GroupPolicy PowerShell module missing** prevents the script from gathering GPO data.
-
-> ⚠️ Gap: ADRecon will fail to collect GPO information silently if the GroupPolicy module is not present on the host where the script is executed.
+> [!tip] PingCastle is the best single-tool summary to hand a client. ADRecon is the "make sure I haven't missed anything" sweep. Group3r fills the GPO gap that BloodHound doesn't cover well. Run all three on assessments where stealth isn't a concern.

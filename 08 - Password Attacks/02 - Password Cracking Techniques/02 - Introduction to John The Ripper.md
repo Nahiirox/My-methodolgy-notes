@@ -1,132 +1,57 @@
-## Hash Identification
+# John the Ripper
 
-Symptom: Hash format is unknown or JtR fails to identify it automatically.
+Identify unknown hash format — `-j` adds JtR format name to output:
 
-Check hash against built-in lists to get potential JtR-specific format names
-
-```
+```bash
 hashid -j <HASH>
 ```
 
-Identify format by looking up sample hashes or known service contexts
+When hashid is ambiguous, context tells you more than the tool. Also check PentestMonkey hash examples list.
 
-```
-grep <HASH_TYPE> /usr/share/john/john.conf
-```
+Single crack mode — use when you have a `/etc/passwd`-style file with username + GECOS info, targets Linux creds:
 
-- **Tool comparison**
-    
-    - hashid -> `hashid -j <HASH>` -> prefer for quick identification of common formats with JtR flag support
-    - Manual Lookup -> check PentestMonkey or JtR sample docs -> prefer when tool output is ambiguous or multiple formats are suggested
-- **Gotchas**
-    
-    - **Ambiguous identification** occurs when hash context is missing, requiring manual testing of suggested formats.
-
----
-
-## File to Hash Conversion
-
-Symptom: Target is an encrypted file, private key, or database rather than a raw hash string.
-
-Convert encrypted file to a format JtR can parse
-
-```
-<SERVICE_NAME>2john <FILE_PATH> > <HASH_FILE>
+```bash
+john --single <HASH_FILE>
 ```
 
-Locate all available conversion scripts on the system
+Wordlist mode:
 
-```
-locate *2john*
-```
-
-- **Edge cases**
-    - Script location: some conversion tools are in `/usr/bin/` while others are `.py` or `.pl` scripts in `/usr/share/john/`.
-
----
-
-## Single Crack Mode
-
-Symptom: Targeting Linux credentials where username, home directory, or GECOS information is known.
-
-Run rule-based attack using local account information to generate candidates
-
-```
-john --single <FILE_PATH>
+```bash
+john --wordlist=<WORDLIST> <HASH_FILE>
+john --wordlist=<WORDLIST> --rules <HASH_FILE>
 ```
 
-- **Gotchas**
-    - **Missing account metadata** in the input file will result in zero candidates being generated for this mode.
+Incremental mode (Markov-chain brute-force, last resort):
 
----
-
-## Wordlist Mode
-
-Symptom: Dictionary attack required against a known or custom list of potential passwords.
-
-Run standard dictionary attack
-
-```
-john --wordlist=<FILE_PATH> <HASH_FILE>
-```
-
-Apply common mutations like capitalization or trailing numbers during wordlist processing
-
-```
-john --wordlist=<FILE_PATH> --rules <HASH_FILE>
-```
-
-Combine multiple wordlists for a single session
-
-```
-john --wordlist=<FILE_PATH_1>,<FILE_PATH_2> <HASH_FILE>
-```
-
----
-
-## Incremental Mode
-
-Symptom: Wordlists are exhausted and exhaustive brute-force is required using statistical likelihood.
-
-Run brute-force attack using default character sets and lengths
-
-```
+```bash
 john --incremental <HASH_FILE>
 ```
 
-Use a specific character set defined in the configuration file
+Specify format explicitly when auto-detect fails:
 
-```
-john --incremental=<SERVICE_NAME> <HASH_FILE>
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - Large character sets or long MaxLen values in `john.conf` will make attacks effectively infinite.
-- **Gotchas**
-    
-    - **High resource consumption** makes this mode significantly slower than wordlist or single modes.
-
----
-
-## Manual Format Override
-
-Symptom: JtR fails to recognize the hash or you need to force a specific protocol parser.
-
-Force JtR to use a specific hash format parser
-
-```
-john --format=<SERVICE_NAME> <HASH_FILE>
+```bash
+john --format=<FORMAT> --wordlist=<WORDLIST> <HASH_FILE>
 ```
 
----
+Show already-cracked results from a session:
 
-## Viewing Results
-
-Symptom: Need to retrieve cracked credentials from a previous or ongoing session.
-
-Display cracked passwords reliably from the JtR database
-
-```
+```bash
 john --show <HASH_FILE>
 ```
+
+File cracking — convert first, then crack:
+
+```bash
+<tool>2john <FILE> > <HASH_FILE>
+john --wordlist=<WORDLIST> <HASH_FILE>
+```
+
+Find all converters on the box:
+
+```bash
+locate *2john*
+```
+
+Key converters to remember: `ssh2john`, `keepass2john`, `zip2john`, `rar2john`, `pdf2john`, `office2john`, `pfx2john`, `putty2john`.
+
+> [!tip] JtR format names differ from hashcat mode numbers — `hashid -j` gives you the JtR name directly. For hashcat, use `hashid` without `-j` and cross-reference the hashcat example hashes page.

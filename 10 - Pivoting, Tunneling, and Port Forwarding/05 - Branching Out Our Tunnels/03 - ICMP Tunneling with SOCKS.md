@@ -1,57 +1,60 @@
-## ICMP Tunneling with ptunnel-ng
+# ICMP Tunneling with ptunnel-ng
 
-Egress filtering blocks standard TCP/UDP outbound but allows ICMP echo requests to external servers.
+Traffic encapsulated in ICMP echo request/reply packets. Use when all TCP/UDP outbound is blocked but ping is allowed — rare but effective. Requires root on both ends.
 
-Build a static binary to ensure compatibility across different Linux distributions
+---
 
+## Setup
+
+Clone and build:
+
+```bash
+git clone https://github.com/utoni/ptunnel-ng.git
+cd ptunnel-ng && sudo ./autogen.sh
+scp -r ptunnel-ng <USER>@<PIVOT_IP>:~/
 ```
-sudo apt install automake autoconf -y
-cd ptunnel-ng/
-sed -i '$ s/.*/LDFLAGS=-static "${NEW_WD}/configure" --enable-static  $@ \&\& make clean \&\& make -j$ {BUILDJOBS:-4} all/' autogen.sh
+
+Static binary build (if glibc version mismatch):
+
+```bash
+sed -i '$s/.*/LDFLAGS=-static "${NEW_WD}\/configure" --enable-static $@ \&\& make clean \&\& make -j${BUILDJOBS:-4} all/' autogen.sh
 ./autogen.sh
 ```
 
-Start the server-side listener on the target pivot host
+---
 
-```
-sudo ./ptunnel-ng -r<PIVOT_IP> -R<SERVICE_PORT>
-```
+## Run
 
-Establish the client-side tunnel on the attack host to map a local port to the remote service
+Start ptunnel-ng server on pivot — `-r` is the pivot's reachable IP, `-R` is the port to forward through the tunnel (SSH = 22):
 
-```
-sudo ./ptunnel-ng -p<PIVOT_IP> -l<LOCAL_PORT> -r<PIVOT_IP> -R<SERVICE_PORT>
+```bash
+sudo ./ptunnel-ng -r<PIVOT_IP> -R22
 ```
 
-- **GLIBC version mismatch** will prevent the binary from executing if the build environment and target environment are not aligned.
-- **Missing root privileges** on either side prevents ptunnel-ng from opening the raw sockets required for ICMP packet manipulation.
+Start ptunnel-ng client on attack host — creates local port 2222, traffic exits at pivot:22:
 
-> ⚠️ Gap: The source specifies using `sed` to force a static build in `autogen.sh` but does not provide a fallback if the target environment lacks the necessary headers or libraries to compile even a static binary.
-
-## SSH Pivoting and Dynamic Forwarding
-
-The ICMP tunnel is active on a local port and you need to pivot into the internal network using standard tools.
-
-Connect to the target via the ICMP-encapsulated SSH tunnel
-
-```
-ssh -p<LOCAL_PORT> -l<USERNAME> 127.0.0.1
+```bash
+sudo ./ptunnel-ng -p<PIVOT_IP> -l2222 -r<PIVOT_IP> -R22
 ```
 
-Enable dynamic port forwarding through the tunnel to use with proxychains
+SSH through the ICMP tunnel via local port 2222:
 
-```
-ssh -D <SOCKS_PORT> -p<LOCAL_PORT> -l<USERNAME> 127.0.0.1
-```
-
-Execute internal scans via proxychains through the established ICMP-SSH chain
-
-```
-proxychains nmap -sV -sT <TARGET_IP> -p<PORT>
+```bash
+ssh -p2222 -l<USER> 127.0.0.1
 ```
 
-- Specify the reachable IP of the jump-box with the `-r` flag on the server side to ensure the listener binds to the correct interface.
-    
-- **TCP/SSHv2 traffic detection** is bypassed at the network level as packet analyzers will only see ICMP echo traffic.
-    
-- **Incomplete lab setup** requires waiting 3-5 minutes after spawning a target before the tunnel will function.
+Add SSH dynamic port forwarding on top for full proxychains access:
+
+```bash
+ssh -D 9050 -p2222 -l<USER> 127.0.0.1
+```
+
+Then scan/connect via proxychains as normal:
+
+```bash
+proxychains nmap -sV -sT <TARGET_IP> -p3389
+```
+
+> [!warning] Requires root on both ends (`sudo`). Also verify glibc versions match between your build host and the target — static build flag avoids this entirely.
+
+> [!tip] Verify the tunnel is actually working with Wireshark: normal SSH shows TCP+SSHv2 traffic. ICMP tunnel shows only ICMP echo packets. If you still see TCP, the tunnel isn't being used.

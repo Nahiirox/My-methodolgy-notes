@@ -1,82 +1,45 @@
-#1. Check **RealTimeProtectionEnabled** status to determine if tools like PowerView will be blocked immediately upon execution.
-2. Identify the current PowerShell **LanguageMode** to see if COM objects or .NET types are restricted.
-3. Audit AppLocker **RuleCollections** to find **Deny** actions on standard paths and look for missed executable locations.
-4. Enumerate LAPS permissions to identify users with **All Extended Rights** or delegated read access to local admin passwords.
-5. Retrieve cleartext passwords for LAPS-enabled hosts where the current context has read permissions.
+# Enumerating Security Controls
 
----
+Check Defender status — `RealTimeProtectionEnabled: True` means PowerView and most offensive PS will get flagged:
 
-## Windows Defender Enumeration
-
-Check for active host-based protections after gaining a foothold to avoid tool detection.
-
-Check status of all Defender features
-
-```
+```powershell
 Get-MpComputerStatus
 ```
 
-- **RealTimeProtectionEnabled** set to **True** will block common tools like PowerView.
+Enumerate AppLocker rules — look for what's blocked and what paths are missed:
 
-## PowerShell Language Mode Verification
-
-Identify environment lockdowns that prevent the use of COM objects, XAML-based workflows, or PowerShell classes.
-
-Query the current session language mode
-
-```
-$ExecutionContext.SessionState.LanguageMode
-```
-
-- **ConstrainedLanguage** mode is active, many advanced offensive PowerShell features and scripts will fail to execute.
-
-## AppLocker Policy Discovery
-
-Identify application whitelisting restrictions when standard binaries like `powershell.exe` are blocked or limited to specific directories.
-
-View all effective rules and identify Deny/Allow actions
-
-```
+```powershell
 Get-AppLockerPolicy -Effective | select -ExpandProperty RuleCollections
 ```
 
-- **Everyone** group allowed to run applications in `%PROGRAMFILES%` and `%WINDIR%`.
-    
-- **local Administrators** group allowed to run all applications via the `{*}` path condition.
-    
-- Organizations often block `%SystemRoot%\system32\WindowsPowerShell\v1.0\powershell.exe` but miss `%SystemRoot%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe` or `PowerShell_ISE.exe`.
-    
-- **Action: Deny** rules override allow rules and will cause execution to fail even if the user is in a group that otherwise has permission.
-    
+> [!tip] AppLocker commonly blocks `%SYSTEM32%\WindowsPowerShell\v1.0\powershell.exe` but misses `%SystemRoot%\SysWOW64\WindowsPowerShell\v1.0\powershell.exe` and `PowerShell_ISE.exe`.
 
-## LAPS Rights Enumeration
+Check PS language mode — `ConstrainedLanguage` breaks most PowerView functionality:
 
-Locate delegated groups and users with rights to read cleartext local administrator passwords.
-
-Parse ExtendedRights for all LAPS-enabled computers to find delegated groups
-
+```powershell
+$ExecutionContext.SessionState.LanguageMode
 ```
+
+---
+
+## LAPS Enumeration (LAPSToolkit)
+
+Who can read LAPS passwords — delegated groups per OU:
+
+```powershell
 Find-LAPSDelegatedGroups
 ```
 
-Check for users with "All Extended Rights" who can read passwords but may not be in a delegated group
+Users with All Extended Rights on LAPS hosts — often less scrutinized than delegated groups:
 
-```
+```powershell
 Find-AdmPwdExtendedRights
 ```
 
-- Accounts that joined a computer to the domain receive **All Extended Rights** over that host, enabling them to read LAPS passwords.
+Read cleartext LAPS passwords if your current user has access:
 
-> ⚠️ Gap: The source references these functions as part of `LAPSToolkit`, which is not a native Windows cmdlet and must be imported to the session.
-
-## LAPS Password Recovery
-
-Retrieve cleartext local administrator passwords and expiration dates for targeted hosts where read access is confirmed.
-
-Display passwords for machines where the current user context has read permissions
-
-```
+```powershell
 Get-LAPSComputers
 ```
 
-- **Empty password field** in the output indicates the current user lacks sufficient privileges to read the `ms-Mcs-AdmPwd` attribute for that specific host.
+> [!tip] If your compromised account shows up in `Find-AdmPwdExtendedRights` output, you can pull local admin creds for that host directly — no cracking needed.

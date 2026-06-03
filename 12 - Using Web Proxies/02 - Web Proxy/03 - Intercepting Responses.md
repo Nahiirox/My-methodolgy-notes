@@ -1,52 +1,23 @@
+# Intercepting Responses
 
-## Intercepting Responses
+Intercept responses to modify HTML before the browser renders it — removes client-side restrictions without touching the request.
 
-Client-side restrictions like **numeric-only** input or **maxlength** limits prevent payload delivery or hidden fields need to be exposed.
+Burp → `Proxy > Proxy settings > Response interception rules` → enable "Intercept responses". Then forward the request, edit the response that comes back.
 
-Enable response interception to catch the server's reply before the browser renders it
+ZAP → click `Step` on an intercepted request — it auto-intercepts the response.
 
-```
-Proxy > Proxy settings > Response interception rules > Intercept Response
-```
+Common edits to make in the response before forwarding:
 
-Catch the immediate next response after a request
+Change `type="number"` to `type="text"` and bump `maxlength` to remove input restrictions:
 
-```
-Step
-```
-
-- Burp Suite
-    - `Proxy > Proxy settings > Intercept Response`
-    - Prefer for granular control over which responses are caught based on rules.
-- ZAP
-    - **Step** button
-    - Prefer for quick, one-off response modification during an active intercept.
-
-**Gotchas** **Browser caching** prevents the proxy from seeing the response; force a full refresh using `CTRL+SHIFT+R` to ensure the server sends a new response.
-
----
-
-## Automated Response Modification
-
-Repeated manual modification of HTML elements is required across multiple pages or hidden fields must be visible globally.
-
-Unhide all hidden form fields automatically
-
-```
-Proxy > Proxy settings > Response modification rules > Unhide hidden form fields
+```html
+<input type="text" id="ip" name="ip" maxlength="100" ...>
 ```
 
-Enable the feature to show HTML comments as UI indicators
+Faster alternatives — no response interception needed:
 
-```
-+ button > Comments
-```
+ZAP HUD → third left-pane button (lightbulb) → instantly enables disabled fields and reveals hidden fields without refresh. Also: Burp `Proxy > Proxy settings > Response modification rules` → "Unhide hidden form fields".
 
-- Burp Suite
-    - `Response modification rules`
-    - Prefer for persistent, background modification of all incoming traffic.
-- ZAP HUD
-    - **Show/Enable** (light bulb icon)
-    - Prefer for instant UI updates without requiring a page refresh or manual rule configuration.
+ZAP HUD Comments button → shows HTML comment positions inline in the browser — faster than reading source for recon.
 
-**Gotchas** **Manual intercept** is still required for custom logic changes; automated rules only handle pre-defined patterns like unhiding or enabling fields.
+> [!tip] Disabled input field → try ZAP HUD lightbulb first, takes one click. Only drop to response interception if you need custom edits beyond enable/unhide.

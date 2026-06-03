@@ -1,61 +1,35 @@
-## Subdomain Discovery and Identification
+# Subdomain Takeover
 
-**When to use** Target uses third-party providers and has stale DNS records. Active **CNAME records** point to non-existent subdomains or deactivated services (AWS, GitHub) and return an **HTTP 404 error**,.
+CNAME record points to a third-party service (AWS S3, GitHub Pages, etc.) that no longer exists → register that external resource yourself → you now control what the subdomain serves. High-value for phishing since it's a legitimate subdomain of the target domain.
 
-**Commands** Use automated tools to identify vulnerable subdomains or generate Proof of Concepts.
+Attack chain: find dangling CNAME → register the dead external resource → subdomain now points to your infrastructure → visitors trust it because the parent domain is legitimate.
 
-> ⚠️ Gap: Source lacks specific tool names or CLI syntax for discovery and PoC generation; without external tools, manual verification of millions of records is non-viable.
-
-**Dangerous / misconfigured settings**
-
-- DNS records (CNAME) pointing to deactivated third-party service providers.
-- Retaining DNS entries for cancelled services because they incur no additional cost.
-- Use of AWS S3 buckets or other cloud resources without deleting the associated subdomain pointers.
-
-**Gotchas** **Subdomain Takeover** will fail if the primary domain administrators remove the outdated DNS record before registration.
+Also enables: cookie theft, CSRF, CORS abuse, CSP bypass — not just phishing.
 
 ---
 
-## Takeover Execution
+## Finding Dangling CNAMEs
 
-**When to use** Confirmed **CNAME record** points to a non-existent third-party resource that allows for public registration,.
+DNS recon → look for CNAME records returning NXDOMAIN or HTTP 404 on the target resource. Tools like `subjack`, `subzy`, or manual `dig`/`nslookup`:
 
-**Workflow**
-
-1. Identify the unused subdomain name linked via CNAME.
-2. Register the non-existent subdomain/resource name directly on the third-party provider's platform.
-3. Link the registration to attacker-controlled servers or data sources.
-
-**Commands** Register the identified non-existent domain at the provider to claim the pointer.
-
-```
-<THIRD_PARTY_PROVIDER_REGISTRATION_PORTAL>
+```bash
+dig CNAME <SUBDOMAIN>.<TARGET_DOMAIN>
 ```
 
-**Edge cases**
-
-- **E-commerce** sector targets are statistically more likely (62%) to be vulnerable.
-- Even high-traffic domains (Alexa Top 1000) frequently contain these vulnerabilities.
-
-**Gotchas** **Third-party providers** often do not verify if the person registering the resource is the actual owner of the primary domain.
+If the CNAME target returns 404 or NXDOMAIN → check if the resource (S3 bucket, GitHub Pages, Heroku app) is claimable on the provider's platform.
 
 ---
 
-## Post-Exploitation Tactics
+## Verification
 
-**When to use** Successful control of the subdomain is established, allowing the attacker to define the design and function of the page,.
+Confirm the subdomain is actually dangling — not just a temporary error:
 
-**Impacts**
-
-- **Phishing**: Host malicious login pages on a trusted subdomain (e.g., `<SERVICE_NAME>.<DOMAIN>`) to exploit user trust.
-- **Cookie Theft**: Intercept session cookies authorized for the primary domain or its subdomains.
-- **Security Policy Bypass**: Defeat Content Security Policy (CSP) or abuse CORS configurations that trust the compromised subdomain.
-- **Cross-Site Attacks**: Execute Cross-Site Request Forgery (CSRF) against the primary domain.
-
-**Commands** Mirror the target company's legitimate page to provoke user logins.
-
-```
-<ATTACKER_SERVER_CONTENT_HOSTING>
+```bash
+curl -s -o /dev/null -w "%{http_code}" https://<SUBDOMAIN>.<TARGET_DOMAIN>
 ```
 
-**Gotchas** **DNS trust** ensures the visitor's browser considers the attacker-controlled page as an official part of the target domain,.
+`404` or `NoSuchBucket` / `There is no app configured at that hostname` = likely takeable.
+
+> [!tip] This is a legitimate bug bounty finding on most programs. Document the CNAME record, the dead external resource, and proof you could register it. Most programs don't require you to actually take it over — a PoC showing the registration is available is enough.
+
+> [!warning] Actually registering the external resource and serving content from a client's subdomain without explicit written permission is out of scope for most assessments. Confirm scope before doing anything beyond enumeration.

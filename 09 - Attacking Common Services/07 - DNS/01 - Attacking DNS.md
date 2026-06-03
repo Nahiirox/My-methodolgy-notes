@@ -1,91 +1,64 @@
-## DNS Enumeration
+# Attacking DNS
 
-Port 53 is open and initial service versions or default configurations are required.
+DNS on UDP/53 (TCP/53 for zone transfers and large responses).
 
-Initial service and script scan
+---
 
-```
-nmap -p53 -Pn -sV -sC <TARGET_IP>
-```
+## Zone Transfer
 
-Identify CNAME records for potential takeover
+No auth required by default — dumps the entire DNS namespace if misconfigured:
 
-```
-host <DOMAIN>
+```bash
+dig AXFR @<NS_SERVER> <DOMAIN>
 ```
 
-> ⚠️ Gap: Nmap scripts may fail to provide actionable data if **UDP/53** is filtered, requiring a forced TCP scan.
+Automated with Fierce (also enumerates NS servers):
 
-## DNS Zone Transfer
-
-The DNS server lacks IP-based access controls on zone transfers, allowing a full dump of the namespace via TCP/53.
-
-Standard query for full zone dump
-
-```
-dig AXFR @<TARGET_IP> <DOMAIN>
-```
-
-Automated nameserver discovery and transfer attempt
-
-```
+```bash
 fierce --domain <DOMAIN>
 ```
 
-- **Tool comparison**
-    - **dig** -> `dig AXFR @<TARGET_IP> <DOMAIN>` -> prefer for manual, targeted verification of a known vulnerable server.
-    - **fierce** -> `fierce --domain <DOMAIN>` -> prefer for automated enumeration of all subdomains and nameservers in a root domain.
+Reveals internal hostnames, IPs, subdomains — massive attack surface expansion in one query.
 
-**Misconfigured DNS servers** often allow **unauthenticated AXFR requests** from any IP address.
-
-**UDP communication fails** when the DNS response packet is too large, forcing a fallback to **TCP/53**.
+---
 
 ## Subdomain Enumeration
 
-The attack surface needs expansion to identify hidden services or targets for takeover.
+Passive (scrapes OSINT sources):
 
-Passive scraping from open sources
-
-```
-./subfinder -d <DOMAIN> -v
+```bash
+subfinder -d <DOMAIN> -v
 ```
 
-Pure DNS brute-forcing using specific resolvers
+Active brute-force — useful internally with custom resolvers (no internet needed):
 
-```
-./subbrute.py <DOMAIN> -s <FILE_PATH> -r <FILE_PATH>
-```
-
-- **Tool comparison**
-    - **Subfinder** -> `./subfinder -d <DOMAIN> -v` -> prefer for external reconnaissance using public APIs.
-    - **Subbrute** -> `./subbrute.py <DOMAIN> -s <FILE_PATH> -r <FILE_PATH>` -> prefer for **internal penetration tests** on hosts without internet access.
-
-Internal pivots often require uploading tools via USB or working from a compromised host to reach **internal DNS configurations**.
-
-## Subdomain Takeover
-
-A CNAME record points to an expired or non-existent third-party service, such as an AWS S3 bucket.
-
-Verification of AWS S3 bucket vacancy
-
-```
-host <DOMAIN>
+```bash
+echo "<INTERNAL_NS>" > resolvers.txt
+./subbrute.py <DOMAIN> -s ./names.txt -r resolvers.txt
 ```
 
-**CNAME records remain active** even after the destination domain expires, allowing an attacker to claim the external resource.
+Check CNAME records on found subdomains — hunt for dangling aliases:
 
-A **NoSuchBucket** error on a live subdomain indicates the resource is claimable.
-
-## Local DNS Spoofing
-
-Positioned on a local network with the ability to perform MITM and redirect traffic to a malicious host.
-
-1. Map the target domain to the attack machine
-
-```
-echo "<DOMAIN> A <ATTACK_IP>" >> /etc/ettercap/etter.dns
+```bash
+host <SUBDOMAIN>.<DOMAIN>
 ```
 
-2. Start the spoofing plugin after setting Target1 (victim) and Target2 (gateway) in the interface.
+`NoSuchBucket` / `There is no app configured` response = likely takeable. Cross-reference with `can-i-take-over-xyz` repo.
 
-**Active MITM** is a prerequisite; the `dns_spoof` plugin will only respond to intercepted queries.
+---
+
+## DNS Cache Poisoning (Local Network)
+
+Edit Ettercap's DNS spoof map:
+
+```bash
+# /etc/ettercap/etter.dns
+<TARGET_DOMAIN>    A   <ATTACKER_IP>
+*.<TARGET_DOMAIN>  A   <ATTACKER_IP>
+```
+
+Run Ettercap → Hosts → Scan → add target to Target1, gateway to Target2 → Plugins → `dns_spoof`. Victims resolving the target domain get your IP instead.
+
+> [!warning] DNS spoofing via Ettercap requires LAN access and MITM position between the target and gateway. Not useful externally.
+
+> [!tip] Zone transfer is always worth trying before doing anything else — if it works, you get the full internal DNS map for free. Try all NS servers, not just the primary.

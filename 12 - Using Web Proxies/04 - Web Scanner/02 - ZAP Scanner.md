@@ -1,99 +1,17 @@
-## METHODOLOGY
+# ZAP Scanner
 
-1. Run standard **Spider** to map accessible endpoints and directories
-2. Run **Ajax Spider** if the application utilizes JavaScript for dynamic content loading to capture missed links
-3. Analyze **Passive Scanner** alerts for surface-level vulnerabilities like missing security headers or **DOM-based XSS** during the crawl
-4. Initiate **Active Scan** to probe parameters for server-side flaws once the **Sites Tree** is populated
-5. Verify **High** alerts manually using the **Request Editor** or **ZAP HUD** to confirm findings like **Remote OS Command Injection**
-6. Export results via **Generate HTML Report** for documentation
+Free, no throttle, full feature set.
 
----
+**Spider** — right-click request in History → `Attack > Spider`. Or HUD right pane → Spider button (second from top). ZAP will prompt to add the site to scope — say yes. Builds site tree by following links.
 
-## Automated Site Mapping
+After Spider finishes, run **Ajax Spider** (third HUD right-pane button) — catches links loaded via JS/AJAX that normal Spider misses. Takes longer, worth running on JS-heavy apps.
 
-When to use: Initial discovery phase to identify sub-directories and file structures before active testing
+**Passive scan runs automatically** as Spider makes requests — no extra step needed. Check HUD alerts (left pane = current page, right pane = whole app) or `Alerts` tab in main UI.
 
-Start crawl from specific request in history
+**Active scan** — HUD right pane → Active Scan button. If Spider hasn't run yet, ZAP runs it first automatically. Fuzzes all identified pages and params for SQLi/XSS/CMDi/etc. Watch `Alerts` tab populate as it runs.
 
-```
-Attack > Spider
-```
+Triage by severity — High alerts first. Click any alert for details including the exact request/payload used and evidence in the response. Replay directly from the alert window via HUD or Request Editor.
 
-Start crawl via HUD browser interface
+**Report** — `Report > Generate HTML Report` (or XML/Markdown). Open in browser.
 
-```
-Spider Start
-```
-
-Tool comparison
-
-- **ZAP Spider**
-    - `Attack > Spider`
-    - Prefer for standard HTML link discovery and rapid mapping
-- **Ajax Spider**
-    - `Third button on right pane`
-    - Prefer for identifying links requested through **JavaScript AJAX** requests after page load
-
-Dangerous / misconfigured settings
-
-- **Target out of scope**: ZAP will ignore URLs unless explicitly added to **Scope** during the prompt or via settings
-
-Gotchas
-
-- **HUD browser incompatibility**: **ZAP HUD** may fail to function in specific browser versions
-- **Incomplete Ajax crawl**: Always run normal **Spider** before **Ajax Spider** for comprehensive coverage
-
-## Passive Vulnerability Identification
-
-When to use: Real-time monitoring of traffic to identify configuration flaws without sending additional attack payloads
-
-Review identified issues in the UI
-
-```
-Alerts tab
-```
-
-Edge cases
-
-- Multiple page alerts: The left pane displays alerts for the **current page** only, while the right pane shows **overall alerts** for the entire application
-
-Gotchas
-
-- **False sense of security**: Passive alerts only identify issues visible in **source code** or **HTTP headers**; they do not confirm exploitable server-side logic
-
-## Active Vulnerability Scanning
-
-When to use: Automated probing of HTTP parameters and endpoints for exploitable vulnerabilities like **Remote OS Command Injection**
-
-Execute attack against identified site tree
-
-```
-Active Scan
-```
-
-Manual verification of injection vulnerability
-
-```
-<TARGET_IP>&cat /etc/passwd&
-```
-
-Gotchas
-
-- **Incomplete site tree**: **Active Scan** targets only identified pages; failing to run **Spider** first results in skipped endpoints
-- **Time consumption**: **Active Scanner** takes significantly longer than passive or spidering phases due to the volume of attack payloads
-
-## Reporting Findings
-
-When to use: Compiling scan data into a formatted log for documentation or client delivery
-
-Generate web-viewable summary
-
-```
-Report > Generate HTML Report
-```
-
-Edge cases
-
-- Format requirements: Export in **XML** or **Markdown** if data needs to be parsed by other tools or integrated into different note systems
-
-> ⚠️ Gap: The source does not specify how to handle authentication (session cookies, headers) during spidering or active scanning, which will cause the scanner to fail silently on any endpoints behind a login wall.
+> [!tip] Passive scan is free while Spider runs — by the time Spider finishes you already have a first-pass vuln list before active scan even starts.

@@ -1,91 +1,47 @@
-## Enumeration
+# Attacking FTP
 
-Port 21 is open and requires service versioning and script-based vulnerability identification.
+FTP listens on TCP/21. Default Nmap scripts catch anonymous login automatically.
 
-Scan for version banners and anonymous login status
+Enumerate — `ftp-anon` script fires automatically with `-sC`, banner reveals version:
 
-```
-sudo nmap -sC -sV -p 21 <TARGET_IP>
-```
-
-Interactive service banner grabbing
-
-```
-nc -nv <TARGET_IP> 21
+```bash
+sudo nmap -sC -sV -p 21 <TARGET>
 ```
 
-- **Tool comparison**
-    - Nmap -> `nmap -sC -sV` -> Use for automated script execution and version detection
-    - Netcat -> `nc -nv` -> Use for manual banner verification if Nmap results are inconclusive
+---
 
-**Gotchas** **Truncated directory listings** in Nmap output require `--script-args ftp-anon.maxlist=-1` to view all files.
+## Anonymous Auth
 
-## Anonymous Login
+Try anonymous login first, always — no password needed:
 
-`ftp-anon` script returns success or manual connection accepts **anonymous** as a username.
-
-Connect to service and authenticate without a password
-
-```
-ftp <TARGET_IP>
+```bash
+ftp <TARGET>
+# user: anonymous
+# pass: (blank)
 ```
 
-Download a single file
+Inside FTP: `ls` / `cd` / `get <file>` / `mget *` / `put <file>`. If the `incoming` directory is writable, you can upload — check for web server overlap → potential RCE via path traversal.
 
-```
-get <FILE_PATH>
-```
+---
 
-Download multiple files from the current directory
+## Brute Force
 
-```
-mget *
-```
+No anonymous access → brute with Medusa. Prefer spraying if lockout policy unknown:
 
-Upload a local file to the server
-
-```
-put <FILE_PATH>
+```bash
+medusa -u <USER> -P <WORDLIST> -h <TARGET> -M ftp
 ```
 
-- **Dangerous / misconfigured settings**
-    - Read/write permissions enabled for the anonymous user
-    - Sensitive files stored in the FTP root or subdirectories
+`-U` for user list, `-P` for password list, `-M ftp` specifies protocol.
 
-**Gotchas** **Write permissions** combined with web-accessible directories may allow for RCE via uploaded scripts if the file path can be identified.
-
-## Brute Forcing
-
-Anonymous authentication is disabled and a list of potential users or passwords is available.
-
-Targeted brute force against a specific user
-
-```
-medusa -u <USERNAME> -P <FILE_PATH> -h <TARGET_IP> -M ftp
-```
-
-Credential list-based attack
-
-```
-medusa -U <FILE_PATH> -P <FILE_PATH> -h <TARGET_IP> -M ftp
-```
-
-- **Tool comparison**
-    - Medusa -> `medusa -M ftp` -> Use for high-speed automated authentication attempts
-
-**Gotchas** **Account lockout mechanisms** usually prevent successful brute forcing on modern applications; password spraying is more effective.
+---
 
 ## FTP Bounce Attack
 
-An exposed FTP server can reach internal network segments that are not directly accessible from the attack host.
+Use an exposed FTP server to port scan internal hosts that aren't reachable directly. Nmap `-b` flag triggers it:
 
-Scan internal targets through the FTP proxy
-
-```
-nmap -Pn -v -n -p <PORT> -b <USERNAME>:<PASSWORD>@<PIVOT_IP> <TARGET_IP>
+```bash
+nmap -Pn -v -n -p<PORT> -b anonymous:password@<FTP_DMZ_IP> <INTERNAL_TARGET_IP>
 ```
 
-- **Dangerous / misconfigured settings**
-    - FTP `PORT` command allowed to connect to arbitrary internal IP addresses
-
-**Gotchas** **Modern FTP protections** typically disable the bounce attack capability by default.
+> [!warning] Most modern FTP servers block bounce attacks by default. Only works on misconfigured servers. Worth trying if you have FTP access to a DMZ host and suspect internal targets behind it.

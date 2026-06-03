@@ -1,66 +1,39 @@
-## Hash Type Identification
+# Hashcat
 
-Unknown hash string identified during exfiltration; requires mapping to a specific numeric ID for processing.
+Identify hash mode with hashid — `-m` flag gives hashcat mode number directly:
 
-Identify hash type and corresponding mode ID from a raw string.
-
-```
+```bash
 hashid -m '<HASH>'
 ```
 
-List all supported hash types and IDs directly.
+When hashid is ambiguous, check hashcat example hashes page — format prefix (e.g. `$1$`, `$6$`, `$krb5tgs$`) is usually enough to pin the mode.
 
-```
-hashcat --help
-```
+Dictionary attack (`-a 0`):
 
-- hashID -> `hashid -m '<HASH>'` -> Prefer for quick CLI-based identification.
-- Hashcat Example Hashes -> Reference official website -> Prefer for manual identification of obscure or unknown types.
-
-**Incorrect hash mode** — Using the wrong `-m` ID will cause the tool to fail to identify matches even if the correct password is present in the wordlist.
-
-## Straight Wordlist Attack
-
-Standard dictionary-based cracking required when a wordlist is available.
-
-Run basic wordlist attack (Mode 0).
-
-```
-hashcat -a 0 -m <PORT> <HASH> <FILE_PATH>
+```bash
+hashcat -a 0 -m <MODE> <HASH_FILE> <WORDLIST>
 ```
 
-**Incorrect hash mode** — Assigning the wrong ID to the hash type results in zero recoveries.
+Dictionary + rules — try `best64.rule` first, `rockyou-30000.rule` if that fails, `dive.rule` as nuclear option:
 
-## Rule-Based Attack
-
-Wordlist fails to produce results and common mutations like leetspeak or character appending are necessary to expand the search.
-
-Apply transformations to wordlist entries via ruleset.
-
-```
-hashcat -a 0 -m <PORT> <HASH> <FILE_PATH> -r <FILE_PATH>
+```bash
+hashcat -a 0 -m <MODE> <HASH_FILE> <WORDLIST> -r /usr/share/hashcat/rules/best64.rule
 ```
 
-- `best64.rule`: 64 standard modifications including numbers and leet substitutions.
-- `leetspeak.rule`: Basic character substitutions.
-- `rockyou-30000.rule`: Extensive modifications for larger wordlists.
+Mask attack (`-a 3`) — use when you know the password pattern:
 
-Standard rule files are located in `/usr/share/hashcat/rules`.
-
-## Mask Attack
-
-Keyspace needs to be restricted to a specific pattern or known length to improve efficiency over raw brute-force.
-
-Execute mask attack (Mode 3) using character set symbols.
-
-```
-hashcat -a 3 -m <PORT> <HASH> ?u?l?l?l?d?d
+```bash
+hashcat -a 3 -m <MODE> <HASH_FILE> '<MASK>'
 ```
 
-- `?l`: abcdefghijklmnopqrstuvwxyz
-- `?u`: ABCDEFGHIJKLMNOPQRSTUVWXYZ
-- `?d`: 0123456789
-- `?s`: Special characters/symbols
-- `?a`: Combination of lowercase, uppercase, digits, and symbols
+Built-in charsets: `?l` lowercase / `?u` upper / `?d` digit / `?s` special / `?a` all printable / `?h` hex lower / `?H` hex upper
 
-**Broad mask definition** — Defining a mask that covers too large a keyspace on limited hardware will result in unfeasible completion times.
+Custom charset — define with `-1` through `-4`, reference as `?1` through `?4`:
+
+```bash
+hashcat -a 3 -m <MODE> <HASH_FILE> -1 '<CHARSET>' '?1?1?1?1?d?d'
+```
+
+Common exam masks — `?u?l?l?l?l?d?s` (Word + digit + symbol), `?u?l?l?l?l?l?d?d` (corp password pattern), `?d?d?d?d?d?d?d?d` (8-digit PIN).
+
+> [!tip] wordlist alone fails → wordlist + `best64.rule` → wordlist + `rockyou-30000.rule` → mask if you know the pattern. Don't jump straight to mask without trying rules first.

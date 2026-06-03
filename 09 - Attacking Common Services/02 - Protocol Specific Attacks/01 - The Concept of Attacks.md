@@ -1,74 +1,35 @@
-# Methodology
+# The Concept of Attacks — Framework
 
-1. **Analyze Source**: Identify where information enters the task cycle (Code, Libraries, Config, APIs, or User Input),.
-2. **Evaluate Process**: Map how data is handled by looking at PID privileges, input functions, variables, and logging triggers.
-3. **Check Privileges**: Determine the execution context (System/root, User, Groups, Policies, or Rules) to define the impact.
-4. **Identify Destination**: Track where data is stored or forwarded (Local files or Network interfaces) to confirm the exploit goal.
-5. **Cycle Iteration**: If the Destination provides new information to a subsequent process, repeat the analysis for multi-stage attacks,.
+Mental model for analyzing any vulnerability: Source → Process → Privileges → Destination. Apply this to understand existing exploits, analyze source code, and debug your own payloads.
 
----
+**Source** — where the malicious input enters (user input, HTTP header, API call, config, library)
 
-## Source Manipulation
+**Process** — what the application does with it (misinterpretation, parsing, logging, execution)
 
-Identifying and exploiting the entry point where information is passed to a process.
+**Privileges** — what context the process runs in (SYSTEM/root, service account, user) — this determines blast radius
 
-Modify specific request headers to pass malicious commands to internal libraries,
-
-```
-User-Agent: <JNDI_LOOKUP>
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - Processing unsanitized manual entry via User Input.
-    - Using results from previously executed program Code as a trusted information source.
-    - Relying on static or prescribed values in Config files that determine process behavior.
-- **Edge cases**
-    
-    - Vulnerabilities in Libraries (e.g., Log4j) can affect any software product integrating their classes and functions.
-- **Gotchas**
-    
-    - **Destination as new Source** occurs when the initial task completion serves as the starting point for a subsequent malicious cycle,.
+**Destination** — where the result goes (local file write, local execution, network callback, RCE)
 
 ---
 
-## Process & Privilege Analysis
+## Log4j (CVE-2021-44228) as the Reference Example
 
-Determining how information is misinterpreted and the permissions assigned to the executing process,.
+Source: attacker injects JNDI lookup into User-Agent header
 
-Analyze the data processing logic to find where input is handled as executable code rather than strings,
+Process: Log4j misinterprets the string as a command instead of logging it as text
 
-```
-<DATA_PROCESSING_FUNCTION>
-```
+Privileges: logging runs as admin → execution inherits admin context
 
-- **Dangerous / misconfigured settings**
-    
-    - Administrative or **SYSTEM/root** privileges assigned to logging or sensitive data processes,.
-    - Misinterpretation of strings that leads to the execution of a request.
-    - Hard-coded functions in Data processing that fail to validate variables.
-- **Gotchas**
-    
-    - **Privilege mismatch** occurs if the process does not satisfy the conditions required by the system, causing the requested action to be rejected.
-    - **Admin logging permissions** often allow user-supplied code to execute with the highest level of system control.
+Destination: JNDI lookup reaches attacker-controlled LDAP/RMI server → fetches malicious Java class → second cycle begins
+
+Second cycle — Source: malicious Java class / Process: class executes / Privileges: still admin / Destination: reverse connection back to attacker = RCE
 
 ---
 
-## Destination Exploitation
+## Using This During Assessments
 
-Confirming the final target or forwarding point of the manipulated task.
+When researching a service exploit: map each step to Source/Process/Privileges/Destination before running it. Tells you what input to manipulate, what will happen, what rights you'll get, and where to point your listener.
 
-Redirect process output or requests to a remote server for RCE,
+When a payload fails: check which step broke — wrong input format (Source), parsing not triggering (Process), insufficient rights (Privileges), wrong callback address (Destination).
 
-```
-<TARGET_IP>:<PORT>
-```
-
-- **Edge cases**
-    
-    - Destination can be Local (files/records) or Network-based (remote interfaces/IPs).
-- **Gotchas**
-    
-    - **Network-to-Source loop** triggers when a remote query retrieves a malicious class that is then used as a source for further process execution,.
-
-> ⚠️ Gap: Source lacks specific tools or syntax for intercepting/modifying HTTP headers (e.g., Burp Suite) and lacks instructions for standing up the remote listener/LDAP server required to complete the JNDI lookup.
+When reviewing source code for vulns: trace user-controlled input through the call chain and check what privileges each processing function runs under.

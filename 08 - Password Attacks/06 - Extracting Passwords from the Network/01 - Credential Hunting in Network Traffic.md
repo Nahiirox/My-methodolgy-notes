@@ -1,66 +1,32 @@
-## Analyzing Cleartext Traffic with Wireshark
+# Credential Hunting in Network Traffic
 
-Identifying exposed **credentials** such as usernames, passwords, and community strings in unencrypted legacy or misconfigured services like HTTP, FTP, or SNMP.
+Protocols worth capturing on sight: HTTP, FTP, SNMP, POP3, IMAP, SMTP, LDAP, old SMB, VNC — any unencrypted service leaks creds in cleartext.
 
-Filter for all HTTP traffic
-
-```
-http
-```
-
-Isolate login attempts potentially containing sensitive data in the request body
+Key Wireshark filters for cred hunting:
 
 ```
 http.request.method == "POST"
-```
-
-Search for specific keywords within the HTTP protocol payload
-
-```
 http contains "passw"
+ftp
+ldap
+snmp
+tcp.port == 21
 ```
 
-Follow a specific conversation between two hosts to reconstruct the session
+Follow a TCP stream for full session context: right-click packet → Follow → TCP Stream. Edit → Find Packet → string search for `passw`, `user`, `login` across all packets.
 
-```
-tcp.stream eq <PORT>
-```
+Run Pcredz against a pcap — auto-extracts FTP, HTTP Basic/NTLM/Forms, SNMP community strings, NTLMv1/v2, Kerberos AS-REQ hashes:
 
-Identify SYN packets to detect scanning or connection attempts
-
-```
-tcp.flags.syn == 1 && tcp.flags.ack == 0
+```bash
+./Pcredz -f <FILE>.pcapng -t -v
 ```
 
-Monitor DNS resolution for reconnaissance
+Live capture instead of pcap:
 
-```
-dns
-```
-
-Filter traffic between two specific target hosts
-
-```
-ip.src == <TARGET_IP> && ip.dst == <PIVOT_IP>
+```bash
+./Pcredz -i <IFACE> -t -v
 ```
 
-- Services utilizing **unencrypted protocols** (HTTP, FTP, SNMPv1/v2, POP3, IMAP, SMTP, LDAP, SMB, VNC) transmit data in cleartext.
-    
-- **TLS/SSL encryption** will render credentials unreadable unless a decryption method is applied to the capture.
-    
+NTLMv2 hashes from pcap → hashcat mode 5600. Kerberos AS-REQ etype 23 → mode 18200. Both crack offline the same way as Responder captures.
 
-## Automated Credential Extraction with Pcredz
-
-Rapidly parsing large packet captures or live traffic for **NTLM hashes**, **Kerberos tickets**, and protocol-specific credentials without manual filtering.
-
-Run Pcredz against a capture file with verbose output and timestamps
-
-```
-./Pcredz -f <FILE_PATH> -t -v
-```
-
-- Wireshark -> `http.request.method == "POST"` -> prefer for manual session reconstruction and deep protocol analysis.
-    
-- Pcredz -> `./Pcredz -f <FILE_PATH> -t -v` -> prefer for automated, multi-protocol extraction of hashes and community strings.
-    
-- **Missing dependencies** or library version mismatches will cause the tool to fail; use the provided Docker container to ensure a stable environment.
+> [!tip] SNMP community strings from Pcredz output = often reused as passwords on network devices and management interfaces. Try them immediately against SNMP-managed hosts and any web admin panels.

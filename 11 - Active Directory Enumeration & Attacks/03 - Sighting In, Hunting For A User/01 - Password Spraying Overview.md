@@ -1,50 +1,29 @@
-[MODE: full]
+# Password Spraying — Overview & Considerations
 
-1. Attempt SMB NULL session or LDAP anonymous bind for user list.
-2. If discovery fails, scrape LinkedIn and combine with statistically-likely-usernames lists.
-3. Search Google for organization-published PDFs and check Author field metadata for internal **GUID** patterns.
-4. Generate potential usernames using Bash if patterns (e.g., F9L8) are identified.
-5. Perform user enumeration via Kerbrute to validate the list against the domain.
-6. Identify domain password policy (attempts before **Lockout**, reset threshold) before spraying.
-7. Execute password spray with one common password across all validated usernames.
-8. Introduce a **DELAY** between different password attempts to avoid triggering **Lockout**.
-9. If successful, use access to run BloodHound or identify attack paths like RBCD or Shadow Credentials.
+One password → full user list → delay → repeat. Never multiple passwords per user in quick succession.
+
+**Get the password policy before spraying.** Enumerate it once you have any foothold. Without it: assume 5 bad attempts → lockout, wait 2-3 hours between rounds minimum. One spray attempt with one common password is the safe "hail mary" if you're flying blind.
+
+> [!warning] Spraying without knowing the lockout threshold can lock hundreds of production accounts. If in doubt, ask the client for the policy — that's always an option.
 
 ---
 
-## Username Generation
+## Building the User List
 
-Identify pattern in PDF metadata Author fields and generate a complete list of potential accounts.
+Kerbrute + jsmith.txt from statistically-likely-usernames repo covers ~40-60% of valid accounts in most domains. Supplement with LinkedIn scraping.
 
-```
-for x in {{A..Z},{0..9}}{{A..Z},{0..9}}{{A..Z},{0..9}}{{A..Z},{0..9}}; do echo $x; done
-```
+If standard lists yield nothing → hunt PDF metadata. Author field often leaks internal username format:
 
-- **Dangerous / misconfigured settings**
-    
-    - Predictable **GUID** structures in internal usernames.
-    - Organization failure to scrub metadata from public-facing documents.
-- **Gotchas**
-    
-    - **Incomplete user lists** derived from standard repos like jsmith.txt often only identify 40-60% of valid accounts.
-
-## Password Spraying
-
-Attempt one common password against a high volume of usernames when no other **Foothold** exists.
-
-Use Kerbrute to identify valid accounts and attempt authentication with a single password.
-
-```
-kerbrute <COMMAND> -d <DOMAIN> --dc <DC_IP> <USER_LIST_FILE> <PASSWORD>
+```bash
+exiftool <FILE>.pdf | grep -i author
 ```
 
-> ⚠️ Gap: The source mentions using Kerbrute for enumeration and spraying but does not provide the specific subcommands (e.g., `userenum`, `passwordspray`).
+Got a pattern like `F9L8` (fixed-length GUID, A-Z + 0-9) → generate the full space:
 
-- **Edge cases**
-    
-    - Use a single "hail mary" attempt with one weak password if the lockout policy cannot be determined.
-    - Consult the client for the password policy during an engagement if no **Foothold** allows for internal enumeration.
-- **Gotchas**
-    
-    - **Account Lockout** will occur if multiple password attempts are made without a **DELAY** or knowledge of the lockout threshold.
-    - **Unknown password policy** requires a wait of several hours between attempts to ensure the threshold resets.
+```bash
+for x in {{A..Z},{0..9}}{{A..Z},{0..9}}{{A..Z},{0..9}}{{A..Z},{0..9}}; do echo $x; done > users.txt
+```
+
+Feed generated list into Kerbrute userenum to validate before spraying — don't spray against guesses.
+
+> [!tip] PDF metadata → username schema is a high-yield move when AD enum hits a wall. Check `filetype:pdf inurl:<DOMAIN>` before giving up on user list building.

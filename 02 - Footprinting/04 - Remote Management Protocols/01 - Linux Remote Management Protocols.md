@@ -1,122 +1,95 @@
-1. Scan for management ports 22, 512-514, and 873.
-2. If 22: Run `ssh-audit` to find weak **SSH-1** or vulnerable versions like **OpenSSH 7.2p1** (X11) or **8.2p1** (MITM). Check allowed auth methods manually.
-3. If 873: Netcat probe for share names. Attempt anonymous listing. Target `.ssh` directories for lateral movement keys.
-4. If 512-514: Attempt `rlogin` using known usernames to hit **.rhosts** or **hosts.equiv** trust bypasses. Use `rwho`/`rusers` for session discovery.
+# Linux Remote Management — SSH, Rsync, R-Services
 
 ---
 
-## SSH Audit
+### SSH
 
-Port 22 is open and you need to identify weak encryption algorithms or vulnerable server versions.
+Port TCP/22. Banner format: `SSH-2.0-OpenSSH_8.2p1` = SSH-2 only. `SSH-1.99-OpenSSH_3.9p1` = both versions supported (SSH-1 = MITM vulnerable).
 
-Audit the service for weak KEX, host-key algorithms, and encryption
+Fingerprint version, weak ciphers, supported auth methods:
 
-```
-./ssh-audit.py <TARGET_IP>
-```
-
-- **Protocol 1**: Uses outdated encryption and is **vulnerable to MITM attacks**.
-- **X11Forwarding yes**: Enables GUI but was **vulnerable to command injection** in OpenSSH 7.2p1.
-- **PermitEmptyPasswords yes**: Allows bypass if user has no password set.
-- **PermitRootLogin yes**: Allows direct brute-force against the root account.
-
-**SSH-1.99 banner** indicates the server supports both **vulnerable SSH-1** and SSH-2.
-
-## SSH Auth Method Identification
-
-A banner is captured and you need to determine if `password` or `publickey` authentication is accepted before starting a brute-force.
-
-Verbose connection to list supported authentication methods
-
-```
-ssh -v <USERNAME>@<TARGET_IP>
+```bash
+./ssh-audit.py <TARGET>
 ```
 
-Force password prompt to verify if password-based logins are enabled
+Check auth methods via verbose connect:
 
-```
-ssh -v <USERNAME>@<TARGET_IP> -o PreferredAuthentications=password
-```
-
-**CVE-2020-14145** allows MITM attacks during the initial connection attempt on certain versions.
-
-## Rsync Share Discovery
-
-Port 873 is open and you need to identify available modules/shares.
-
-Probe the service to list the internal module names
-
-```
-nc -nv <TARGET_IP> 873
+```bash
+ssh -v <USER>@<TARGET>
 ```
 
-Query the banner and protocol version
+Force password auth for brute — bypasses publickey preference:
 
-```
-sudo nmap -sV -p 873 <TARGET_IP>
-```
-
-> ⚠️ Gap: Nmap service scripts or manual `nc` interaction may fail to list shares if the `rsync` daemon is configured with `list = no` in `rsyncd.conf`.
-
-## Rsync Data Exfiltration
-
-A share name is known and you need to pull files or check for sensitive data like SSH keys.
-
-List files in a specific share without downloading
-
-```
-rsync -av --list-only rsync://<TARGET_IP>/<SHARE_NAME>
+```bash
+ssh -v <USER>@<TARGET> -o PreferredAuthentications=password
 ```
 
-Sync all contents from the remote share to the current directory
+Dangerous settings to flag: `PermitRootLogin yes` / `PermitEmptyPasswords yes` / `PasswordAuthentication yes` / `Protocol 1` / `PermitTunnel yes`.
 
-```
-rsync -av rsync://<TARGET_IP>/<SHARE_NAME> .
-```
+---
 
-Use when Rsync is configured to tunnel over a non-standard SSH port
+### Rsync
 
-```
-rsync -av -e "ssh -p <PORT>" rsync://<TARGET_IP>/<SHARE_NAME>
-```
+Port TCP/873. Often requires no auth. Check for password reuse from other creds found elsewhere.
 
-**Password re-use** is common; use credentials found elsewhere if anonymous access fails.
+Scan:
 
-## R-Services Authentication Bypass
-
-Ports 512, 513, or 514 are open and you are testing for trusted host relationships.
-
-Attempt login without a password using a specific username
-
-```
-rlogin <TARGET_IP> -l <USERNAME>
+```bash
+sudo nmap -sV -p873 <TARGET>
 ```
 
-Execute a single command on the remote host via rexec (requires credentials)
+List available shares — no creds needed if open:
 
+```bash
+nc -nv <TARGET> 873
+#list
 ```
-rexec -p <PASSWORD> -l <USERNAME> <TARGET_IP> <SERVICE_NAME>
+
+List share contents:
+
+```bash
+rsync -av --list-only rsync://<TARGET>/<SHARE>
 ```
 
-- **+ Wildcard**: A `+` in `/etc/hosts.equiv` or `.rhosts` allows **any user from any host** to log in without a password.
-- **Unencrypted Traffic**: All R-services transmit data in cleartext and are **vulnerable to MITM**.
+Sync everything down:
 
-**Authentication fails** if the source IP/hostname and username do not exactly match an entry in the remote `.rhosts` or `/etc/hosts.equiv` files.
-
-## R-Services User Enumeration
-
-You have established a shell or have network access and need to scope out active users for further targeting.
-
-List all users currently logged into the local network
-
+```bash
+rsync -av rsync://<TARGET>/<SHARE> ./
 ```
+
+Rsync over SSH (non-standard port):
+
+```bash
+rsync -av -e "ssh -p <PORT>" <USER>@<TARGET>:<REMOTEPATH> ./
+```
+
+> [!tip] `.ssh` directory accessible via rsync → pull it down immediately. `authorized_keys`, `id_rsa`, `known_hosts` — all useful. `secrets.yaml` / `build.sh` / any config files → hunt for hardcoded creds.
+
+---
+
+### R-Services
+
+Ports TCP/512 (rexec) / 513 (rlogin) / 514 (rsh/rcp). Unencrypted. Trust-based auth via `/etc/hosts.equiv` and `~/.rhosts` — if misconfigured, no password needed.
+
+Scan:
+
+```bash
+sudo nmap -sV -p512,513,514 <TARGET>
+```
+
+Login without password if `.rhosts` trusts your IP:
+
+```bash
+rlogin <TARGET> -l <USER>
+```
+
+List active sessions on local network (UDP/513):
+
+```bash
 rwho
+rusers -al <TARGET>
 ```
 
-Detailed list of logged-in users including TTY and login time
+`.rhosts` entry `+ +` = any user from any host can authenticate without a password = instant access as that user.
 
-```
-rusers -al <TARGET_IP>
-```
-
-**rwho relies on broadcasts**; if the daemon is not actively broadcasting, the command will return no results even if users are logged in.
+> [!warning] R-services transmit everything in cleartext including passwords. If you see TCP/512-514 open on any host, check `.rhosts` and `/etc/hosts.equiv` for `+` wildcards before anything else — it's a free shell.

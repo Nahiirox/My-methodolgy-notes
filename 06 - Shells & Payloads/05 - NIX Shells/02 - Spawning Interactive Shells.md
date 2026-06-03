@@ -1,108 +1,46 @@
-## Shell Spawning via Native Interpreters
+# Spawning Interactive Shells
 
-Land on a limited jail shell and need a TTY or prompt access while Python is unavailable.
+No Python → try these in order, use whatever interpreter is present:
 
-Invoke the native shell interpreter in interactive mode
-
-```
+```bash
 /bin/sh -i
 ```
 
-Execute a shell via Perl from the command line
-
-```
+```bash
 perl -e 'exec "/bin/sh";'
 ```
 
-Spawn a shell from within a Perl script
-
-```
-exec "/bin/sh";
+```bash
+ruby -e 'exec "/bin/sh"'
 ```
 
-Spawn a shell from within a Ruby script
-
-```
-exec "/bin/sh"
+```bash
+lua -e 'os.execute("/bin/sh")'
 ```
 
-Spawn a shell from within a Lua script
-
-```
-os.execute('/bin/sh')
-```
-
-### Tool comparison
-
-- Perl → `perl -e 'exec "/bin/sh";'` → Prefer when Perl is available for one-liners
-- Ruby → `exec "/bin/sh"` → Prefer for script-based execution
-- Lua → `os.execute('/bin/sh')` → Use when the system relies on Lua-based tools
-
-**Gotchas** **Unstable shells** may provide a prompt but fail to return output for complex commands or job control.
-
----
-
-## Shell Spawning via System Utilities
-
-Direct shell escape is blocked but AWK, Find, or VIM are present with execution permissions.
-
-Spawn an interactive shell using AWK's system method
-
-```
+```bash
 awk 'BEGIN {system("/bin/sh")}'
 ```
 
-Execute a shell via Find's execute flag directly
-
-```
-find . -exec /bin/sh ; -quit
+```bash
+find . -exec /bin/sh \; -quit
 ```
 
-Chain Find and AWK to spawn a shell
+VIM escape (if you're stuck in an editor session):
 
-```
-find / -name <FILE_NAME> -exec /bin/awk 'BEGIN {system("/bin/sh")}' ;
-```
-
-Launch a shell directly from VIM startup
-
-```
+```bash
 vim -c ':!/bin/sh'
+# or from inside vim:
+# :set shell=/bin/sh
+# :shell
 ```
 
-Escape to a shell from an active VIM session
+After landing any shell, check sudo rights immediately — `NOPASSWD: ALL` on a web service account is an instant privesc:
 
-```
-:set shell=/bin/sh
-:shell
-```
-
-### Tool comparison
-
-- Find → `find . -exec /bin/sh ; -quit` → Faster direct escape
-- AWK → `awk 'BEGIN {system("/bin/sh")}'` → Useful when binary execution is limited to specific C-like languages
-- VIM → `vim -c ':!/bin/sh'` → Niche escape used primarily when editing files
-
-### Edge cases
-
-- Find requires a successful file match to trigger the `-exec` flag; if Find **cannot find the specified file**, no shell is attained.
-
----
-
-## Local Privilege and Permission Mapping
-
-Shell is established and you need to determine execution rights or identify privilege escalation vectors.
-
-List properties and account permissions for a specific binary or file
-
-```
-ls -la <FILE_PATH>
-```
-
-Check current user sudo permissions
-
-```
+```bash
 sudo -l
 ```
 
-**Gotchas** Running `sudo -l` while in an **unstable shell** will result in no output being returned.
+> [!tip] `sudo -l` requires a stable TTY to return output. If it hangs or errors, your shell isn't fully interactive yet — upgrade first with Python/pty, then retry.
+
+> [!warning] `find -exec /bin/sh` only spawns a shell if `find` actually locates the specified file. `find . -exec /bin/sh \; -quit` sidesteps this by running on the current directory immediately.

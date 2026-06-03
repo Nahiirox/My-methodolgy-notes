@@ -1,110 +1,40 @@
-1. Identify the container type (ZIP, OpenSSL-encrypted GZIP, BitLocker VHD).
-2. For ZIP: Extract the hash using `zip2john` and crack offline with John the Ripper.
-3. For OpenSSL-encrypted GZIP: Perform a direct decryption loop using `openssl` to avoid false positives.
-4. For BitLocker:
-    - Extract hashes using `bitlocker2john`.
-    - Isolate the user password hash (`$bitlocker$0`).
-    - Crack using Hashcat mode 22100.
-5. For Access: Mount decrypted volumes using `dislocker` on Linux or native Explorer on Windows.
+# Cracking Protected Archives
 
----
+Crack ZIP:
 
-## ZIP Hash Extraction
-
-Targeting password-protected ZIP archives when native access is restricted and the encryption scheme allows offline hash extraction.
-
-Extract the PKZIP hash for offline cracking
-
-```
-zip2john <FILE_PATH> > <HASH_FILE>
+```bash
+zip2john <FILE>.zip > zip.hash
+john --wordlist=<WORDLIST> zip.hash
+john zip.hash --show
 ```
 
-## ZIP Password Cracking
+OpenSSL-encrypted GZIP — `file` first to confirm, then brute with openssl loop (errors are noise, ignore them):
 
-Executing the offline attack once a hash is successfully formatted.
-
-Run John the Ripper against the extracted ZIP hash
-
-```
-john --wordlist=<WORDLIST> <HASH_FILE>
+```bash
+file <FILE>.gzip
+for i in $(cat <WORDLIST>);do openssl enc -aes-256-cbc -d -in <FILE>.gzip -k $i 2>/dev/null| tar xz;done
 ```
 
-Display previously cracked ZIP passwords
+BitLocker — extract hashes, grep for the password hash only (`$bitlocker$0$`), mode 22100 is slow on AES:
 
-```
-john <HASH_FILE> --show
-```
-
-## OpenSSL Encrypted Archive Brute-forcing
-
-Attempting to decrypt GZIP or TAR archives encrypted via OpenSSL when standalone hash extraction is unreliable.
-
-Brute-force decryption and extraction in a single loop to confirm valid passwords
-
-```
-for i in $(cat <WORDLIST>);do openssl enc -aes-256-cbc -d -in <FILE_PATH> -k $i 2>/dev/null| tar xz;done
+```bash
+bitlocker2john -i <FILE>.vhd > backup.hashes
+grep "bitlocker\$0" backup.hashes > backup.hash
+hashcat -a 0 -m 22100 backup.hash <WORDLIST>
 ```
 
-- **False positives** or complete failure to identify the key occur frequently with standard hash cracking; direct extraction confirms the correct password.
+Mount BitLocker on Linux after cracking:
 
-## BitLocker Hash Extraction
-
-Targeting Windows full-disk encryption containers (VHD) to obtain crackable material.
-
-Extract all BitLocker-related hashes from a virtual drive
-
-```
-bitlocker2john -i <VHD_PATH> > <HASHES_FILE>
+```bash
+sudo losetup -f -P <FILE>.vhd
+sudo dislocker /dev/loop0p2 -u<PASS> -- /media/bitlocker
+sudo mount -o loop /media/bitlocker/dislocker-file /media/bitlockermount
 ```
 
-Filter for the user password hash while ignoring the impractical recovery key hashes
+Unmount:
 
-```
-grep "bitlocker$0" <HASHES_FILE> > <HASH_FILE>
-```
-
-- **Recovery keys** are 48-digit random strings and are not practical for cracking attempts.
-
-## BitLocker Password Cracking
-
-Cracking the isolated AES-encrypted BitLocker user password hash.
-
-Crack the hash using Hashcat with specific BitLocker mode
-
-```
-hashcat -a 0 -m 22100 '<HASH>' <WORDLIST>
+```bash
+sudo umount /media/bitlockermount && sudo umount /media/bitlocker
 ```
 
-## Mounting Decrypted BitLocker Volumes (Linux)
-
-Accessing the file system of a BitLocker VHD on a Linux attack host after obtaining the cleartext password.
-
-1. Set up the VHD as a loop device
-
-```
-sudo losetup -f -P <VHD_PATH>
-```
-
-2. Decrypt the specific partition into a mountable dislocker-file
-
-```
-sudo dislocker /dev/loop0p2 -u<PASSWORD> -- <MOUNT_POINT_1>
-```
-
-3. Mount the decrypted file to the final directory
-
-```
-sudo mount -o loop <MOUNT_POINT_1>/dislocker-file <MOUNT_POINT_2>
-```
-
-> ⚠️ Gap: Command assumes the target partition is exactly `/dev/loop0p2`; check `lsblk` or `fdisk -l` to verify the correct partition suffix before running `dislocker`.
-
-Unmount volumes after analysis
-
-```
-sudo umount <MOUNT_POINT_2>
-```
-
-```
-sudo umount <MOUNT_POINT_1>
-```
+> [!tip] `locate *2john*` covers zip, rar, 7z, keepass, bitlocker — same extract → crack pipeline for all of them. Unknown archive format → `file <ARCHIVE>` before picking the tool.

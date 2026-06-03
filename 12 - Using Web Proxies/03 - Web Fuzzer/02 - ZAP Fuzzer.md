@@ -1,42 +1,17 @@
-## Fuzzer Configuration
+# ZAP Fuzzer
 
-Web discovery when Burp Community throttling is too slow or wordlists are unavailable. Requires a base request captured in proxy history.
+No throttle on free version — use this over Burp Intruder for anything larger than a short list.
 
-Open the fuzzer from a proxy request `Right-click request > Attack > Fuzz`
+Right-click request in Proxy History → `Attack > Fuzz` → Fuzzer window opens.
 
-Set the payload position `Fuzz Locations > Highlight <TARGET_STRING> > Add`
+**Locations** → select the word to fuzz in the request pane → `Add`. Green marker confirms placement.
 
-Select built-in wordlists `Payloads > Add > Type: File Fuzzers > dirbuster > directory-list-1.0.txt`
+**Payloads** → `Add` → payload types worth knowing: `File` (your own wordlist), `File Fuzzers` (built-in dirbuster/SecLists databases, no external file needed), `Numberzz` (sequential int ranges).
 
-Prevent request breakage from special characters `Processors > Add > URL Encode`
+**Processors** → add `URL Encode` to avoid server errors on special chars. Other useful ones: `Prefix/Postfix String` (append/prepend to every payload), `Base64 Encode`, `Script` (custom logic). Click `Generate Preview` to confirm output looks right before running.
 
-Configure execution speed `Options > Concurrent Scanning Threads per Scan > 20`
+**Options** → set concurrent threads to 20 for speed. `Depth first` = exhaust all payloads on one position before moving on (good for password lists per user). `Breadth first` = one payload across all positions before next (good for spraying).
 
-Define payload rotation strategy `Options > Strategy > Depth First`
+Sort results by Response code after run — 200 = hit. Also watch `Size Resp. Body` for size outliers and `RTT` for time-based blind issues.
 
-Tool comparison:
-
-- ZAP Fuzzer -> `Attack > Fuzz` -> No speed throttling; prefer over Burp Intruder Community for large wordlists.
-- Burp Intruder -> `Send to Intruder` -> Advanced payload logic; prefer when ZAP's 8 basic payload types are insufficient.
-
-Gotchas:
-
-- **High thread counts** can crash the service or trigger rate limits.
-- **Missing URL encoding** causes 500 errors if the wordlist contains reserved characters.
-
----
-
-## Result Analysis
-
-Fuzzing run complete. Identifying successful hits from the results table.
-
-Filter results by successful status code `Sort by Response > 200`
-
-Edge cases:
-
-- Use **RTT** to identify time-based vulnerabilities like SQL injection.
-- Use **Size Resp. Body** to find valid pages that return 200 OK but differ from the baseline response.
-
-Gotchas:
-
-- **Filtering only for 200 OK** misses vulnerabilities detectable only via timing or response size shifts.
+> [!tip] ZAP has built-in dirbuster wordlists via File Fuzzers — no need to point to an external file for basic dir fuzzing. More wordlist databases installable from ZAP Marketplace.

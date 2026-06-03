@@ -1,35 +1,35 @@
-1. Identify and enumerate low-security services like FTP or Storage to find initial leads.,
-2. Document every string, filename, or metadata point, even if it appears insignificant or doesn't work on the local service.,
-3. Re-purpose discovered strings as credentials for communication services like email.
-4. Interrogate email archives specifically for high-value terms like "password" to find credentials for critical backend services.
-5. Authenticate to databases (e.g., MSSQL) using retrieved credentials and leverage internal features to achieve RCE.
+# Finding Sensitive Information
+
+Chain information across services — a username from FTP becomes a login for email, which yields DB creds, which yields RCE. Nothing is insignificant. Document everything immediately.
 
 ---
 
-## Service Metadata Harvesting
+## The Recon Chain Mindset
 
-When to use: Anonymous access is available on a service like FTP and you need to build a username or credential list.
+Every service you enumerate feeds the next one. Usernames, email addresses, file names, error messages — all are potential pivot points. The example chain: FTP anon access → filename `johnsmith` → email login as `johnsmith` → email search for "password" → MSSQL creds → `xp_cmdshell` → RCE.
 
-Commands
+---
 
-> ⚠️ Gap: Source does not provide CLI syntax for anonymous login or directory listing.
+## What to Hunt For
 
-Gotchas **Ignoring single filenames** or metadata points can stall an engagement; strings that fail locally often serve as valid credentials for secondary services like email,.
+On any service: usernames, email addresses, passwords (especially in emails and config files), DNS records, IP addresses, source code, config files, PII.
 
-## Communication Service Interrogation
+---
 
-When to use: You have identified potential usernames/passwords and need to find credentials for high-tier services like databases.
+## Service-Specific Targets
 
-Commands
+File shares → config files (`.xml`, `.ini`, `.config`, `.env`), scripts with hardcoded creds, password files, private keys
 
-> ⚠️ Gap: Source does not provide tool syntax or protocols for authenticating to and searching email services.
+Email → search keywords: `password`, `credentials`, `login`, `secret`, `key`, `access` — look for onboarding emails, IT helpdesk threads, password reset emails
 
-## Database Command Execution
+Databases → look for stored creds in tables (`users`, `accounts`, `config`, `settings`), linked servers, stored procedures
 
-When to use: You have acquired valid MSSQL credentials and require RCE on the database server.
+---
 
-Commands
+## Two Prerequisites Before Any Hunt
 
-> ⚠️ Gap: Source does not provide the specific SQL commands or "built-in functionality" syntax required to trigger command execution.
+Know how the service works technically (auth mechanisms, access model, query syntax).
 
-Edge cases **Target-specific business models** and processes dictate what information is considered "sensitive"; understanding the client's purpose changes what data you prioritize during searches.
+Know what you're looking for before you start — don't scroll aimlessly, search specifically.
+
+> [!tip] First search in any email access: `password`. Second: `credentials`. Third: sender/recipient patterns with IT/helpdesk accounts. One email thread from a password reset will often give you lateral movement directly.

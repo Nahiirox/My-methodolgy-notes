@@ -1,80 +1,33 @@
+# MSF — Importing & Installing Modules
 
-## External Module Discovery and Import
+Find MSF-compatible exploits on ExploitDB without a browser:
 
-Target exploit is verified on ExploitDB but missing from local `search` results, requiring manual installation into the framework directory structure,.
-
-Search ExploitDB via CLI for Ruby scripts specifically tagged for Metasploit
-
-```
-searchsploit <SERVICE_NAME> -t --exclude=".py"
+```bash
+searchsploit nagios3
+searchsploit -t Nagios3 --exclude=".py"
 ```
 
-**Tool comparison**
+`.rb` extension = Ruby, likely MSF-compatible. Not all `.rb` files are valid MSF modules — some are standalone Ruby scripts.
 
-- **searchsploit**
-    
-    - `searchsploit <TERM>`
-    - Prefer for local CLI-based offline discovery.
-- **ExploitDB (Web)**
-    
-    - Filter by **Metasploit Framework (MSF)** tag.
-    - Prefer for visual filtering by author, port, or platform.
-- **snake-case** naming: **Alphanumeric** characters and **underscores** only; **dashes** will cause **module recognition failure**.
-    
-- Directory structure: Ensure the local path in `~/.msf4/modules/` mirrors the official `/usr/share/metasploit-framework/modules/` hierarchy (e.g., `exploits/<PLATFORM>/<SERVICE>/`) or the module will not be found.
-    
+Copy the `.rb` into the matching category subfolder — filename must be snake_case, no dashes:
 
-> ⚠️ Gap: Manual module imports into `/usr/share/metasploit-framework/` usually require **root privileges**, which may lead to **permission denied** errors if using a standard user account.
+```bash
+cp ~/Downloads/9861.rb /usr/share/metasploit-framework/modules/exploits/unix/webapp/nagios3_command_injection.rb
+```
 
----
-
-## Custom Module Loading
-
-New `.rb` module has been moved to the local filesystem and needs to be registered within the active MSF instance without a full framework upgrade,.
-
-Launch MSF and automatically include a custom module directory
+Load without restarting msfconsole:
 
 ```
+msf6 > reload_all
+msf6 > use exploit/unix/webapp/nagios3_command_injection
+```
+
+Or load a module path at launch:
+
+```bash
 msfconsole -m /usr/share/metasploit-framework/modules/
 ```
 
-Load modules from a specific path while the console is already running
+Custom modules also go in `~/.msf4/modules/` — same subfolder structure as `/usr/share/metasploit-framework/modules/`. Create the dirs if they don't exist.
 
-```
-loadpath /usr/share/metasploit-framework/modules/
-```
-
-Force MSF to refresh the module database to pick up newly added files
-
-```
-reload_all
-```
-
-**Gotchas**
-
-- **Ruby script compatibility**: Not all `.rb` files are MSF modules; scripts lacking **Metasploit-compatible code** will fail to load.
-
----
-
-## Porting Standalone Exploits to MSF
-
-Converting a Python or PHP PoC into a Ruby module by utilizing existing framework mixins and boilerplate code,.
-
-Identify an existing module to use as a functional template
-
-```
-ls /usr/share/metasploit-framework/modules/exploits/<PLATFORM>/<PROTOCOL>/ | grep <SERVICE_NAME>
-```
-
-**Dangerous / misconfigured settings**
-
-- Indentation: MSF modules **must use hard tabs**; spaces may cause **syntax or loading errors**.
-- Unnecessary Mixins: Including unused mixins like `Msf::Exploit::FileDropper` adds overhead; remove them if the exploit doesn't handle file cleanup,.
-
-**Edge cases**
-
-- **Custom Network Environments**: Proprietary code or non-standard protocols may require writing a module from scratch using the `Msf::Exploit::Remote` class if no boilerplate exists.
-
-**Gotchas**
-
-- **Validation failure**: Ensure `register_options` includes all required variables (e.g., `TARGETURI`, `USER`, `PASSWORDS`) or the module will fail to execute,.
+> [!warning] Filename convention breaks silently — if `reload_all` runs without errors but `search` can't find the module, check the filename for dashes or camelCase. Rename to snake_case and reload again.

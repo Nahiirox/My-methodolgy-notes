@@ -1,21 +1,10 @@
 
-## Historic Web Reconnaissance
+# Web Archives
 
-Uncovering legacy content, design, or functionality no longer visible on the live site.
+Passive — no direct interaction with target infra, nothing logged on their end.
 
-Search for all archived versions of a target
+Hunt via [web.archive.org](https://web.archive.org) — enter the target URL, browse historical snapshots.
 
-```
-https://web.archive.org/web/*/<DOMAIN>
-```
+What to look for across old captures: removed pages/directories still indexed, old subdomains that no longer resolve (may still be live), exposed files pulled from public access, stack/tech changes that reveal older vulns, employee names or internal paths visible in past content.
 
-Access the earliest possible capture of a target to identify original structure
-
-```
-https://web.archive.org/web/0/<DOMAIN>
-```
-
-- Snapshot frequency is inconsistent; it scales with site popularity and the rate of content change.
-- Crawlers index HTML, CSS, JavaScript, and images by following links, similar to search engine behavior.
-- **Exclusion requests** submitted by owners can prevent the retrieval of historical snapshots.
-- **Incomplete archives** occur because crawlers do not capture every page and prioritize sites with specific research or cultural value.
+> [!tip] Old snapshots often expose endpoints that were "removed" but never actually taken offline — try browsing them on the live site after finding them in archives.

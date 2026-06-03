@@ -1,24 +1,25 @@
-## Certificate Transparency Enumeration
+# Certificate Transparency Logs
 
-Wordlist-based approaches are exhausted and a definitive record of certificates—including those for expired or unguessable subdomains—is required.
+CT logs are public, append-only records of every SSL/TLS cert issued by any CA. Passive recon — no target contact. Gives historical subdomain coverage that brute force misses, including old/expired certs pointing to legacy infra.
 
-Filter crt.sh API results for specific patterns to isolate high-value subdomains
+All subdomains, including ones never linked publicly, appear here if a cert was ever issued for them.
 
+---
+
+### crt.sh Queries
+
+All subdomains for a domain, deduplicated:
+
+```bash
+curl -s "https://crt.sh/?q=<DOMAIN>&output=json" | jq . | grep name | cut -d":" -f2 | grep -v "CN=" | cut -d'"' -f2 | awk '{gsub(/\\n/,"\n");}1;' | sort -u
 ```
+
+Filter output — hunt specific patterns (dev, staging, admin, internal):
+
+```bash
 curl -s "https://crt.sh/?q=<DOMAIN>&output=json" | jq -r '.[] | select(.name_value | contains("<KEYWORD>")) | .name_value' | sort -u
 ```
 
-- crt.sh
-    
-    - `https://crt.sh`
-    - Use for rapid, registration-free discovery of subdomains and SAN entries.
-- Censys
-    
-    - `https://censys.io`
-    - Use for advanced filtering by IP or certificate attributes and finding related misconfigured hosts.
-- **Stale infrastructure** found through expired certificates may host **outdated software** vulnerable to exploitation.
-    
-- **Manual filtering** via the crt.sh web interface is inefficient for large-scale analysis compared to API automation.
-    
+Wildcard certs (`*.target.com`) in the output = that subdomain level exists. Old/expired entries = legacy hosts, outdated software, potentially unpatched.
 
-> ⚠️ Gap: CT log entries confirm name issuance but do not verify current DNS resolution; targeting these subdomains without secondary resolution checks can result in attacking decommissioned or reassigned infrastructure.
+> [!tip] Run CT log enum before any active brute force. If crt.sh gives you 40 subdomains, half your brute force work is already done passively. Also check expired certs — `*.dev.target.com` from 3 years ago may still resolve to an abandoned host.

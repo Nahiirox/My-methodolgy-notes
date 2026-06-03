@@ -1,40 +1,19 @@
-## Dynamic Port Forwarding
+# SSH for Windows: plink.exe
 
-Host is **locked down** and requires a pivot point without transferring external binaries; PuTTY or **Plink** must be present on the system or an accessible **file share**.
+LOTL option when you can't drop tools — if PuTTY is already on the host or reachable on a share, plink.exe gives you SSH tunneling from Windows with no install.
 
-Start a **dynamic port forward** and listener on a specific local port over SSH:
+Dynamic port forward (SOCKS) via plink — same concept as `ssh -D`, different binary:
 
-```
-plink -ssh -D <PORT> <USERNAME>@<PIVOT_IP>
-```
-
-- **Plink** -> `plink -ssh -D <PORT>` -> Prefer for **legacy Windows** (pre-Fall 2018) or when living off the land to avoid **detection**.
-- **SSH (Native)** -> `ssh -D <PORT>` -> Prefer on modern Windows builds where the native client is available.
-
-**Gotchas** **Silent failure** occurs on newer Windows builds if you default to **Plink** instead of using the native SSH client when available.
-
-## Windows Application Tunneling
-
-Windows-based attack host needs to route desktop client applications through an established **SOCKS proxy**.
-
-1. Start the **Plink** session to open the local listener port:
-
-```
-plink -ssh -D <PORT> <USERNAME>@<PIVOT_IP>
+```cmd
+plink -ssh -D 9050 <USER>@<PIVOT_IP>
 ```
 
-2. Configure **Proxifier** Proxy Server settings to intercept local traffic:
+This starts a SOCKS listener on `127.0.0.1:9050` on the Windows host, tunneled through SSH to the pivot.
 
-```
-Address: 127.0.0.1
-Port: <PORT>
-Protocol: SOCKS4
-```
+To use the tunnel with GUI tools on Windows, pair with **Proxifier** — configure it to route traffic through `127.0.0.1:9050`, then launch `mstsc.exe` or any other tool normally and it routes through the proxy transparently.
 
-3. Launch the target application to operate through the **SOCKS tunnel**:
+> [!tip] First time connecting via plink will prompt to trust the host key — pass `y` non-interactively by piping: `echo y | plink -ssh -D 9050 <USER>@<PIVOT_IP>`. Useful for automated or non-interactive contexts.
 
-```
-mstsc.exe
-```
+> [!warning] Plink may trigger AV/EDR on modern hardened hosts. Check security posture before dropping it. If PuTTY was already installed by a sysadmin, the binary is less suspicious than one you transfer in.
 
-**Gotchas** **Connection failure** will result if the application is launched before the **Plink** listener is fully established and authenticated.
+Windows native SSH client (`ssh.exe`, available since late 2018) supports the same `-D` flag — prefer it over plink if it's present, it's built-in and less likely to flag.

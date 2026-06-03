@@ -1,57 +1,36 @@
-## Scrapy Environment Setup
+# Web Crawling — Tools
 
-Automating the **crawling** process for faster and more efficient extraction of web data.
+Run a crawler after robots.txt and sitemap review. Output feeds directory fuzzing, email harvesting, JS analysis, and comment review.
 
-Install **Scrapy** and its dependencies via **pip**
+ReconSpider — Scrapy-based, outputs structured JSON, covers emails/links/external files/JS/forms/comments:
 
-```
+```bash
 pip3 install scrapy
+python3 ReconSpider.py http://<TARGET>
 ```
 
-Gotchas: **Overloading** server resources with excessive requests can cause service instability.
+Output is `results.json` — parse it:
 
-## ReconSpider Deployment
-
-Targeting a specific **domain** to map application architecture and identify points of interest.
-
-Download the **ReconSpider** archive
-
-```
-wget -O ReconSpider.zip <FILE_PATH>
+```bash
+cat results.json | jq .emails
+cat results.json | jq .links
+cat results.json | jq .external_files
+cat results.json | jq .js_files
+cat results.json | jq .comments
 ```
 
-Decompress the spider files into the current directory
+---
 
-```
-unzip ReconSpider.zip
-```
+### Triage Order for results.json
 
-Run the custom spider against the target **domain**
+`emails` → username format confirmation, social engineering targets, spray list fodder
 
-```
-python3 ReconSpider.py http://<DOMAIN>
-```
+`external_files` → PDFs, DOCs → run through `exiftool` for author metadata, internal paths, username format
 
-Gotchas: **Lack of permission** prior to intrusive scans violates ethical practices.
+`js_files` → pull each JS file, grep for API keys, endpoints, hardcoded creds, internal hostnames
 
-## Analysis of results.json
+`comments` → HTML comments in source often contain TODO notes, version strings, disabled features, internal paths
 
-Reviewing extracted metadata and file references to gain architectural insights.
+`links` → filter for `/admin`, `/backup`, `/upload`, `/api`, non-standard paths → add to directory fuzz list
 
-Examine the structured **JSON** output
-
-```
-cat results.json
-```
-
-Data categories in **results.json**:
-
-- emails: Addresses discovered on the **domain**
-- links: URLs found within the site structure
-- external_files: URLs for external assets like PDFs
-- js_files: JavaScript resources used by the application
-- form_fields: Input fields detected on the **domain**
-- images, videos, audio: Media asset URLs
-- comments: **HTML comments** extracted from the source code
-
-Gotchas: **Incomplete data** may result if the spider fails to crawl specific sections due to misconfiguration or restrictions.
+> [!tip] `jq .js_files` output → download each file → `grep -iE "api_key|token|password|secret|endpoint|internal|staging"`. Developers frequently hardcode credentials and internal URLs in frontend JS that gets deployed to prod.

@@ -1,140 +1,70 @@
-1. Check local resolution overrides in `<FILE_PATH>` to ensure traffic isn't being diverted.
-2. Query the **SOA** and **NS** records to identify the administrative head and authoritative servers for the target zone.
-3. Perform a manual sweep of common records (A, MX, TXT) using `dig` or `host`.
-4. Use `dig -x` on identified IP ranges to find associated hostnames via **PTR** records.
-5. Launch automated enumeration tools if subdomains remain hidden or the target surface is large.
+# DNS — Web Recon
+
+Record types that matter for recon: `A` (IPv4), `AAAA` (IPv6), `CNAME` (alias → find old/dev servers), `MX` (mail provider), `NS` (hosting provider identity), `TXT` (third-party services, SPF leaks internal IPs), `SOA` (admin email, zone serial), `SRV` (service locations), `PTR` (reverse lookup).
+
+`/etc/hosts` — add entries here to force local resolution when testing vhosts or internal names that don't resolve publicly.
 
 ---
 
-## Local Host Resolution
+### dig — Core Queries
 
-Manual mapping to bypass the DNS resolution process for development or redirection.
+Default A record lookup:
 
-Modify the local text file to force resolution to a specific IP
-
-```
-cat <FILE_PATH>
+```bash
+dig <DOMAIN>
 ```
 
-Update the file with the target mapping
+Specific record type:
 
-```
-<TARGET_IP>    <DOMAIN>
-```
-
-- Linux/MacOS: `/etc/hosts`
-- Windows: `C:\Windows\System32\drivers\etc\hosts`
-
-**Immediate effect** occurs upon saving the file without requiring a system restart.
-
-## Manual Record Querying
-
-Standard queries to pull IPv4, IPv6, mail servers, and infrastructure metadata.
-
-### dig
-
-Versatile querying for deep analysis of DNS records and resolution paths.
-
-Standard A record lookup
-
-```
-dig <DOMAIN> A
+```bash
+dig <DOMAIN> <TYPE>
 ```
 
-Query a specific name server for records
+Query a specific nameserver directly:
 
-```
-dig @<TARGET_IP> <DOMAIN>
-```
-
-Full resolution path tracing from root to authoritative server
-
-```
-dig +trace <DOMAIN>
+```bash
+dig @<NS_IP> <DOMAIN> <TYPE>
 ```
 
-Retrieve only the result string to pipe into other tools
+All records:
 
+```bash
+dig <DOMAIN> ANY
 ```
+
+Reverse lookup — IP to hostname:
+
+```bash
+dig -x <IP>
+```
+
+Clean output, answer only:
+
+```bash
 dig +short <DOMAIN>
-```
-
-Filtered output showing only the answer section
-
-```
 dig +noall +answer <DOMAIN>
 ```
 
-- `dig` -> `dig <DOMAIN> <TYPE>` -> Prefer for detailed troubleshooting and full resolution tracing.
-- `nslookup` -> `nslookup <DOMAIN>` -> Prefer for quick A/AAAA or MX checks.
-- `host` -> `host <DOMAIN>` -> Prefer for concise, one-line output for scripts.
+Full DNS resolution path — shows every hop from root to authoritative:
 
-**RFC 8482** causes many DNS servers to ignore **ANY** queries to prevent abuse, potentially returning no records even if they exist.
-
-### host
-
-Streamlined querying for rapid checks.
-
-Quick resolution of IPv4 and mail records
-
-```
-host <DOMAIN>
+```bash
+dig +trace <DOMAIN>
 ```
 
-## Reverse DNS Discovery
+---
 
-Identifying hostnames associated with a known IP address.
+### Recon Value Per Record Type
 
-Perform a reverse lookup for the PTR record
+`NS` → hosting provider, who manages DNS infra
 
-```
-dig -x <TARGET_IP>
-```
+`MX` → email provider (Google/self-hosted/third-party)
 
-**Missing PTR records** will cause the reverse lookup to return no hostname despite the IP being active.
+`TXT` → SPF `ip4:` entries leak internal IPs, `include:` entries reveal every third-party service used
 
-## Automated DNS Enumeration
+`CNAME` → old/dev server aliases — `dev.target.com CNAME oldserver.example.net` = potential vuln target
 
-Scaling discovery through dictionary attacks and brute-forcing when manual queries are insufficient.
+`SOA` → admin email (dot → @), useful for username format
 
-### dnsenum
+New subdomain appearing (e.g., `vpn.target.com`) → new entry point. TXT like `_1password=...` → org uses 1Password → social engineering angle.
 
-Automated discovery including dictionary attacks and brute-forcing.
-
-Run comprehensive enumeration and attempt zone transfers
-
-```
-dnsenum <DOMAIN>
-```
-
-### fierce
-
-Recursive search functionality with built-in wildcard detection.
-
-Scan for subdomains and identify potential targets
-
-```
-fierce --domain <DOMAIN>
-```
-
-### dnsrecon
-
-Combines multiple techniques and supports diverse output formats.
-
-Execute general enumeration and record gathering
-
-```
-dnsrecon -d <DOMAIN>
-```
-
-### theHarvester
-
-OSINT-based discovery for non-technical data associated with DNS.
-
-Gather email addresses and employee info from DNS and external sources
-
-```
-theHarvester -d <DOMAIN> -b all
-```
-
-**Rate limiting** by target servers can lead to blocked queries or temporary IP bans during aggressive scanning.
+> [!tip] `dig +trace` is useful when a record resolves differently than expected — shows exactly where in the delegation chain the answer comes from, which helps identify misconfigurations or split-horizon DNS.

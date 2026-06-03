@@ -1,83 +1,61 @@
-## Methodology
+# AD Hardening — Key Mitigations by Attack Surface
 
-1. Review external data footprint including job postings and DNS records to identify user naming context and internal tooling
-2. Monitor network traffic for bursts or high-volume packets from single sources indicating active scanning
-3. Enforce **SMB signing** and strong encryption to break relay and Man-in-the-Middle techniques
-4. Audit for **RC4 encryption** in Kerberos mechanisms and replace with stronger schemes or **Group Managed Service Accounts** to neutralize Kerberoasting
-5. Implement **AppLocker** policies to restrict command shell access and unauthorized application execution
-6. Populate the **Protected Users** group to prevent credential caching in memory, starting with staged testing to avoid availability issues
+Reference for reporting recommendations and understanding what you're up against.
 
 ---
 
-## Enumerating Protected Users
+## Mitigations That Block Specific Attacks
 
-Mapping high-value targets protected against memory-based credential abuse and identifying accounts that will not yield cleartext or hashes from host memory
+`ms-DS-MachineAccountQuota = 0` → blocks NoPac and RBCD attacks that require adding computer accounts
 
-Check group membership and description to identify restricted accounts
+`SMB signing enabled + required` → blocks LLMNR/NBT-NS relay attacks
 
-```
-Get-ADGroup -Identity "Protected Users" -Properties Name,Description,Members
-```
+`LDAP signing enabled` → blocks LDAP relay
 
-- **Dangerous / misconfigured settings**
-    
-    - Adding all privileged users to the group simultaneously without staged testing
-- **Gotchas**
-    
-    - **Account lockout** can occur unexpectedly due to authentication failures triggered by group restrictions
+Disable print spooler → blocks PrintNightmare and Printer Bug (MS-RPRN coercion)
 
-## Mitigating Poisoning and Relay
+Disable NTLM for DCs + enable Extended Protection for Authentication + require SSL on AD CS → blocks PetitPotam and NTLM relay to AD CS
 
-Neutralizing Man-in-the-Middle and traffic spoofing by validating communication endpoints
+`RestrictNullSessAccess = 1` → blocks null session enumeration
 
-Enable SMB signing to verify sender and recipient identity via hashed authentication codes
+Disable unconstrained delegation → blocks TGT theft via coerced auth
 
-```
-Match/Replace: Set SMB Message Signing to Required
-```
+gMSA/MSA for service accounts → makes Kerberoasting impossible (passwords are 240-char random, auto-rotated)
 
-> ⚠️ Gap: Source mentions SMB signing as a defense but does not provide the specific registry or GPO paths to enable it.
+`Protected Users` group on privileged accounts → blocks NTLM auth, RC4/DES, unconstrained delegation, plaintext cred caching, CredSSP caching. No TGT renewable beyond 4 hours.
 
-- **Dangerous / misconfigured settings**
-    
-    - Disabled or optional **SMB message signing**
-    - Weak encryption mechanisms for network traffic
-- **Gotchas**
-    
-    - **Relay attacks break** immediately once signing is enforced as the attacker cannot spoof the hashed authentication
+> [!warning] Protected Users can cause auth failures. Staged rollout only — never add all DA accounts at once.
 
-## Preventing Kerberoasting
+Enforce AES-only Kerberos encryption → makes Kerberoasting significantly harder (mode 19700 vs 13100)
 
-Identifying and hardening service accounts against ticket extraction and offline cracking
+---
 
-Audit account permissions to identify excessive group memberships and service principal names
+## Detection Signatures (for reporting context)
 
-```
-Action: Audit excessive group membership for service accounts
-```
+LLMNR/NBT-NS poisoning → ports UDP 5355/137 traffic, event IDs 4697/7045
 
-- **Dangerous / misconfigured settings**
-    
-    - Utilizing **RC4 encryption** for Kerberos authentication
-    - Weak password policies for service accounts
-- **Edge cases**
-    
-    - Migration to **Group Managed Service Accounts (gMSA)** makes Kerberoasting technically impossible
+Password spraying → event IDs 4624/4648 (multiple failed logons across accounts in short window)
 
-## Defending Internal Reconnaissance
+Kerberoasting → event ID 4769 (TGS requests), RC4 encryption type `0x17` is the red flag
 
-Obscuring the internal environment and detecting active discovery attempts through traffic analysis
+ASREPRoasting → event ID 4768 with pre-auth not required
 
-Configure host-based protections to drop discovery traffic
+DCSync → event IDs 4662 (replication rights exercised), unusual replication from non-DC hosts
 
-```
-Action: Set Windows Firewall/EDR to not respond to ICMP
-```
+ACL changes → event ID 5136 (directory service object modified)
 
-- **Dangerous / misconfigured settings**
-    
-    - Firewall/EDR configured to respond to **ICMP traffic**
-    - Lack of centralized logging for **Event IDs 4624 and 4648**
-- **Gotchas**
-    
-    - **Alerting triggers** when suspicious bursts of packets originate from a single source host
+---
+
+## High-Impact Quick Wins Worth Recommending to Clients
+
+Clean up DA/EA membership — most orgs have 10x more than needed. Audit `admincount=1` accounts.
+
+Remove passwords from user Description fields and SYSVOL scripts.
+
+Scrub document metadata before publishing externally — leaks username format.
+
+Disable default RID-500 Administrator, deploy LAPS for local admin rotation.
+
+Periodic BloodHound/PingCastle/Grouper runs to catch ACL drift and new misconfigs.
+
+Quarterly or at minimum annual AD security assessments.

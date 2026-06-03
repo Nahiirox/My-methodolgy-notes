@@ -1,106 +1,21 @@
-## Target Scope Management
+# Burp Scanner
 
-Application has **logout functions** or **out-of-scope traffic** is bloating history; target site map populated.
+Pro only — not available in Community. Covers crawl, passive scan, active scan, and reporting.
 
-Define specific inclusion/exclusion criteria to focus tool resources
+**Scope first** — `Target > Site map` → right-click target → `Add to scope`. Exclude logout endpoints and anything dangerous to scan. Scope gates all scanner features and saves resources by dropping out-of-scope traffic.
 
-```
-Target > Scope > Use advanced scope control
-```
+**Crawl** — `Dashboard > New Scan` → `Crawl` → select preset (`Crawl strategy - fastest` for speed). Builds site map by following links and forms. Does not fuzz for unreferenced pages — that's Intruder/ffuf/Content Discovery.
 
-Add target to inclusion list to enable filtered scanning
+Add creds in the `Application login` tab if scanning authenticated areas — without it, scanner only sees what an unauth user sees.
 
-```
-Right-click <TARGET_IP> in Site map -> Add to scope
-```
+**Passive scan** — no new requests sent, analyzes already-visited pages. Right-click request/target → `Do passive scan`. Fast, low noise. Prioritize High severity + Certain/Firm confidence hits.
 
-Exclude endpoints like logout functions to prevent **session termination**
+**Active scan** — right-click → `Do active scan`, or `Dashboard > New Scan > Crawl and Audit`. Runs: crawl → fuzz → passive scan → verify vulns → JS analysis → param fuzzing for SQLi/XSS/CMDi/etc. Use preset `Audit checks - critical issues only` if you want High vulns fast without the noise.
 
-```
-Right-click <FILE_PATH> -> Remove from scope
-```
+Monitor progress and requests in `Dashboard > Tasks > View details > Logger tab` or the main `Logger` tab.
 
-> ⚠️ Gap: Burp Scanner functionality is **Pro-only**; standard menu options for active/passive scanning do not exist in Community Edition.
+Filter results: `Issue activity` pane → filter High + Certain/Firm → investigate those first.
 
-## Site Mapping and Crawling
+**Report** — `Target > Site map` → right-click target → `Issues > Report issues for this host`. Export as HTML, open in browser. Use as appendix data only — never submit raw tool output as a client deliverable.
 
-Map of website structure is empty or incomplete; target URL is in scope.
-
-Initialize mapping using the fastest built-in strategy for rapid discovery
-
-```
-Dashboard -> New Scan -> Crawl -> Scan configuration -> Select from library -> Crawl strategy - fastest
-```
-
-Execute a targeted crawl from a specific captured request
-
-```
-Right-click request in Proxy History -> Scan -> Crawl
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - **Unauthenticated crawling** misses restricted application areas.
-    - **Missing scope limits** cause the crawler to follow links to external domains.
-- **Edge cases**
-    
-    - Standard crawl **cannot identify unreferenced pages** or hidden directories; necessitates manual addition of findings from dirbuster or ffuf to the site map.
-- **Gotchas** **Session timeout** occurs if crawling triggers logout forms without exclusion rules.
-    
-
-## Passive Vulnerability Assessment
-
-Quick analysis required for **DOM-based XSS** or **missing HTML tags**; request/response already captured in history.
-
-Analyze existing traffic for vulnerabilities without sending new requests
-
-```
-Right-click <TARGET_IP> in Site map -> Passively scan this target
-```
-
-- **Gotchas** **Low confidence** ratings indicate potential false positives since issues are not verified with payloads.
-
----
-
-## Active Vulnerability Scanning
-
-Site map built and testing for **High severity** flaws like **OS command injection** required; target supports request modification.
-
-Combine site mapping and vulnerability testing in one operation
-
-```
-Dashboard -> New Scan -> Crawl and Audit
-```
-
-Restrict scan to **critical issues only** to reduce execution time and noise
-
-```
-Audit configuration -> Select from library -> Audit checks - critical issues only
-```
-
-Audit a specific parameter or request discovered during manual proxying
-
-```
-Right-click request in Proxy History -> Do active scan
-```
-
-- **Edge cases**
-    
-    - Authenticated scanning requires recorded login steps or provided credentials to reach **server-side** logic behind auth walls.
-- **Gotchas** **Scan timeout** or excessive duration occurs when using default configurations on large targets without limiting audit checks.
-    
-
-## Vulnerability Reporting
-
-Exporting proof-of-concept data and remediation details for appendix material.
-
-Generate a customized HTML/XML report for identified host issues
-
-```
-Target > Site map -> Right-click <TARGET_IP> -> Issue -> Report issues for this host
-```
-
-- **Dangerous / misconfigured settings**
-    
-    - Submitting raw Burp reports as final deliverables without manual verification or professional formatting.
-- **Gotchas** **Firm confidence** issues require manual re-testing of the sent request/response to confirm exploitability.
+> [!tip] Crawl + authenticated session covers way more surface — always add login creds or a recorded login sequence before running against anything that has auth.

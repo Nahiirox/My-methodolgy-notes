@@ -1,75 +1,13 @@
-## Pre-configured Proxy Browser
+# Web Proxy Setup — Browser & Certs
 
-Interception is required immediately without performing manual browser or certificate configuration.
+Both Burp and ZAP default to `127.0.0.1:8080`. Quickest start — use the built-in pre-configured browser: Burp → `Proxy > Intercept > Open Browser`, ZAP → Firefox icon in top bar.
 
-Launch Burp's embedded browser with integrated proxy routing
+For real Firefox, use FoxyProxy: add proxy → `127.0.0.1`, port `8080`, save, select it from the icon. Change port if 8080 is taken: Burp → `Proxy > Proxy settings > Proxy listeners`, ZAP → `Tools > Options > Network > Local Servers/Proxies`.
 
-```
-Proxy > Intercept > Open Browser
-```
+Install CA cert or HTTPS traffic breaks silently:
 
-Launch ZAP's pre-configured Firefox instance from the toolbar
+Burp → with Burp selected in FoxyProxy, browse to `http://burp` → download CA Certificate → Firefox `about:preferences#privacy` → View Certificates → Authorities → Import → trust both checkboxes.
 
-```
-Quick Start > Firefox Icon
-```
+ZAP → `Tools > Options > Network > Server Certificates` → Save → same Firefox import steps.
 
-- Tool comparison
-    - Burp Suite -> `Open Browser` -> prefer for Chromium-based internal environments.
-    - ZAP -> Firefox Icon -> prefer for Firefox-based internal environments.
-
-## External Proxy Configuration
-
-Analysis requires a standalone browser or the default port 8080 is already bound by another service.
-
-Modify Burp listener port to avoid conflicts
-
-```
-Proxy > Proxy settings > Proxy listeners
-```
-
-Modify ZAP listener port to avoid conflicts
-
-```
-Tools > Options > Network > Local Servers/Proxies
-```
-
-Add a new proxy profile to FoxyProxy for quick switching
-
-```
-IP: 127.0.0.1
-Port: <PORT>
-```
-
-- Gotchas
-    - **Port collision** prevents the proxy service from starting if the listener port is already in use.
-
-## CA Certificate Installation
-
-HTTPS traffic triggers security warnings or fails to route through the proxy in an external browser.
-
-Download the PortSwigger CA certificate while proxied
-
-```
-http://burp
-```
-
-Export the ZAP CA certificate to the local filesystem
-
-```
-Tools > Options > Network > Server Certificates > Save
-```
-
-Access the Firefox certificate manager for manual import
-
-```
-about:preferences#privacy > View Certificates > Authorities > Import
-```
-
-- Dangerous / misconfigured settings
-    
-    - Disabling **Trust this CA to identify websites** during certificate import.
-    - Disabling **Trust this CA to identify email users** during certificate import.
-- Gotchas
-    
-    - **HTTPS handshake failure** occurs if the CA certificate is not explicitly trusted for website identification after import.
+> [!warning] Skipping CA cert install = HTTPS requests either fail or pop a cert warning every time — do this before touching any HTTPS target.

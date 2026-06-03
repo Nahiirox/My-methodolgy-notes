@@ -1,62 +1,59 @@
-## Banner Grabbing
+# Web Fingerprinting
 
-Need to extract server software versions and redirection logic from HTTP headers without downloading page content.
+Goal: identify server software, version, framework, CMS, WAF — then match against known CVEs and misconfigs for that specific stack.
 
-Fetch headers to identify web server and OS.
+---
 
-```
-curl -I <DOMAIN>
-```
+### Banner Grabbing
 
-Follow redirections manually to identify CMS-specific headers like `X-Redirect-By`.
+HTTP headers — follow redirects manually, each hop may reveal more:
 
-```
-curl -I https://<DOMAIN>
-```
-
-**Gotchas** **Redirects hide technologies** if only the initial 301/302 response is inspected without following the chain to the final 200 OK destination.
-
-## WAF Detection
-
-Identify active filtering solutions that may block or alert on reconnaissance probes.
-
-Execute automated signature-based detection for Web Application Firewalls.
-
-```
-wafw00f <DOMAIN>
+```bash
+curl -I <TARGET>
+curl -I https://<TARGET>
+curl -I https://www.<TARGET>
 ```
 
-**Gotchas** **Active WAF presence** will filter or block subsequent automated scans, requiring a shift to evasive techniques.
+Key headers to read: `Server` (web server + version), `X-Powered-By` (language/framework), `X-Redirect-By` (CMS doing the redirect), `Link` (wp-json path = WordPress), `Set-Cookie` (framework fingerprint from cookie names).
 
-## Software Identification and Vulnerability Scanning
+---
 
-Identifying outdated software, insecure files, and CMS entry points through automated fingerprinting modules.
+### WAF Detection
 
-Run Nikto limited to software identification to minimize noise.
+Detect WAF type before scanning further — changes how you approach everything:
 
+```bash
+wafw00f <TARGET>
 ```
-nikto -h <DOMAIN> -Tuning b
+
+WAF present → adjust tooling, consider bypass techniques, expect some probes to be blocked or filtered.
+
+---
+
+### Nikto — Software Identification
+
+Fingerprinting only, no vuln scanning noise (`-Tuning b`):
+
+```bash
+nikto -h <TARGET> -Tuning b
 ```
 
-- Wappalyzer: Browser extension → prefer for quick visual profiling while browsing.
-    
-- BuiltWith: Web service → prefer for deep historical technology stack reports.
-    
-- WhatWeb: CLI tool → prefer for automated scanning via vast signature databases.
-    
-- Nmap: Network scanner → prefer when combining port scanning with NSE-based fingerprinting.
-    
-- Netcraft: Web service → prefer for identifying hosting providers and security posture.
-    
-- Missing `Strict-Transport-Security` header on TLS sites.
-    
-- Missing `X-Content-Type-Options` header allowing MIME-type sniffing.
-    
-- `Content-Encoding` set to `deflate` enabling BREACH attacks.
-    
-- Exposed `license.txt` or `wp-json` paths confirming software presence.
-    
-- Cookies set without the `httponly` flag.
-    
+Output to look for: server version (compare against current = flag if outdated), CMS indicators (`/wp-login.php`, `license.txt`, `/wp-json/`), missing security headers (HSTS, X-Content-Type-Options, CSP), exposed config/license files.
 
-**Gotchas** **Junk HTTP methods** returning valid responses can cause false positives in automated scanners.
+---
+
+### What Fingerprinting Tells You
+
+`Apache 2.4.41` → compare against current version → CVE lookup for that specific version
+
+`X-Redirect-By: WordPress` → WordPress installed → check `/wp-login.php`, `/wp-json/`, `xmlrpc.php`
+
+`Wordfence WAF` → WordPress-specific WAF → bypass techniques differ from generic WAFs
+
+`license.txt` accessible → may reveal exact CMS version
+
+Missing `Strict-Transport-Security` → HTTPS not enforced → potential downgrade
+
+> [!tip] Always follow redirect chains manually with `curl -I` — each intermediate response may expose a different header set. The redirect from HTTP to HTTPS to www often leaks the most info at different hops.
+
+> [!warning] Nikto `-Tuning b` still generates 1000+ requests. Wordfence and similar WAFs will log and potentially block this. Run wafw00f first to know what you're dealing with before running any scanner.

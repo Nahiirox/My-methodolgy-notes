@@ -1,39 +1,21 @@
-## Preparation and Modification
+# Laudanum Web Shells
 
-Identified file upload vulnerability and need language-specific webshells for ASP, ASPX, JSP, or PHP.
+Pre-built web shells for asp, aspx, jsp, php and more. Already on Parrot/Kali at `/usr/share/laudanum/`. Copy before modifying — never edit the originals.
 
-Copy template to working directory to avoid modifying original source
+Copy the relevant shell and edit before uploading:
 
-```
-cp /usr/share/laudanum/<SERVICE_NAME>/shell.<SERVICE_NAME> <FILE_PATH>
-```
-
-**Dangerous / misconfigured settings**
-
-- **allowedIps** variable: Must be updated with `<ATTACK_IP>` (e.g., line 59 in ASPX) or access to the shell will be blocked.
-
-**Gotchas**
-
-- **ASCII art and comments** within the shell files are frequently **signatured by AV** and should be stripped before upload.
-
----
-
-## Execution and Access
-
-Web application returns a successful upload path or directory for the injected file.
-
-Execute commands through the browser interface
-
-```
-http://<TARGET_IP>/<FILE_PATH>
+```bash
+cp /usr/share/laudanum/<LANG>/shell.<EXT> /tmp/<OUTFILE>.<EXT>
 ```
 
-**Edge cases**
+Required edits before upload: add your IP to the `allowedIps` variable (ASPX: line 59). Also strip ASCII art and comments — those strings are signatured by AV/defenders.
 
-- Web applications using backslashes in paths (e.g., `\files\shell.aspx`) may require manual entry in the URL bar, though browsers typically normalize this to forward slashes.
+Upload via whatever upload vector you found, note the path from the success response, then browse to it:
 
-**Gotchas**
+```
+http://<TARGET>/files/<OUTFILE>.<EXT>
+```
 
-- **Randomized filenames** or **hidden directories** can prevent navigation to the shell if the upload response does not explicitly reveal the final destination.
+> [!warning] Some apps randomize filenames on upload or don't expose a public files directory — the reported save path in the success message is your only reliable indicator of where it landed. If the path isn't disclosed, brute-force the filename or check common upload dirs (`/uploads/`, `/files/`, `/images/`, `/temp/`).
 
-> ⚠️ Gap: Laudanum shells will fail to execute if the server-side environment lacks the specific language handler (e.g., uploading ASPX to a Linux/Apache server without Mono or similar).r
+> [!tip] Web shell is browser-based and unstable — use it immediately to upgrade to a reverse shell. Don't do post-ex through the browser UI.

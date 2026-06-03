@@ -1,74 +1,38 @@
-## Windows File and String Encryption
+# Protected File Transfers
 
-Handling sensitive data like **NTDS.dit** or credentials when **SSH**, **SFTP**, or **HTTPS** tunnels are unavailable.
+Encrypt before exfil — NTDS.dit, cred files, scan output with PII all need this. Use a unique key per engagement, never reuse.
 
-Import script as a module before execution
+## Windows — Invoke-AESEncryption.ps1
 
-```
+Transfer the script to target via any method, then import and encrypt:
+
+```powershell
 Import-Module .\Invoke-AESEncryption.ps1
+Invoke-AESEncryption -Mode Encrypt -Key "<PASS>" -Path .\<FILE>
 ```
 
-Encrypt string to Base64 ciphertext
+Output: `<FILE>.aes` in the same directory. Decrypt on the other end:
 
+```powershell
+Invoke-AESEncryption -Mode Decrypt -Key "<PASS>" -Path .\<FILE>.aes
 ```
-Invoke-AESEncryption -Mode Encrypt -Key "<PASSWORD>" -Text "Secret Text"
-```
-
-Decrypt Base64 string to plain text
-
-```
-Invoke-AESEncryption -Mode Decrypt -Key "<PASSWORD>" -Text "<HASH>"
-```
-
-Encrypt local file to .aes format
-
-```
-Invoke-AESEncryption -Mode Encrypt -Key "<PASSWORD>" -Path <FILE_PATH>
-```
-
-Decrypt .aes file
-
-```
-Invoke-AESEncryption -Mode Decrypt -Key "<PASSWORD>" -Path <FILE_PATH>
-```
-
-**Gotchas**
-
-- **Script dependency** requires transferring `Invoke-AESEncryption.ps1` to the target host before any commands function.
-- **Reused passwords** across different client engagements can allow unauthorized decryption if one password is leaked.
 
 ---
 
-## Linux File Encryption
+## Linux — OpenSSL
 
-Securing high-value files like `/etc/passwd` or enumeration data using **OpenSSL** when secure transport protocols are restricted.
+Encrypt with AES-256 + PBKDF2 (stronger key derivation, resists brute-force):
 
-Encrypt file with AES-256 and PBKDF2
-
-```
-openssl enc -aes256 -iter 100000 -pbkdf2 -in <FILE_PATH> -out <FILE_PATH>.enc
+```bash
+openssl enc -aes256 -iter 100000 -pbkdf2 -in <FILE> -out <FILE>.enc
 ```
 
-Decrypt encrypted file
+Decrypt:
 
+```bash
+openssl enc -d -aes256 -iter 100000 -pbkdf2 -in <FILE>.enc -out <FILE>
 ```
-openssl enc -d -aes256 -iter 100000 -pbkdf2 -in <FILE_PATH>.enc -out <FILE_PATH>
-```
 
-**Dangerous / misconfigured settings**
+> [!tip] `-pbkdf2 -iter 100000` matters — without it OpenSSL uses a weak legacy KDF that cracks fast. Always include both flags.
 
-- Missing `-pbkdf2` or low `-iter` counts makes the resulting file vulnerable to **brute-force attacks**.
-
-**Gotchas**
-
-- **In-transit interception** of unencrypted files can lead to severe data leakage; encrypt before moving if using cleartext protocols.
-
----
-
-## Data Exfiltration Methodology
-
-Symptom-first decision logic for handling sensitive client data.
-
-1. Identify sensitivity: If data contains **PII**, financial records, or trade secrets, do not exfiltrate unless explicitly requested.
-2. DLP Testing: Use dummy data that mimics the target format to test **egress filtering** or **DLP controls**.
-3. Secure Transport: Prioritize **HTTPS**, **SFTP**, or **SSH** for the transfer itself.
+> [!warning] Don't exfil real PII/financial data/trade secrets unless the client explicitly scoped it. For DLP testing, create dummy files that mimic the format instead.

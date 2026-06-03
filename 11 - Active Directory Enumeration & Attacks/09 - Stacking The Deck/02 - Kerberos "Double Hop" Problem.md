@@ -1,77 +1,42 @@
-## Double Hop Identification
+# Kerberos Double Hop Problem
 
-When access to second-hop resources like the DC or file shares is denied during a WinRM session despite having correct permissions.
+WinRM authenticates with Kerberos TGS (service ticket) — not password, not TGT. The TGS grants access to hop 1 only. When you try to reach hop 2 (DC, file share, another host), no TGT is in the session to prove identity → access denied. Password-based auth (PSExec, SMB) stores NTLM hash in memory, which travels forward — Kerberos doesn't.
 
-Check for the absence of a **Ticket Granting Ticket (TGT)** in the remote session:
-
-```
-klist
-```
-
-Verify that credentials are not cached in memory for the current user:
-
-```
-.\mimikatz "privilege::debug" "sekurlsa::logonpasswords" exit
-```
-
-**Gotchas**
-
-- **Network authentication** via WinRM only provides a TGS for the local machine, preventing identity proofing for subsequent hops.
+Diagnose it: `klist` inside a WinRM session shows only one ticket for the current host's HTTP service. RDP session shows TGT + multiple TGS tickets → no double hop problem there.
 
 ---
 
-## PSCredential Object Bypass
+## Workaround 1 — PSCredential Object (evil-winrm / any WinRM)
 
-Manual credential injection for tools like PowerView when the session lacks a **stored NTLM hash or TGT**.
+Pass `-credential $Cred` explicitly to every PowerView call that needs DC access:
 
-Define the credential object to be used for nested commands:
-
-```
-$SecPassword = ConvertTo-SecureString '<PASSWORD>' -AsPlainText -Force
-$Cred = New-Object System.Management.Automation.PSCredential('<DOMAIN>\<USERNAME>', $SecPassword)
-```
-
-Execute resource-heavy queries by passing the credential object:
-
-```
-Get-DomainUser -SPN -Credential $Cred
+```powershell
+$SecPassword = ConvertTo-SecureString '<PASS>' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('<DOMAIN>\<USER>', $SecPassword)
+Get-DomainUser -spn -credential $Cred | select samaccountname
 ```
 
-**Edge cases**
-
-- **Interactive RDP** or **PSExec** logins cache the NTLM hash in memory, making this workaround unnecessary.
+Works anywhere. Tedious but reliable. Must specify `-credential` on every AD query.
 
 ---
 
-## PSSession Configuration Bypass
+## Workaround 2 — Register PSSession Configuration (Windows only, requires GUI/RDP)
 
-Creating a persistent impersonation endpoint on a target host to allow transparent multi-hop authentication from a Windows attack host.
+Register a named session that impersonates the user at the local machine level — TGT gets cached properly, no per-command creds needed:
 
-1. Register a named session configuration that runs in the context of the user:
-
-```
-Register-PSSessionConfiguration -Name <SERVICE_NAME> -RunAsCredential <DOMAIN>\<USERNAME>
-```
-
-2. Reload the WinRM service to apply configuration changes (current session will terminate):
-
-```
+```powershell
+Register-PSSessionConfiguration -Name <SESSNAME> -RunAsCredential <DOMAIN>\<USER>
 Restart-Service WinRM
 ```
 
-3. Connect using the named configuration to automatically obtain a **PRIMARY TGT**:
+Then connect using the named config:
 
+```powershell
+Enter-PSSession -ComputerName <TARGET> -Credential <DOMAIN>\<USER> -ConfigurationName <SESSNAME>
 ```
-Enter-PSSession -ComputerName <TARGET_IP> -Credential <DOMAIN>\<USERNAME> -ConfigurationName <SERVICE_NAME>
-```
 
-**Dangerous / misconfigured settings**
+Verify fix — `klist` should now show `krbtgt` TGT, not just the HTTP service ticket.
 
-- **Unconstrained Delegation** enabled on the first hop server allows the TGT to be automatically forwarded and cached, bypassing the double hop problem entirely.
+> [!warning] `Register-PSSessionConfiguration` does NOT work from evil-winrm — requires elevated PowerShell with GUI credential prompt. Only use this from RDP or a domain-joined Windows attack host. Also does not work reliably from PS on Linux.
 
-**Gotchas**
-
-- **Linux PowerShell** instances (Parrot/Ubuntu) cannot utilize this method due to Kerberos credential handling limitations.
-- **Access denied** if attempting to register configurations via evil-winrm as it requires an **elevated PowerShell terminal**.
-
-> ⚠️ Gap: Register-PSSessionConfiguration requires a GUI-based credential prompt; the technique **fails silently or errors** in non-interactive shells like evil-winrm.
+> [!tip] If on RDP already, no workaround needed — password is cached, TGT is present, double hop doesn't apply. Use RDP as your jump host whenever possible to avoid this entirely.

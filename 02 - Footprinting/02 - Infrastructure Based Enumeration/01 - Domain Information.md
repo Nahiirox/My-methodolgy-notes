@@ -1,68 +1,62 @@
-1. Scrutinize main website text and SSL certificates to identify initial service structures and secondary domains.
-2. Query Certificate Transparency logs via crt.sh to expand the subdomain list.
-3. Resolve subdomains to IPs and filter out third-party hosted infrastructure to define the actionable attack surface.
-4. Pivot target-owned IPs to Shodan to identify open ports and service versions without direct interaction.
-5. Execute DNS ANY queries to find TXT records revealing third-party SaaS integrations like Atlassian, O365, or Mailgun.
+# Domain Information — Passive Recon
+
+All of this is passive — no direct contact with the target. Stay in customer/visitor mode. Third-party providers (AWS, Cloudflare, Google) are out of scope without their explicit written permission.
 
 ---
 
-## Subdomain Discovery via Certificate Transparency
+### Certificate Transparency — crt.sh
 
-When to use: Target domain is known and you need to find subdomains or sibling domains via public logs.
+Pull all subdomains from CT logs, deduplicated:
 
-Fetch raw JSON data for a domain from crt.sh
-
-```
-curl -s https://crt.sh/?q=<DOMAIN>&output=json | jq .
+```bash
+curl -s "https://crt.sh/?q=<DOMAIN>&output=json" | jq . | grep name | cut -d":" -f2 | grep -v "CN=" | cut -d'"' -f2 | awk '{gsub(/\\n/,"\n");}1;' | sort -u
 ```
 
-Parse crt.sh JSON output into a unique list of subdomains
+---
 
-```
-curl -s https://crt.sh/?q=<DOMAIN>&output=json | jq . | grep name | cut -d":" -f2 | grep -v "CN=" | cut -d'"' -f2 | awk '{gsub(/\n/,"\n");}1;' | sort -u
-```
+### Resolve Subdomains → IP List
 
-- Gotcha: **Results will differ** between the web interface and command line tools depending on how the database stores and retrieves new entries.
+Filter to company-owned IPs only — third-party hostnames (amazonaws.com etc.) drop out naturally:
 
-## Infrastructure Validation
-
-When to use: A subdomain list exists and you must separate target-owned assets from third-party providers.
-
-Filter a subdomain list to identify IPs associated with the target domain
-
-```
-for i in $(cat <FILE_PATH>);do host $i | grep "has address" | grep <DOMAIN> | cut -d" " -f1,4;done
+```bash
+for i in $(cat subdomainlist); do host $i | grep "has address" | grep <DOMAIN> | cut -d" " -f1,4; done
 ```
 
-- Gotcha: **Permission failure** occurs if you test hosts belonging to third-party providers without their specific authorization.
+Collect IPs for Shodan:
 
-## Passive Service Mapping
-
-When to use: Validated target IPs are identified and you need port, protocol, and banner information without making direct connections.
-
-Extract IP addresses from a validated subdomain list for further scanning
-
-```
-for i in $(cat <FILE_PATH>);do host $i | grep "has address" | grep <DOMAIN> | cut -d" " -f4 >> ip-addresses.txt;done
+```bash
+for i in $(cat subdomainlist); do host $i | grep "has address" | grep <DOMAIN> | cut -d" " -f4 >> ip-addresses.txt; done
+for i in $(cat ip-addresses.txt); do shodan host $i; done
 ```
 
-Query Shodan for host information, open ports, and service banners using a list of IPs
+---
 
-```
-for i in $(cat ip-addresses.txt);do shodan host $i;done
-```
+### DNS Records
 
-- Gotcha: **Stale data** may be present as Shodan relies on its most recent crawl rather than real-time state.
+Pull everything — A, MX, NS, TXT, SOA:
 
-## DNS and SaaS Footprinting
-
-When to use: Mapping the company's reliance on external platforms and identifying potential API or remote access vectors.
-
-Retrieve all available DNS records for a domain
-
-```
+```bash
 dig any <DOMAIN>
 ```
 
-- Edge cases: Look for **MS** or **verification-code** values in TXT records which often reveal the username or ID used for management platforms.
-- Gotcha: **Administrative takeover** is possible if you obtain credentials for centralized platforms like LogMeIn which manage remote access across the infrastructure.
+What each record type gives you:
+
+`A` → IPs, scope confirmation. `MX` → mail provider (Google = skip, self-hosted = target). `NS` → hosting provider identity. `TXT` → third-party services in use, internal IPs in SPF records.
+
+> [!tip] SPF TXT record is the highest-yield field — `ip4:` entries leak internal IPs directly, and `include:` entries expose every third-party service the company uses for email (Mailgun, Outlook, Atlassian, etc.).
+
+---
+
+### What TXT Records Leak — Third-Party Intel
+
+`atlassian-domain-verification` → Jira/Confluence in use → software dev platform, potential creds reuse target
+
+`logmein-verification-code` → centralized remote access platform → if you get admin creds here, you may own everything it manages
+
+`mailgun` in SPF → email API + webhooks → hunt for exposed API keys, test endpoints for IDOR/SSRF
+
+`spf.protection.outlook.com` → Office 365 → implies OneDrive, potentially Azure blob/file storage (SMB) — check for exposed cloud storage
+
+`MS=ms...` in TXT → Microsoft domain verification → usually matches a login username or ID on the management portal
+
+> [!tip] NS records pointing to a hosting provider's nameservers reveal who hosts the infrastructure. Cross-reference with Shodan results to confirm and identify additional exposed ports/services.

@@ -1,169 +1,95 @@
-## SMB Service Discovery
+# SMB — Footprinting
 
-Ports 139 and 445 are open on a target.
+Nmap on 139 and 445 — `smb2-security-mode` line is the key output, note signing status immediately:
 
-Service discovery and default script scanning
-
-```
-sudo nmap <TARGET_IP> -sV -sC -p139,445
+```bash
+sudo nmap <TARGET> -sV -sC -p139,445
 ```
 
-- **Slow execution** — Nmap scripts can take significant time; manual interaction usually provides deeper service details.
+`signing:False` in CME output or `signing enabled but not required` in Nmap → relay viable.
 
-## SMB Share Enumeration
+---
 
-Identifying accessible directories and permissions when null sessions or credentials are available.
+### Null Session Enum
 
-List shares anonymously using a null session
+List shares unauthenticated:
 
-```
-smbclient -N -L //<TARGET_IP>
-```
-
-Standard share enumeration for quick permission overview
-
-```
-smbmap -H <TARGET_IP>
+```bash
+smbclient -N -L //<TARGET>
 ```
 
-Alternative share enumeration with NULL credentials
+Check share permissions without creds:
 
-```
-crackmapexec smb <TARGET_IP> --shares -u '' -p ''
-```
-
-Automated comprehensive enumeration
-
-```
-./enum4linux-ng.py <TARGET_IP> -A
+```bash
+smbmap -H <TARGET>
 ```
 
-### Tool comparison
+CME null session — also shows signing status and SMBv1:
 
-- `smbclient` -> `smbclient -N -L //<TARGET_IP>` -> prefer for standard manual verification.
-- `smbmap` -> `smbmap -H <TARGET_IP>` -> prefer for a clean visual of permissions across all shares.
-- `crackmapexec` -> `crackmapexec smb <TARGET_IP> --shares -u '' -p ''` -> prefer for identifying readable/writable shares across multiple hosts.
-- `enum4linux-ng` -> `./enum4linux-ng.py <TARGET_IP> -A` -> prefer for broad, automated data collection including OS and policy info.
-
-### Dangerous / misconfigured settings
-
-- `browseable = yes` — Allows listing the share even if the user lacks specific access.
-    
-- `guest ok = yes` — Allows connection without a password.
-    
-- `map to guest = bad user` — Maps failed login attempts to a guest account.
-    
-- **Tool inconsistency** — Different automated tools may return different results based on their internal programming; always verify findings manually.
-    
-
-## File Interaction via SMB
-
-Accessing, downloading, or inspecting files within an identified share.
-
-Connect to a specific share
-
-```
-smbclient //<TARGET_IP>/<SHARE_NAME>
+```bash
+crackmapexec smb <TARGET> --shares -u '' -p ''
 ```
 
-Download a specific file to the local machine
+Full automated null enum — OS info, users, groups, shares, password policy in one run:
 
-```
-get <FILE_PATH>
-```
-
-Execute a local system command without dropping the SMB session
-
-```
-!<cmd>
+```bash
+./enum4linux-ng.py <TARGET> -A
 ```
 
-- `read only = no` or `writable = yes` — Allows file creation and modification by the connecting user.
-- `create mask = 0777` — Assigns full permissions to any newly created files.
-- `directory mask = 0777` — Assigns full permissions to any newly created directories.
+---
 
-## RPC-Based Enumeration
+### rpcclient — Manual RPC Enum
 
-Establishing a null session to query the Remote Procedure Call (RPC) interface for system and domain data.
+Null session:
 
-Establish an anonymous RPC session
-
-```
-rpcclient -U "" <TARGET_IP>
+```bash
+rpcclient -U "" -N <TARGET>
 ```
 
-Retrieve server information
+Key commands inside:
 
 ```
-srvinfo
+srvinfo              # OS version, server type
+enumdomains          # domains on the host
+querydominfo         # domain name, user count, server role
+netshareenumall      # all shares + paths
+netsharegetinfo <SHARE>   # ACL detail on a specific share
+enumdomusers         # user list + RIDs
+queryuser <RID>      # full user detail — badpwdcount, last logon, description
+querygroup <RID>     # group membership count
 ```
 
-Enumerate all available shares
+Brute RIDs 500–1100 to find all users — covers local + domain accounts:
 
-```
-netshareenumall
-```
-
-Query specific share details
-
-```
-netsharegetinfo <SHARE_NAME>
+```bash
+for i in $(seq 500 1100); do rpcclient -N -U "" <TARGET> -c "queryuser 0x$(printf '%x\n' $i)" | grep "User Name\|user_rid\|group_rid" && echo ""; done
 ```
 
-> ⚠️ Gap: `rpcclient` commands may be restricted based on the user's permissions, potentially returning empty results if the session lacks sufficient privileges.
+Same output cleaner via Impacket:
 
-## User and Group Enumeration
-
-Extracting valid usernames and SIDs for subsequent password attacks or RID cycling.
-
-Enumerate domain users via RPC
-
-```
-enumdomusers
+```bash
+samrdump.py <TARGET>
 ```
 
-Query specific user details via RID
+---
 
-```
-queryuser <RID>
-```
+### Connect and Interact
 
-Automated user and group extraction via Samr
+Connect to a specific share (blank password = anonymous):
 
-```
-samrdump.py <TARGET_IP>
+```bash
+smbclient //<TARGET>/<SHARE>
 ```
 
-### RID Brute Forcing
-
-User enumeration is restricted but `queryuser` is allowed via RID.
-
-Bash loop to brute force RIDs from 500 to 1100
+Inside smbclient — recursive list, download, run local commands:
 
 ```
-for i in $(seq 500 1100); do rpcclient -N -U "" <TARGET_IP> -c "queryuser 0x$(printf '%x\n' $i)" | grep "User Name|user_rid|group_rid" && echo ""; done
+ls -R
+get <FILE>
+!ls
+!cat <FILE>
 ```
 
-- **Account Lockout** — Brute forcing RIDs is generally safe, but using the resulting names for password guessing can trigger lockout policies found in `domain_password_information`.
+> [!tip] `queryuser` on every RID from `enumdomusers` output — Description field leaks passwords in plaintext surprisingly often. `bad_password_count` tells you if an account is close to lockout before you spray.
 
-## Samba Configuration Review
-
-Assessing the `/etc/samba/smb.conf` file or server status when local or administrative access is achieved.
-
-Check active SMB connections and Samba version
-
-```
-smbstatus
-```
-
-Filter the configuration file for active settings
-
-```
-cat /etc/samba/smb.conf | grep -v "#|;"
-```
-
-### Dangerous / misconfigured settings
-
-- `enable privileges = yes` — Honors privileges assigned to specific SIDs.
-- `logon script = <FILE_PATH>` — Script executed automatically on user login.
-- `unix password sync = yes` — Synchronizes UNIX passwords with SMB passwords.
+> [!warning] enum4linux-ng `-A` runs everything including password policy pull. Read the policy output before doing anything else — `lockout_threshold: None` means no lockout, spray freely. `lockout_threshold: 3` means one spray attempt only.

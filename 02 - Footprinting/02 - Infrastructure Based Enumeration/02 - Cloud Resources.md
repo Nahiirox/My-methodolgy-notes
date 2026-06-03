@@ -1,81 +1,31 @@
-## DNS-Based Discovery
+# Cloud Resources — Passive Recon
 
-Identify cloud-hosted assets by resolving a subdomain list and filtering for known cloud provider strings to find storage used for administrative purposes.
+Misconfigured cloud storage (S3/Azure blob/GCP) is auth-optional by default if the admin set it wrong. Treat every cloud hostname you find as potentially open.
 
-Look up IP addresses for a list of subdomains to identify cloud-hosted infrastructure
+S3 buckets appear in subdomain resolution — `s3-website-<region>.amazonaws.com` resolving from a company subdomain = in-scope cloud storage. Check during the host → IP pass.
 
-```
-for i in $(cat <FILE_PATH>);do host $i | grep "has address" | grep <DOMAIN> | cut -d" " -f1,4;done
-```
+---
 
-- **Dangerous / misconfigured settings**
-    
-    - Adding cloud storage endpoints directly to public DNS records for ease of management.
-- **Gotchas**
-    
-    - Cloud storage IPs may belong to specific regions like **s3-website-us-west-2.amazonaws.com**.
+### Finding Cloud Storage
 
-## Search Engine Dorking
-
-Target publicly indexed storage containers when searching for sensitive file types like PDFs, text documents, or source code,.
-
-Search for company files hosted on AWS S3
+Google dorks — swap company name in:
 
 ```
-intext: <DOMAIN> inurl:amazonaws.com
+intext:<COMPANY> inurl:amazonaws.com
+intext:<COMPANY> inurl:blob.core.windows.net
+intext:<COMPANY> inurl:storage.googleapis.com
 ```
 
-Search for company files hosted on Azure Blob Storage
+Check page source of the company's main website — images, JS, CSS often load directly from blob/S3 URLs, leaking bucket names without any searching.
 
-```
-intext: <DOMAIN> inurl:blob.core.windows.net
-```
+GrayHatWarfare (grayhatwarfare.com) — search by company name or abbreviation, filter by file type. Passively lists publicly accessible bucket contents including file names.
 
-- **Dangerous / misconfigured settings**
-    - **S3 buckets**, **blobs**, and **cloud storage** configured to be **accessible without authentication**.
+> [!tip] Companies often use abbreviations or product names as bucket names, not just the full company name. Try both. If GrayHatWarfare shows `id_rsa` or `id_rsa.pub` in any bucket — download immediately, try against every SSH-exposed host in scope.
 
-## Source Code Analysis
+domain.glass — paste a domain, get infrastructure fingerprint including Cloudflare status. Confirms Layer 2 (gateway) info passively.
 
-Identify offloaded assets by inspecting HTML for links to cloud providers used to relieve web server load.
+---
 
-Look for DNS prefetch/preconnect links or asset references in the source
+### What to Note When You Find a Bucket
 
-```
-<link rel="dns-prefetch" href="//<DOMAIN>.blob.core.windows.net">
-```
-
-- **Edge cases**
-    - Developers often host images, JavaScript, or CSS on cloud storage to optimize performance.
-
-## Third-Party Reconnaissance
-
-### domain.glass
-
-Analyze infrastructure and security measures through third-party assessment tools.
-
-1. Navigate to domain.glass and enter `<DOMAIN>`.
-2. Check the Cloudflare security assessment status.
-3. Review SSL certificate details and DNS names for additional infrastructure hits.
-
-- **Gotchas**
-    - A **Safe** classification for Cloudflare indicates a **security measure** exists at the gateway layer.
-
-### GrayHatWarfare
-
-Passively discover and filter files stored on AWS, Azure, and GCP storage.
-
-1. Search the GrayHatWarfare database using company names or common abbreviations.
-2. Apply filters to sort by specific file formats.
-3. Look for sensitive filenames like **id_rsa** or **id_rsa.pub**,.
-
-- **Tool comparison**
-    
-    - GrayHatWarfare → `search + filters` → prefer for systematic file discovery across multiple cloud providers.
-    - Google Dorks → `inurl: + intext:` → prefer for finding specifically indexed document types.
-- **Dangerous / misconfigured settings**
-    
-    - Publicly accessible **SSH private keys** allow passwordless login to company machines.
-    - Using predictable company abbreviations within the IT infrastructure naming convention.
-- **Gotchas**
-    
-    - Staff under high pressure frequently make **fatal errors** leading to sensitive credential leaks.
+Contents visible without auth → document + download everything — config files, keys, documents, source code. Any `id_rsa`, `.pem`, `.key`, `.env`, `.config` file is a critical finding regardless of what else you find. Leaked SSH private key → try against every `22/tcp` host in scope before doing anything else.

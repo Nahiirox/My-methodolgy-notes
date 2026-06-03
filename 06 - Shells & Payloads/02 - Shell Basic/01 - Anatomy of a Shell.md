@@ -1,32 +1,23 @@
-## Shell Identification
+# Anatomy of a Shell
 
-When to use: **Command execution fails with unrecognized syntax** or the session prompt is ambiguous; identifying the interpreter is required to determine valid command and scripting syntax.
+native terminal emulators: Windows Terminal, PuTTY, kitty, Alacritty, xterm, GNOME, MATE, Konsole, iTerm2
 
-Check the process list for the active shell binary
+MITRE ATT&CK: Execution
+
+`$` prompt → Bash, Ksh, POSIX, others
+
+ID shell via process list
 
 ```
 ps
 ```
 
-Inspect environment variables for the shell path
+ID shell via env vars
 
 ```
 env
 ```
 
-Force a signature-specific error message
+ID shell via command errors → shell identifies unrecognized input
 
-```
-<RANDOM_STRING>
-```
-
-- `ps` -> `ps` -> prefer for verifying the actual binary processing input in the current session.
-    
-- `env` -> `env` -> prefer for identifying the user's default configured shell path.
-    
-- **Cross-platform interpreters**: PowerShell can be present on Linux systems, and its presence is not restricted to Windows environments.
-    
-- **Decoupled interfaces**: Terminal emulators are not tied to specific languages and can be reconfigured to launch any interpreter.
-    
-
-**Prompt cue ambiguity** occurs when assuming a shell type based on the `$` symbol, as it is used by Bash, Ksh, POSIX, and others.
+interp knowledge → exploit success → sess gain

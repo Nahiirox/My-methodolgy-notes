@@ -1,78 +1,45 @@
-## METHODOLOGY
+# MSF — Sessions & Jobs
 
-1. If a stable communication channel is established, background the session to free the console for additional modules.
-2. Identify the session ID via the active sessions list.
-3. To perform post-exploitation (gathering credentials, internal scanning), select a module and bind it to the existing session ID.
-4. If a module requires a port currently occupied by another task, use job management to terminate the conflicting process.
-5. For persistent listeners or exploits that should run without blocking the console, execute them as background jobs.
-
----
-
-## Session Management
-
-When to use: Managing multiple active module interfaces or switching from a foothold to post-exploitation while maintaining a persistent connection.
-
-List all active communication channels to identify target IDs
+Background a session without killing it — CTRL+Z or from Meterpreter:
 
 ```
-sessions
+meterpreter > background
 ```
 
-Interact with a specific established session
+List all active sessions:
 
 ```
-sessions -i <SESSION_ID>
+msf6 > sessions
 ```
 
-Background a Meterpreter session from within the channel
+Interact with a specific session by ID:
 
 ```
-background
+msf6 > sessions -i <ID>
 ```
 
-Background any active session via keyboard shortcut
+Run a post module against a backgrounded session — set SESSION option after selecting the module:
 
 ```
-[CTRL] + [Z]
+msf6 > use post/multi/recon/local_exploit_suggester
+msf6 post(...)> set SESSION <ID>
+msf6 post(...)> run
 ```
 
-**Gotchas** **Sessions can die** if the communication channel tears down during payload runtime.
-
-## Post-Exploitation Execution
-
-When to use: Running local exploit suggesters, credential gatherers, or network scanners after establishing a stable session.
-
-1. Background the current session to return to the MSF prompt.
-2. Select the desired post-exploitation module.
-3. Set the session target in the module options.
-4. Execute the module against the existing channel.
-
-## Background Jobs
-
-When to use: Running exploits or handlers that must persist in the background or when a port must be freed from a previous task.
-
-Run an exploit or handler as a background task immediately
+Run an exploit as a background job — frees the console immediately, keeps the listener alive:
 
 ```
-exploit -j
+msf6 exploit(multi/handler) > exploit -j
 ```
 
-List all currently active tasks running in the background
+Manage jobs — killing a session with CTRL+C leaves the port bound, killing the job frees it:
 
 ```
-jobs -l
+msf6 > jobs -l
+msf6 > jobs -k <ID>
+msf6 > jobs -K
 ```
 
-Terminate a specific job by its index to free up system ports
+> [!warning] CTRL+C on an active exploit does NOT free the port — the process lingers. Use `jobs -k <ID>` to actually release it before running another module on the same port.
 
-```
-kill <JOB_ID>
-```
-
-Terminate every active background job simultaneously
-
-```
-jobs -K
-```
-
-**Gotchas** **Ports will remain in use** and block new modules if an active exploit is terminated with `[CTRL] + [C]` instead of being killed via the jobs command.
+> [!tip] `exploit -j` on multi/handler lets you catch shells passively while doing other enum in the same msfconsole — standard practice when waiting on a payload to execute.

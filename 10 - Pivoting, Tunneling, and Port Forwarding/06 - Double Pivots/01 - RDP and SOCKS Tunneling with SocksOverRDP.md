@@ -1,42 +1,41 @@
-## SOCKS Tunneling via RDP
+# SocksOverRDP
 
-Windows-only environment where SSH is restricted but RDP is available between the foothold and internal targets.
+SOCKS tunneling over RDP's DVC (Dynamic Virtual Channels) — use when you're locked into Windows-only environment with no SSH. Chains through RDP connections to reach deeper network segments.
 
-1. Register the **Dynamic Virtual Channel (DVC)** plugin on the Windows foothold to enable tunneling over the Remote Desktop Service.
-2. Initiate an RDP connection from the foothold to the target host to trigger the plugin listener on `127.0.0.1:1080`.
-3. Execute the server-side component on the target host using **Admin privileges** to bridge the tunnel.
-4. Verify the local SOCKS listener is active and configure a proxy tool to route traffic through the established DVC.
+Requires: SocksOverRDP binaries + Proxifier portable on Windows attack host.
 
 ---
 
-Register the DLL on the foothold to hook into the Remote Desktop Service
+## Setup Chain
 
-```
+On the first Windows foothold — register the DVC plugin:
+
+```cmd
 regsvr32.exe SocksOverRDP-Plugin.dll
 ```
 
-Check if the plugin successfully opened the SOCKS listener on the foothold
+Connect via `mstsc.exe` to the next hop (172.16.5.19) — plugin intercepts the RDP connection and starts SOCKS listener on `127.0.0.1:1080`.
 
-```
-netstat -antb | findstr 1080
-```
-
-Start the server component on the target host to finalize the tunnel
+On the second Windows host (172.16.5.19) — run the server component with admin privileges:
 
 ```
 SocksOverRDP-Server.exe
 ```
 
-**Dangerous / misconfigured settings**
+Verify SOCKS listener is up on the second hop:
 
-- Running the server component without **Admin privileges**.
-- Failing to register the DLL on the foothold before initiating the RDP session.
+```cmd
+netstat -antb | findstr 1080
+```
 
-**Edge cases**
+Configure Proxifier on the first hop to route all traffic through `127.0.0.1:1080`. Then `mstsc.exe` launched through Proxifier will pivot connections through the RDP tunnel into the deeper network.
 
-- **Slow performance** or high latency during multi-layered RDP sessions requires setting the RDP Experience tab to **Modem (56 kbps)**.
+---
 
-**Gotchas**
+## Flow
 
-- **Admin privileges** are mandatory on the target host for `SocksOverRDP-Server.exe` to function.
-- The SOCKS listener only binds to **127.0.0.1:1080** on the foothold.
+`Attack host → RDP → Hop1 (SocksOverRDP plugin) → RDP tunnel → Hop2 (SocksOverRDP-Server + SOCKS) → internal network`
+
+> [!tip] If RDP sessions are sluggish, set Performance to `Modem` in mstsc.exe Experience tab — helps significantly when chaining multiple RDP hops.
+
+> [!warning] `regsvr32.exe` loading a DLL will likely trigger AV/EDR on hardened hosts. Check defenses before attempting. This technique is also very noisy in RDP session logs.

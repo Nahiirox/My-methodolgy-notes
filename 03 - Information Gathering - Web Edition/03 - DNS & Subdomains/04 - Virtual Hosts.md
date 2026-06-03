@@ -1,46 +1,41 @@
-## Manual Virtual Host Mapping
+# Virtual Host Enumeration
 
-When to use: Targeted virtual host lacks a **DNS record** or is restricted to internal access.
+VHosts ≠ subdomains. Subdomains have DNS records. VHosts are server-side configs that respond to a specific `Host:` header — no DNS record required. Internal/dev VHosts are invisible to subdomain enum unless you fuzz the Host header directly against the IP.
 
-Commands Map a domain name to a known IP address manually by editing the local hosts file to **bypass DNS resolution**
+Access a VHost with no DNS record — add it to `/etc/hosts`:
 
+```bash
+echo "<TARGET_IP> <VHOST>.<DOMAIN>" >> /etc/hosts
 ```
-<TARGET_IP> <DOMAIN>
-```
-
-Gotchas **Missing DNS records** will prevent the browser or tools from reaching the target unless the local hosts file is updated.
 
 ---
 
-## Automated Virtual Host Discovery
+### Gobuster VHost Brute Force
 
-When to use: Fuzzing the **Host header** to identify public or non-public subdomains and distinct domains sharing a single IP address.
+Sends requests with each wordlist entry as the `Host:` header, looks for responses that differ from the default:
 
-Commands Standard VHost brute-forcing using Gobuster with mandatory domain appending for correct hostname construction
-
-```
-gobuster vhost -u http://<DOMAIN> -w <FILE_PATH> --append-domain
+```bash
+gobuster vhost -u http://<TARGET_IP> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt --append-domain
 ```
 
-Tool comparison
+Non-standard port:
 
-- Gobuster -> `gobuster vhost -u <URL> -w <WORDLIST>` -> prefer for dedicated VHost enumeration mode and speed.
-- Feroxbuster -> Rust-based implementation -> prefer when requiring **recursion**, wildcard discovery, or flexible filtering.
-- ffuf -> Web fuzzer -> prefer for highly **customizable wordlist input** and advanced response filtering.
+```bash
+gobuster vhost -u http://<TARGET_IP>:<PORT> -w <WORDLIST> --append-domain
+```
 
-Edge cases Newer versions of Gobuster require the `--append-domain` flag to function correctly; older versions may append the base domain by default or lack the flag entirely.
-
-Gotchas **High traffic generation** during discovery frequently triggers **IDS/WAF detection**. **Failure to use --append-domain** in recent Gobuster versions prevents the tool from constructing the full virtual hostnames required for accurate enumeration.
+Useful flags: `-t` increase threads / `-k` ignore SSL errors / `-o <OUTFILE>` save output.
 
 ---
 
-## Name-Based Virtual Host Configuration
+### ffuf VHost Brute Force
 
-When to use: Analyzing server-side routing where the **Host header** acts as a switch to determine which **DocumentRoot** is served.
+Filter by response size to cut noise — run once to see what the default response size is, then add `-fs <SIZE>`:
 
-Dangerous / misconfigured settings
+```bash
+ffuf -w <WORDLIST> -u http://<TARGET_IP> -H "Host: FUZZ.<DOMAIN>" -fs <DEFAULT_SIZE>
+```
 
-- Multiple distinct domains (e.g., .com, .org, .net) hosted on a single IP using the same port.
-- Apache `VirtualHost` blocks where `ServerName` is the only differentiator for sensitive content.
+> [!tip] Always check what the server returns for an unknown Host header first (baseline size/status). Then filter that size out — everything left is a real VHost. Without this filter, ffuf output is noise.
 
-Gotchas **Incorrect Host headers** will cause the web server to serve the default site or fail to route to the intended application content.
+> [!warning] VHost fuzzing generates one HTTP request per wordlist entry against the same IP — high request volume, easily spotted by WAF/IDS. Use `-t 10` (default) rather than cranking threads on external targets.

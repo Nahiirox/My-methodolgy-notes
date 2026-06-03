@@ -1,69 +1,43 @@
-1. Identify UDP 161 via scanning.
-2. Attempt enumeration using the **default community string** `public`.
-3. If default access fails or is restricted, brute-force community strings using `onesixtyone` and `SecLists`.
-4. Once a valid string is identified, use `snmpwalk` to dump the **Management Information Base** tree.
-5. For high-speed or bulk **Object Identifier** enumeration across specific ranges, use `braa`.
-6. Inspect output for **plain text** credentials, software versions, and network configuration.
+# SNMP — Footprinting
+
+Ports: UDP/161 (queries), UDP/162 (traps). SNMPv1/v2c = no auth, community string in cleartext. SNMPv3 = auth + encryption. `public` and `private` are the default community strings — always try them first.
+
+`rwuser noauth` or `rwcommunity public` in config = full read-write OID tree with no auth = critical.
 
 ---
 
-## Community String Discovery
+### Community String Brute Force
 
-UDP 161 is open and the **community string** is unknown or default strings fail to return data.
+Unknown community string → brute with onesixtyone before anything else:
 
-Brute-force community strings using a wordlist to identify valid access credentials.
-
-```
-onesixtyone -c /opt/useful/seclists/Discovery/SNMP/snmp.txt <TARGET_IP>
+```bash
+onesixtyone -c /opt/useful/seclists/Discovery/SNMP/snmp.txt <TARGET>
 ```
 
-> ⚠️ Gap: If the community string is bound to a specific source IP, brute-forcing will **fail silently** without a spoofed source or pivot from an authorized host.
+---
 
-- **v1/v2c community strings** are transmitted in **plain text** and can be intercepted via packet capture.
-- Administrators often use the hostname or predictable patterns for community names in large environments.
+### Enumerate Once You Have a Community String
 
-## SNMP Enumeration
+Full OID walk — dumps OS info, contact email, hostname, installed packages, running processes, network interfaces:
 
-A valid community string is known and full system information is required.
-
-Query the OID tree to extract system descriptions, mount points, and installed software.
-
-```
-snmpwalk -v2c -c <PASSWORD> <TARGET_IP>
+```bash
+snmpwalk -v2c -c <COMMUNITY> <TARGET>
 ```
 
-Query specific OID ranges rapidly when `snmpwalk` is too slow or limited.
+Fast OID brute force — faster than snmpwalk on large trees:
 
-```
-braa <PASSWORD>@<TARGET_IP>:.1.3.6.*
-```
-
-- `snmpwalk`
-    
-    - `snmpwalk -v2c -c <PASSWORD> <TARGET_IP>`
-    - Prefer for standard, human-readable enumeration of the full **MIB**.
-- `braa`
-    
-    - `braa <PASSWORD>@<TARGET_IP>:<OID_PATTERN>`
-    - Prefer for brute-forcing individual OIDs or mass-querying specific branches.
-- `rwuser noauth`: Provides full **OID** tree access without any authentication.
-    
-- `rwcommunity <PASSWORD> <TARGET_IP>`: Provides read-write access to the full tree from any source.
-    
-- **Lack of encryption** in v1 and v2c allows all transmitted data and community strings to be read by anyone with network access.
-    
-- **SNMPv3 complexity** often results in organizations reverting to v2c, leaving credentials exposed.
-    
-
-## Trap Monitoring
-
-Monitoring for asynchronous alerts sent from a server to a client.
-
-Listen for unsolicited data packets triggered by specific server-side events on UDP 162.
-
-```
-# No command provided in source for trap listening
+```bash
+braa <COMMUNITY>@<TARGET>:.1.3.6.*
 ```
 
-- **Traps** are sent to the client without an explicit request when specific events occur.
-- Requires the device to be configured with the client's destination IP. [i] [ii] [iii] [iv] [v] [vi] [vii] [viii] [ix] [x] [xi] [xii] [xiii] [xiv]
+---
+
+### What snmpwalk Leaks
+
+From a single walk with `public`: OS version + kernel, admin contact email, hostname, system location, boot parameters, installed package list with versions, running process list.
+
+Admin contact email → username format. Installed packages → software versions → CVE lookup. Boot params → disk UUIDs, kernel flags.
+
+> [!tip] snmpwalk output is noisy. Pipe to grep for the quick wins: `snmpwalk -v2c -c public <TARGET> | grep -E "STRING|INTEGER" | grep -i "user\|pass\|mail\|contact\|name\|host"` to surface high-value fields fast.
+
+> [!warning] SNMPv1/v2c community strings travel in cleartext over UDP — interceptable on LAN. If you capture SNMP traffic during a MITM position, community strings come out in the clear. Wireshark filter: `udp.port == 161`.

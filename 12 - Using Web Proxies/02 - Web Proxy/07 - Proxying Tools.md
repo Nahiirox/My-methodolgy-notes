@@ -1,35 +1,23 @@
-## Intercepting Command-Line Traffic
+# Proxying Tools
 
-### Proxychains
+Route any CLI tool through Burp/ZAP — inspect, modify, replay its requests like browser traffic.
 
-Visibility into web requests from CLI tools or thick clients is required for manual manipulation or debugging.
-
-Modify the configuration file to route traffic to the local listener port:
+`/etc/proxychains.conf` — comment out the socks4 line, add:
 
 ```
-# Edit /etc/proxychains.conf
-# Comment out default socks4 127.0.0.1 9050
 http 127.0.0.1 8080
 ```
 
-Execute the target command in quiet mode to suppress connection metadata and reduce terminal clutter:
+Then prepend any command with `proxychains -q`:
 
+```bash
+proxychains -q curl http://<TARGET>:<PORT>
 ```
-proxychains -q curl http://<TARGET_IP>:<PORT>
-```
 
-**Gotchas** **Performance degradation** — Proxying traffic significantly slows tool execution; utilize only for investigation and not for standard tool usage.
+MSF module → set proxy before `run`:
 
----
-
-## Intercepting Metasploit Traffic
-
-Metasploit module behavior or scanner output requires inspection through proxy history or interception.
-
-Define the proxy variable for the active auxiliary or exploit module:
-
-```
+```bash
 set PROXIES HTTP:127.0.0.1:8080
 ```
 
-**Gotchas** **Manual investigation required** — Every tool utilizes different methods for proxy configuration; verify individual tool settings if a global proxy wrapper is not utilized.
+> [!tip] Only proxy tools when you're actively inspecting traffic — it slows them down noticeably, don't leave it on by default.

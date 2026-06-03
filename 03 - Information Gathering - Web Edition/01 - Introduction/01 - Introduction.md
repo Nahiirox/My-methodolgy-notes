@@ -1,93 +1,37 @@
-## Information Gathering Methodology
+# Web Reconnaissance — Overview
 
-1. Start with **Passive Reconnaissance** to establish infrastructure footprint and domain ownership while maintaining **minimal detection risk**.
-2. Query WHOIS and DNS records to map subdomains and identify administrative contacts.
-3. Analyze historical snapshots and public code repositories for **exposed credentials** or deprecated assets.
-4. Transition to **Active Reconnaissance** only when direct interaction is required for a comprehensive view of services and vulnerabilities.
-5. Execute port scans and service enumeration to identify versions and potential exploit vectors.
-6. Perform web spidering to discover hidden resources and map the application structure.
-7. Consolidate findings to feed into the **Vulnerability Assessment** phase.
+Two modes: **passive** (no direct target contact, OSINT/public data) and **active** (direct interaction, generates logs). Exhaust passive before going active.
 
 ---
 
-## Passive Reconnaissance
+### Active Techniques — Detection Risk
 
-**When to use** Establishing initial scope or mapping infrastructure when **detection risk** must be kept at a minimum.
+`High` — port scanning, vuln scanning (sends payloads, trips IDS)
 
-**Commands** Retrieve domain registration and contact details via WHOIS
+`Medium` — network mapping, web spidering (tunable — mimic legit traffic to lower risk)
 
-```
-whois <DOMAIN>
-```
+`Low` — banner grabbing, OS fingerprinting, service version enum (logged but rarely alerted)
 
-Analyze DNS records to identify subdomains and mail servers
+---
 
-```
-dig <DOMAIN>
-```
+### Passive Techniques — All Very Low Detection Risk
 
-**Tool comparison**
+Search engine queries / Google dorks → exposed content, employee info, subdomains
 
-- DNS Enumeration
-    - dig -> `dig <DOMAIN>` -> Standard for detailed record analysis
-    - nslookup -> `nslookup <DOMAIN>` -> Alternative for quick resolution
-    - host -> `host <DOMAIN>` -> Simple lookup alternative
-- External Infrastructure Search
-    - Shodan -> Web-based -> Specialized for identifying internet-connected devices
-    - Google -> Web-based -> Use for uncovering employee info and social media profiles
+WHOIS → registrant, contact, name servers, registration dates
 
-**Gotchas** **Less comprehensive** results compared to active methods as it relies solely on publicly accessible data.
+DNS enum → subdomains, MX, NS, TXT, zone transfer attempts
 
-> ⚠️ Gap: Standard DNS queries via `dig` or `nslookup` fail to discover **non-public subdomains** or those not listed in public zone files without brute-forcing or zone transfer attempts.
+Web archive (Wayback Machine) → old versions of pages, removed content, historical configs
 
-## Active Reconnaissance
+Social media / LinkedIn → org structure, stack, usernames, email format
 
-**When to use** Direct interaction is required to identify open ports, service versions, or **misconfigurations** not visible through public records.
+GitHub/GitLab → hardcoded creds, internal tooling, leaked keys, API endpoints
 
-**Commands** Identify open ports and services on the target
+---
 
-```
-nmap <TARGET_IP>
-```
+### Recon Goals (Filter Everything Through These)
 
-Execute service version detection to identify software like Apache or Nginx
+Find all assets (subdomains, IPs, tech stack, cloud resources) → discover hidden/exposed content (configs, backups, keys) → map attack surface (entry points, versions, misconfigs) → gather intel for exploitation or social engineering.
 
-```
-nmap -sV <TARGET_IP>
-```
-
-Attempt to identify the target operating system
-
-```
-nmap -O <TARGET_IP>
-```
-
-Map network topology and hops to the target
-
-```
-traceroute <TARGET_IP>
-```
-
-Retrieve HTTP headers and service banners
-
-```
-curl -I <TARGET_IP>
-```
-
-**Tool comparison**
-
-- Port Scanning
-    - Nmap -> `nmap <TARGET_IP>` -> Default for comprehensive scanning and scripting
-    - Masscan -> `masscan <TARGET_IP>` -> Alternative for high-speed scanning of large ranges
-    - Unicornscan -> `unicornscan <TARGET_IP>` -> Specialized for specific scanning techniques
-- Vulnerability Probing
-    - Nikto -> `nikto -h <TARGET_IP>` -> Web-focused scanning for misconfigurations
-    - Nessus -> Web UI -> Enterprise-grade vulnerability scanning
-- Web Spidering
-    - Burp Suite Spider -> GUI-based -> Integrated with proxy for manual analysis
-    - OWASP ZAP Spider -> GUI-based -> Open-source alternative for mapping sites
-    - Scrapy -> Custom scripts -> Preferred when highly customizable crawling behavior is required
-
-**Gotchas** **Detection risk** is high; direct probes often trigger **IDS**, **firewalls**, or logging mechanisms.
-
-> ⚠️ Gap: Automated vulnerability scanners send **exploit payloads** that are easily signatured and blocked by modern security solutions, leading to **silent failures** or IP blacklisting.
+> [!tip] Passive recon feeds active recon. Don't port scan until you've mapped the full scope passively — you may find assets that would otherwise be missed, and you'll know what to prioritize.

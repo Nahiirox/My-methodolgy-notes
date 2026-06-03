@@ -1,43 +1,18 @@
-1. Run `info` to audit module functionality, check for **artifact generation**, and verify dependencies like ROP chain validity or specific JRE versions.
-2. Run `show targets` to list supported operating systems and service packs.
-3. Identify the remote OS/version and match it to the available target IDs.
-4. Use `set target <ID>` for manual precision or `set target 0` for **Automatic** service detection.
+# MSF — Targets
 
----
-
-## Module Auditing
-
-Verify exploit functionality, platform requirements, and environmental dependencies before execution.
-
-View module metadata, ROP chain requirements, and mandatory software versions
+List targets for the loaded exploit:
 
 ```
-info
+msf6 exploit(...)> show targets
+msf6 exploit(...)> info
 ```
 
-- **Audit code** for artifact generation to ensure a clean working environment.
-- Check for specific requirements like `msvcrt` on XP SP3 or `JRE 1.6.x` on Windows 7 for valid ROP chains.
-
-## Target Identification and Selection
-
-Align the exploit with unique operating system identifiers and return addresses like `jmp esp` or `pop/pop/ret`.
-
-List all available vulnerable targets for the active module
+Set a specific target when you know the exact OS/version — more reliable than Automatic:
 
 ```
-show targets
+msf6 exploit(...)> set target <INDEX>
 ```
 
-Manually set the specific target version by index number
+Automatic = MSF fingerprints the service first then picks. Use it when you're unsure. Set a specific target when Nmap or banner already gave you the exact version — faster and avoids detection from extra probing.
 
-```
-set target <ID>
-```
-
-- **Automatic** target (Id 0) triggers service detection before launching the attack.
-    
-- Manual selection is required when language packs or hooks shift return addresses.
-    
-- Running `show targets` in the root menu **fails**; an exploit module must be selected first.
-    
-- The **exploit fails** if the selected target ID does not match the target's specific OS version, service pack, or language-specific return address.
+> [!tip] Return address varies by OS version, SP, and language pack — if Automatic fails but the vuln is confirmed, manually enumerate target options and try each relevant one. Comments in the module source often explain what differentiates them.

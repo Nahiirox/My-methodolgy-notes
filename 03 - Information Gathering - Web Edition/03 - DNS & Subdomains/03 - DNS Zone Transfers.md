@@ -1,20 +1,27 @@
-## DNS Zone Transfer (AXFR)
+## DNS Zone Transfers
 
-Reconnaissance to bypass brute-forcing for subdomain discovery; requires a target DNS server with **unrestricted access controls**.
+Try AXFR before any brute force — misconfigured server gives you everything in one query. Query each NS server separately — different servers may have different `allow-transfer` configs.
 
-Request a full zone transfer from a specific name server
+Find NS servers first:
 
+```bash
+dig ns <DOMAIN>
 ```
-dig axfr @<TARGET_IP> <DOMAIN>
+
+Attempt AXFR against each NS:
+
+```bash
+dig axfr @<NS_SERVER> <DOMAIN>
 ```
 
-- Access controls allowing **any client** to initiate transfers.
-    
-- Outdated practices failing to restrict transfers to **trusted secondary servers**.
-    
-- Failed transfer attempts can still leak information regarding the server's **security posture** or internal configuration.
-    
+Successful transfer dumps: all subdomains + IPs, all record types (A, MX, CNAME, SRV, PTR, TXT), internal hostnames, admin email from SOA.
 
-**Unauthorized transfer rejection** occurs when the server is properly hardened to only communicate zone data with legitimate secondary name servers.
+If the main domain blocks it, try subzones — if `ANY` query or NS enum revealed `internal.<DOMAIN>` or similar:
 
-> ⚠️ Gap: The technique requires identifying the authoritative name server for the domain first; running AXFR against a standard recursive resolver or the wrong authority will result in a silent failure or timeout.
+```bash
+dig axfr @<NS_SERVER> internal.<DOMAIN>
+```
+
+> [!tip] zonetransfer.me is a live intentionally-misconfigured domain you can use to test AXFR tooling and syntax without touching a target.
+
+> [!warning] AXFR uses TCP/53. If TCP/53 is filtered but UDP/53 is open, zone transfer is already blocked at the network level — don't waste time. Move straight to brute force.

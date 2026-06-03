@@ -1,57 +1,29 @@
-1. Query primary domains to identify the **Registrant Organization** for cross-referencing parent companies or subsidiaries.
-2. Map **name servers** to identify where the target manages external DNS.
-3. Extract **IP address blocks** and **autonomous systems** to define the organization's network boundaries.
-4. Pivot on identified infrastructure patterns, such as hosting providers or specific IP ranges, to discover secondary domains.
+# WHOIS
+
+Query WHOIS for a domain:
+
+```bash
+whois <DOMAIN>
+```
 
 ---
 
-## Utility Installation
+### What to Extract
 
-When to use: Tool is missing from the local environment.
+`Creation Date` — recently registered (days/weeks ago) + hidden registrant + suspicious hosting = phishing infrastructure. Old domain = likely legit.
 
-Update repositories and install the client
+`Registrant/Admin/Tech` — if not privacy-protected: real names, email addresses, phone numbers → username format, social engineering targets, org structure hints.
 
-```
-sudo apt update && sudo apt install whois -y
-```
+`Name Servers` — self-hosted NS (e.g., `ns1.target.com`) = they manage their own DNS infra. Third-party NS → reveals hosting provider. Shared NS across multiple domains = same infrastructure, pivot to related assets.
 
-## Domain and Registrar Profiling
+`Registrar` — lax abuse policy registrars (often paired with bulletproof hosting) = indicator of malicious infra during threat intel work.
 
-When to use: Establishing the baseline for a target domain, registrar, and administrative contact data.
+`Expiry Date` — domain expiring soon = potential for domain takeover if it lapses.
 
-Query the WHOIS database for record details
+---
 
-```
-whois <DOMAIN>
-```
+### Historical WHOIS
 
-**Gotchas** **Incomplete attribution** occurs when records fail to identify individual employees or internal vulnerabilities, requiring enrichment through secondary recon.
+WhoisFreaks (whoisfreaks.com) — historical records show ownership changes, old contact info, previous name servers. Old registrant email before privacy service was added = real contact detail.
 
-## Network Boundary Mapping
-
-When to use: Moving beyond domains to identify owned **IP address blocks** and **autonomous systems** linked to the target.
-
-Query for IP block and network resource ownership
-
-```
-whois <TARGET_IP>
-```
-
-**Gotchas** **Database latency** results in stale data; verify the "Last update of whois database" field to ensure information is current.
-
-## Organizational Asset Correlation
-
-When to use: Using a confirmed **Registrant Organization** or infrastructure pattern to find additional assets or profile TTPs.
-
-Verify the organization name and registration dates
-
-```
-whois <DOMAIN>
-```
-
-**Edge cases**
-
-- **Hidden registrant** info and recent creation dates typically indicate phishing or burner infrastructure rather than corporate assets.
-- **Suspicious hosting** or "bulletproof" servers identified via WHOIS indicate high-risk command-and-control (C2) infrastructure.
-
-**Gotchas** **Redacting registrant** data via privacy services can mask organizational ownership, necessitating pivots on **name servers** or IP ranges to maintain the map.
+> [!tip] Always cross-reference WHOIS name servers against the IPs you find in DNS — if NS records point to a different org than the registrant, it may indicate a hosting provider, CDN (Cloudflare/Akamai), or third-party DNS management. Each is a separate entity that may be out of scope.

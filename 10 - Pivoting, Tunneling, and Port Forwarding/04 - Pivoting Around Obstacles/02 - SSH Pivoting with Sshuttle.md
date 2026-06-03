@@ -1,20 +1,30 @@
-## SSH Subnet Routing
+# sshuttle
 
-Internal network resources are unreachable and manual **proxychains** encapsulation is breaking tool workflows; requires SSH access and **Python** on the remote pivot.,
+No proxychains config needed — sshuttle handles iptables routing automatically. Traffic to the specified subnet routes through the SSH tunnel transparently. Any tool runs normally without `proxychains` prefix.
 
-Install the utility on the attack host:
+Install:
 
-```
+```bash
 sudo apt-get install sshuttle
 ```
 
-Automate **iptables** rules to route a specific internal subnet through the SSH tunnel:
+Route a subnet through a pivot via SSH:
 
+```bash
+sudo sshuttle -r <USER>@<PIVOT_IP> <CIDR> -v
 ```
-sudo sshuttle -r <USERNAME>@<PIVOT_IP> <TARGET_IP>/<MASK> -v
+
+After running, scan or connect directly — no proxychains, no special flags:
+
+```bash
+sudo nmap -v -A -sT -p3389 <TARGET_IP> -Pn
+xfreerdp /v:<TARGET_IP> /u:<USER> /p:<PASS>
 ```
 
-- **Sshuttle** -> `sshuttle -r <USERNAME>@<PIVOT_IP> <TARGET_IP>/<MASK>` -> Prefer for transparently routing **Nmap** or other tools natively without prefixing every command,,.
-- **Proxychains** -> Prefer when the pivot requires **TOR** or **HTTPS** proxies, as these are unsupported by this tool.
+sshuttle adds iptables `REDIRECT` rules on your attack host that intercept any traffic destined for the specified CIDR and send it through the SSH tunnel. Removed automatically when you kill sshuttle.
 
-**Gotchas** **Connection failure** occurs if the remote pivot host does not have a **Python** interpreter installed. **Traffic drop** will occur for **UDP** traffic when using the default **nat** method. **Pivot failure** results if attempting to use this tool for protocols other than **SSH**.
+> [!warning] Requires `sudo` — needs root to modify iptables. Also requires Python3 on the pivot host (runs a server component remotely over SSH).
+
+> [!tip] sshuttle is the cleanest pivot method for interactive work — RDP, web browsing, curl, everything just works without prefixing `proxychains`. Use SSH `-D` + proxychains when you need to proxy non-TCP or need finer control. Use sshuttle when you just want to "be on" the pivot network.
+
+Limitation: SSH only. No TOR, no HTTPS proxy. If the pivot doesn't have SSH exposed or you need a non-SSH tunnel, fall back to proxychains + SSH `-D` or Chisel.

@@ -1,67 +1,39 @@
+# Custom Wordlists & Rules
 
-1. Conduct OSINT on the organization or individual to identify company names, geographical regions, pets, hobbies, and interests.
-2. Scrape the target's web presence using CeWL to build a base wordlist of industry-specific terms.
-3. Identify the target's password policy to determine minimum length and required character sets (e.g., uppercase, numbers, special characters).
-4. Create or select a Hashcat ruleset (e.g., `best64.rule` or a custom `.rule` file) that mirrors common human behavior, such as appending the current year or month.
-5. Apply the ruleset to the base wordlist to generate mutated variants that satisfy the identified policy.
-6. Execute the cracking attempt against obtained hashes using the mutated wordlist.
+Generate mutated variants from a wordlist using a custom rule file — good for testing policy-compliant password patterns:
 
----
-
-## Targeted Wordlist Generation
-
-Web presence exists for a corporate target and you need words with a higher probability of being used by employees.
-
-Scrape words from a website with specific depth and minimum length constraints
-
-```
-cewl <URL> -d <DEPTH> -m <MIN_LENGTH> --lowercase -w <FILE_PATH>
+```bash
+hashcat --force <WORDLIST> -r <RULE_FILE> --stdout | sort -u > <OUTFILE>
 ```
 
-- **Gotchas**: **Small wordlists** often result from setting the minimum length (`-m`) too high or depth (`-d`) too low for the specific site structure.
+Common rule functions worth knowing: `:` (no change) / `c` (capitalize first) / `u` (all upper) / `l` (all lower) / `sXY` (replace X with Y) / `$X` (append X)
 
-## Rule-Based Mutation
-
-Target password policy requires complexity (uppercase, digits, special characters) and users are likely following predictable patterns like appending years or capitalizing the first letter.
-
-Apply custom rules to a wordlist and output unique mutated strings to a new file
+Example rule file for typical corporate policy (upper + leet + special):
 
 ```
-hashcat --force <FILE_PATH> -r <FILE_PATH> --stdout | sort -u > <FILE_PATH>
+:
+c
+so0
+c so0
+sa@
+c sa@
+$!
+$! c so0 sa@
 ```
 
-### Hashcat Rule Syntax
+Scrape a company's website for likely password terms — spider depth 4, min 6 chars, lowercase:
 
-Functions to define transformations within a `.rule` file:
-
-- `:` Do nothing
-- `l` Lowercase all letters
-- `u` Uppercase all letters
-- `c` Capitalize first letter, lowercase others
-- `sXY` Replace all instances of X with Y
-- `$!` Append "!" to the end of the word
-
-### Tool comparison
-
-- Custom Rules -> `custom.rule` -> prefer when you have specific OSINT (e.g., target always uses specific years or suffixes).
-    
-- Pre-built Rules -> `best64.rule` -> prefer for general-purpose cracking when specific user patterns are unknown.
-    
-- **Gotchas**: **Ruleset mismatch** occurs when the transformations do not account for the specific password policy, such as failing to add a required special character.
-    
-
-## Password Pattern Analysis
-
-Target requires regular password changes, causing users to increment digits or change months/years in their existing passwords.
-
-Common syntax patterns to include in custom rules:
-
-```
-c             # First letter uppercase
-$1$2$3        # Adding numbers
-$2$0$2$2      # Adding year
-$!            # Adding special character
+```bash
+cewl https://<TARGET_DOMAIN> -d 4 -m 6 --lowercase -w <OUTFILE>
 ```
 
-- **Edge cases**: Most passwords are no longer than ten characters; focus rules on base words of at least five characters to meet typical 8-10 character requirements.
-- **Gotchas**: **Guessing game failure** is the baseline; cracking will fail if keywords related to industry, geography, or personal OSINT are overlooked.
+Then combine CeWL output with rules and crack:
+
+```bash
+hashcat --force <CEWL_WORDLIST> -r /usr/share/hashcat/rules/best64.rule --stdout | sort -u > <MUT_WORDLIST>
+hashcat -a 0 -m <MODE> <HASH_FILE> <MUT_WORDLIST>
+```
+
+OSINT → wordlist pipeline: names (pet, spouse, kids), company name, city, interests, birth year/month → base wordlist → apply rules for policy compliance (upper, leet substitutions, trailing digit/symbol, year append).
+
+> [!tip] Policy known → build mask or rules to match it exactly. 12-char min + upper + lower + digit + symbol → `c so0 sa@ $! $2024` style rules on base words, or mask `?u?l?l?l?l?l?d?d?s` variants. Targeted beats generic every time.

@@ -1,90 +1,69 @@
-## RDP Footprinting
+# Windows Remote Management — RDP, WinRM, WMI
 
-TCP 3389 is open and NLA status, hostname, or OS version details are needed for initial enumeration.
+---
 
-Enumerate encryption settings and NTLM info using Nmap scripts
+### RDP
 
-```
-nmap -sV -sC <TARGET_IP> -p 3389 --script rdp*
-```
+Port TCP/3389 (also UDP/3389). NLA = CredSSP auth before session starts — creds required upfront. NTLM info block leaks hostname, domain, OS version without auth.
 
-Trace RDP cookies and packet contents to verify what security appliances might see
+Nmap — NLA status, encryption support, NTLM info:
 
-```
-nmap -sV -sC <TARGET_IP> -p 3389 --packet-trace --disable-arp-ping -n
+```bash
+nmap -sV -sC <TARGET> -p3389 --script rdp*
 ```
 
-_Dangerous / misconfigured settings_
+> [!warning] Nmap RDP scripts send `mstshash=nmap` cookie — visible in EDR/threat hunting. On hardened networks, use rdp-sec-check instead for quieter enumeration.
 
-- **RDP Security** layer used instead of TLS/SSL, allowing inadequate encryption.
-- **Self-signed certificates** configured by default, enabling potential man-in-the-middle attacks as clients cannot distinguish them from forged ones.
+Security layer check — no auth needed, confirms NLA/TLS/legacy RDP support:
 
-_Gotchas_
-
-- **mstshash=nmap** cookie used by Nmap is a known signature that can be used by EDR to identify and lock out testers.
-
-## RDP Security Auditing
-
-Unauthenticated identification of supported RDP security layers and encryption methods is required.
-
-Perform unauthenticated handshake analysis to determine protocol support
-
-```
-./rdp-sec-check.pl <TARGET_IP>
+```bash
+./rdp-sec-check.pl <TARGET>
 ```
 
-## RDP Interaction
+Connect:
 
-Valid credentials have been obtained and GUI-based access to the server is the objective.
-
-Initiate an interactive RDP session from a Linux host
-
-```
-xfreerdp /u:<USERNAME> /p:"<PASSWORD>" /v:<TARGET_IP>
+```bash
+xfreerdp /u:<USER> /p:<PASS> /v:<TARGET>
 ```
 
-## WinRM Footprinting
+Self-signed cert warning on connect = normal, accept it. CN in cert leaks internal hostname.
 
-TCP 5985 or 5986 appear open during scanning, indicating potential for command-line management.
+---
 
-Identify the WinRM service and check the HTTP server header
+### WinRM
 
-```
-nmap -sV -sC <TARGET_IP> -p 5985,5986 --disable-arp-ping -n
-```
+Ports TCP/5985 (HTTP) / 5986 (HTTPS). Enabled by default on Server 2012+. Requires explicit enable on older versions and clients.
 
-Confirm WS-Management reachability from a Windows-based pivot or workstation
+Scan:
 
-```
-Test-WsMan <TARGET_IP>
+```bash
+nmap -sV -sC <TARGET> -p5985,5986 --disable-arp-ping -n
 ```
 
-_Dangerous / misconfigured settings_
+Connect from Linux:
 
-- **HTTP (5985)** protocol usage instead of HTTPS (5986), often occurring because port 80/443 were blocked or for legacy reasons.
-
-## WinRM Interaction
-
-Remote command execution is required from a Linux environment using valid credentials.
-
-Establish a remote PowerShell session
-
-```
-evil-winrm -i <TARGET_IP> -u <USERNAME> -p <PASSWORD>
+```bash
+evil-winrm -i <TARGET> -u <USER> -p <PASS>
 ```
 
-## WMI Interaction
+PTH with evil-winrm:
 
-Port 135 is open and a semi-interactive shell is needed through the Windows Management Instrumentation interface.
-
-Execute commands via the WMI interface using Impacket
-
-```
-wmiexec.py <USERNAME>:"<PASSWORD>"@<TARGET_IP> "<COMMAND>"
+```bash
+evil-winrm -i <TARGET> -u <USER> -H <NTHASH>
 ```
 
-_Edge cases_
+---
 
-- **Random ports** are utilized for the bulk of WMI communication after the initial connection is established on TCP 135.
+### WMI
 
-> ⚠️ Gap: WMI requires that both **TCP 135** and the **random high ports** assigned after the handshake are reachable through any network firewalls, otherwise the command execution will time out silently.
+Initiates on TCP/135, moves to random high port after. Semi-interactive shell, runs as the authed user (not SYSTEM), generates event ID 4688 per command.
+
+Remote command execution:
+
+```bash
+wmiexec.py <USER>:<PASS>@<TARGET> "hostname"
+```
+
+> [!tip] RDP NTLM info block is the highest-yield Nmap output on Windows hosts — leaks NetBIOS name, domain name, and exact OS version (Product_Version) without any auth. Pull this before anything else on TCP/3389.
+
+> [!warning] WinRM access = double hop problem for any AD enum that needs to reach a DC. Use PSCredential objects on every PowerView call, or use RDP as your jump point instead when available.

@@ -1,74 +1,67 @@
-## Methodology
+# External Recon & Enumeration Principles
 
-1. **Passive Infrastructure Mapping**: Query BGP Toolkit and DNS registrars to define the target IP space and ASN.
-2. **DNS Validation**: Cross-reference historical DNS records with active lookups to confirm live hosts and subdomains.
-3. **Public Data Harvesting**: Execute Google Dorks for sensitive filetypes and email patterns; scrape GitHub/S3 for hardcoded secrets.
-4. **Credential Scoping**: Scrape LinkedIn for username formatting and query breach databases for cleartext passwords.
-5. **Pivot to Active**: Move to internal enumeration once a valid **credential set** is obtained.
+Passive first, wide → narrow. Exhaust passive before going active. If stuck gaining foothold internally → loop back here, especially breach data.
+
+Hunt for: ASN/netblocks, domain info (subdomains, mail/NS records, exposed portals), email/username schema, public files with metadata or embedded intranet links, breach creds.
 
 ---
 
-## Infrastructure Discovery
+## IP & Domain
 
-ASN and netblock identification for public-facing infrastructure. Large orgs often own an **ASN**; smaller targets reside on **shared infrastructure** like Cloudflare or AWS.
+BGP Toolkit (bgp.he.net) → ASN, netblocks, hosting provider. Small orgs usually sit on shared cloud infra (Cloudflare/AWS/Azure) — don't interact with shared infra without explicit written approval from the provider, not just the client.
 
-Query Hurricane Electric BGP Toolkit for assigned address blocks. `https://bgp.he.net/`
-
-- **BGP Toolkit** → `Search by <DOMAIN> or <TARGET_IP>` → Best for identifying organizational **ASN** and netblocks.
-
-> ⚠️ Gap: Cloud providers like AWS or Oracle often require a **Cloud Security Testing Notification** or adherence to specific guidelines before testing; failure to confirm 3rd-party permissions leads to immediate **engagement breach**.
-
-**Gotchas**: **Shared Infrastructure**. Attacking a shared IP without host-header or tenant-specific targeting can result in hitting out-of-scope organizations.
-
-## DNS Enumeration
-
-Validating scope and identifying undocumented subdomains or mail servers.
-
-Identify subdomains, MX records, and historical IP resolution. `https://viewdns.info/`
-
-Active validation of hostnames found in passive results.
+Validate IP, find co-hosted domains:
 
 ```
-nslookup <SERVICE_NAME>.<DOMAIN>
+viewdns.info → reverse IP lookup → <TARGET>
 ```
 
-- **ViewDNS** → Manual Web GUI → Prefer for historical IP changes and **Reverse IP** lookups.
-- **nslookup** → CLI tool → Prefer for real-time validation of nameservers and A records.
+Validate NS records, pull new IPs to scope-check:
 
-**Gotchas**: **Outdated Records**. Passive databases often contain stale info; use **nslookup** to confirm the target currently resolves to an in-scope IP.
+```bash
+nslookup ns1.<DOMAIN>
+nslookup ns2.<DOMAIN>
+```
 
-## Public Data and File Discovery
+> [!warning] IPs from NS lookups may be out of scope. Confirm in writing before touching them.
 
-Hunting for **information leaks**, intranet links, and **metadata** in published documents.
+---
 
-Search for PDF files hosted on the target domain.
+## Public Data & Schema
+
+Job postings (LinkedIn, Glassdoor, Indeed) → stack, software versions, AD schema hints. Contact pages → email naming convention = username format for spraying.
+
+Hunt public files for metadata, intranet links, internal paths:
 
 ```
 filetype:pdf inurl:<DOMAIN>
+filetype:docx inurl:<DOMAIN>
 ```
 
-Search for potential email addresses or naming conventions.
+Confirm email naming schema:
 
 ```
 intext:"@<DOMAIN>" inurl:<DOMAIN>
 ```
 
-- **Google Dorks** → Web Search → Prefer for finding publicly indexed documents and emails.
-- **Trufflehog** → CLI → Prefer for finding hardcoded **credentials** in GitHub repositories.
-- **Greyhat Warfare** → Web Search → Prefer for discovering leaked data in **AWS S3 buckets**.
+Scrape LinkedIn → username list variants (flast, first.last, f.last):
 
-**Gotchas**: **Information Obsolescence**. Job postings or old PDFs may reference **SharePoint 2013/2016** or other legacy versions that have since been patched or decommissioned.
-
-## Username and Credential Harvesting
-
-Building targets for password spraying or finding leaked **cleartext passwords** in breach data.
-
-Generate a username list by scraping LinkedIn employee data. `linkedin2username`
-
-Query breach databases for cleartext passwords or hashes associated with the domain.
-
+```bash
+linkedin2username -c <COMPANY_NAME>
 ```
+
+Hunt GitHub/cloud storage for hardcoded creds: Trufflehog for repos, Greyhat Warfare for exposed S3/Azure blobs.
+
+---
+
+## Breach Data
+
+Dehashed → cleartext creds or hashes tied to `<DOMAIN>`. Old passwords still hit VPN, OWA, Citrix, RDS, VMware Horizon, or anything running AD auth.
+
+```bash
 sudo python3 dehashed.py -q <DOMAIN> -p
 ```
 
-**Gotchas**: **Stale Credentials**. Breach data passwords often fail against **AD authentication** portals if the leak is old; prioritize creating a **username list** for active spraying.
+Got creds → try exposed portals before spraying. Got hashes → crack offline, then same. No hits → fold breach usernames into spray list anyway.
+
+> [!tip] Breach data is the stuck-on-foothold escape hatch. One valid low-priv domain user opens most AD enum.

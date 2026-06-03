@@ -1,57 +1,28 @@
-## Credential Manager Enumeration
+# Attacking Windows Credential Manager
 
-Targeting stored login tokens for OneDrive, domain resources, or web credentials when in a user session,.
+Enumerate stored creds for the current user — look for `Domain Password` type entries:
 
-List all stored credentials for the current user via CLI
-
-```
+```cmd
 cmdkey /list
 ```
 
-Open the Stored User Names and Passwords GUI for manual export or management
+`Domain:interactive=<HOST>\<USER>` = stored interactive logon cred → impersonate directly, no password needed:
 
-```
-rundll32 keymgr.dll,KRShowKeyMgr
-```
-
-- **Gotchas**
-    - **virtualapp/didlogical** entries are internal Microsoft account IDs and should be ignored during triage.
-    - **Exported .crd files** require a user-supplied password during creation which must be known to import the backup on another system.
-
-## Stored Credential Impersonation
-
-`cmdkey` output identifies `Domain:interactive` credentials for a target user, allowing for lateral movement.
-
-Spawn a shell as the stored user using existing cached credentials
-
-```
-runas /savecred /user:<DOMAIN>\<USERNAME> cmd
+```cmd
+runas /savecred /user:<DOMAIN>\<USER> cmd
 ```
 
-- **Gotchas**
-    - **Local machine persistence** must be verified in `cmdkey` output to ensure credentials survive a reboot.
+Dump credman from LSASS — pulls cleartext passwords for any stored Credential Manager entries with active sessions:
 
-## Credential Manager Extraction
-
-Local admin or SYSTEM access is available and clear-text credentials for external services (e.g., OneDrive) are required from memory,.
-
-Dump credentials from the LSASS process using Mimikatz
-
-```
-privilege::debug
-sekurlsa::credman
+```cmd
+mimikatz # privilege::debug
+mimikatz # sekurlsa::credman
 ```
 
-- **Tool comparison**
-    
-    - Mimikatz → `sekurlsa::credman` → Prefer for live memory extraction from LSASS,.
-    - Mimikatz → `dpapi` module → Prefer for manual decryption of vault files on disk.
-    - SharpDPAPI / DonPAPI / LaZagne → External binaries → Use for automated DPAPI-protected store enumeration and extraction.
-- **Dangerous / misconfigured settings**
-    
-    - **Disabled Credential Guard**: Systems without Virtualization-based Security (VBS) fail to protect DPAPI master keys in secured memory enclaves.
-- **Gotchas**
-    
-    - **Credential Guard** prevents standard memory dumping tools from accessing DPAPI master keys by isolating them in secured enclaves.
+> [!tip] `cmdkey /list` before running anything else — if a `Domain Password` entry exists, `runas /savecred` gets you a shell as that user instantly, no cracking needed.
 
-> ⚠️ Gap: The source indicates `sekurlsa::credman` targets LSASS, but if **Credential Guard** is active, this technique will fail to retrieve the keys necessary to decrypt the vault as they are stored in a VBS-isolated memory space rather than standard LSASS memory.
+> [!warning] Credential Guard (enabled on modern hardened hosts via VBS) protects DPAPI masterkeys in a secured enclave — sekurlsa::credman will return nothing useful. Check if it's enabled before wasting time on LSASS.
+
+Vault locations if you want to inspect manually: `%UserProfile%\AppData\Local\Microsoft\Vault\` `%UserProfile%\AppData\Local\Microsoft\Credentials\`
+
+Alternative tools for DPAPI/Credential Manager extraction: SharpDPAPI, LaZagne, DonPAPI — same material, different evasion profiles.

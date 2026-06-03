@@ -1,77 +1,17 @@
-## Automatic Request Modification
+# Automatic Modification
 
-When to use: Filter-blocked **User-Agents** or recurring header/body strings requiring persistent global replacement.
+Set-and-forget rules that fire on every request/response — no manual interception needed per cycle.
 
-Navigate to Burp replacement rules
+Burp → `Proxy > Proxy settings > HTTP match and replace rules > Add`. ZAP → `Ctrl+R` (Replacer) → Add.
 
-```
-Proxy > Proxy settings > HTTP match and replace rules
-```
+Auto-replace User-Agent on every request (Burp):
 
-Regex rule to swap User-Agent (Burp)
+Type: `Request header` / Match: `^User-Agent.*$` (regex on) / Replace: `User-Agent: HackTheBox Agent 1.0`
 
-```
-Type: Request header
-Match: ^User-Agent.*$
-Replace: User-Agent: HackTheBox Agent 1.0
-Regex match: True
-```
+Auto-fix input field restrictions on every response so edits persist across refreshes (Burp):
 
-Open ZAP Replacer
+Type: `Response body` / Match: `type="number"` / Replace: `type="text"` (add second rule: `maxlength="3"` → `maxlength="100"`)
 
-```
-CTRL+R
-```
+ZAP Replacer equivalent fields: Match Type → `Request Header (will add if not present)`, Match String → header name, Replacement String → new value. Initiators defaults to all HTTP(S) — leave it.
 
-Global User-Agent replacement rule (ZAP)
-
-```
-Rule: HTB User-Agent
-Type: Request Header String
-Match: User-Agent
-Replace: HackTheBox Agent 1.0
-Regex: True
-```
-
-### Tool comparison
-
-- Burp Suite
-    - `Proxy > Proxy settings > HTTP match and replace rules`
-    - Prefer for **Regex match** on specific header lines
-- ZAP
-    - `Options > Replacer`
-    - Prefer when limiting rules to specific **Initiators**
-
-### Dangerous / misconfigured settings
-
-- ZAP default **Initiators** set to "Apply to all HTTP(S) messages" triggers modifications across all proxied traffic globally.
-
-### Gotchas
-
-- **Regex match: False** causes rule failure if the match field contains a pattern instead of an exact literal string.
-
-## Automatic Response Modification
-
-When to use: Client-side validation like restricted input types or field lengths that revert on refresh and block payload delivery.
-
-Change input type to allow non-numeric injection (Burp)
-
-```
-Type: Response body
-Match: type="number"
-Replace: type="text"
-Regex match: False
-```
-
-Extend field character limits (Burp)
-
-```
-Type: Response body
-Match: maxlength="3"
-Replace: maxlength="100"
-Regex match: False
-```
-
-### Gotchas
-
-- **Manual interception** modifications are temporary; automated rules are required for changes to persist across page refreshes.
+> [!tip] Use auto response modification instead of per-request interception when you need the same HTML change every page load — otherwise the fix disappears on refresh.

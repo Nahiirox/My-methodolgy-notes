@@ -1,76 +1,44 @@
-1. Map domain object relationships and identify edges using BloodHound or PowerView.
-2. Filter for high-impact ACEs: WriteDacl, WriteOwner, GenericWrite, or AddMember.
-3. Check ACE order; verify no **access denied ACE** exists above the target allowed entry.
-4. If rights allow password resets or group modifications, verify if the attack is **destructive** and confirm client approval.
-5. Execute modification to achieve lateral or vertical movement.
-6. Revert all AD changes and document original vs. modified states for the report.
+# ACL Abuse — Primer
+
+ACL misconfigs are invisible to vuln scanners, persist for years, and are often the only path forward in hardened environments. All abusable with PowerView; all visualizable in BloodHound.
 
 ---
 
-## ACL Enumeration and Visualization
+## ACE Types Worth Knowing
 
-Standard AD misconfigurations (low-hanging fruit) are remediated, requiring path analysis for lateral or vertical movement.
+`ForceChangePassword` → reset target's password without knowing current → `Set-DomainUserPassword`
 
-Enumerate and visualize exploitable edges
+`GenericWrite` → write any non-protected attribute → over user: assign SPN → Kerberoast / over group: add member / over computer: RBCD attack
 
-```
-BloodHound
-```
+`GenericAll` → full control → user: force password change or targeted Kerberoast / group: add member / computer + LAPS: read LAPS password → local admin
 
-Enumerate ACEs and extended rights (e.g., Unexpire-Password, Reanimate-Tombstones)
+`AddSelf` → add yourself to a group → `Add-DomainGroupMember`
 
-```
-PowerView
-```
+`WriteOwner` → change object owner to attacker-controlled principal → `Set-DomainObjectOwner`
 
-- PowerView -> Use for CLI-based enumeration of specific object permissions and extended rights.
-- BloodHound -> Use for visual path analysis and identifying complex chains of trust.
-- ADUC (Advanced Security Settings) -> Use for manual verification of DACL/SACL entries and auditing.
+`WriteDACL` → write new ACEs onto an object → `Add-DomainObjectACL` → grant yourself GenericAll or DCSync rights
 
-> ⚠️ Gap: Source identifies tools (PowerView, BloodHound) but does not provide specific command-line syntax or flags for execution.
+`AllExtendedRights` → includes both ForceChangePassword and Add Members → `Set-DomainUserPassword` or `Add-DomainGroupMember`
 
-- **access denied ACE**: Found during top-to-bottom list evaluation, it terminates the check and prevents access regardless of subsequent allowed entries.
+> [!warning] ForceChangePassword and any write operation that modifies AD objects = destructive. Get written client approval before executing. Document before/after and revert.
 
-## WriteDacl and WriteOwner Abuse
+---
 
-Object control allows granting new rights or taking ownership to bypass existing restrictions.
+## Finding ACL Attack Paths
 
-Leverage WriteDacl/WriteOwner to grant rights or add members
+BloodHound — visual attack chains, edges include all the above rights. First query: **Find Shortest Paths to Domain Admins** often surfaces ACL chains. Check **Outbound Object Control** on any account you control.
 
-```
-PowerView
+PowerView — targeted enumeration:
+
+```powershell
+Find-InterestingDomainAcl -ResolveGUIDs
 ```
 
-- WriteDacl: Allows the principal to modify the DACL and grant themselves or others specific rights like GenericWrite.
-- WriteOwner: Allows the principal to take ownership of the object, subsequently allowing DACL modification.
+Filter to your controlled user's outbound rights:
 
-## Group Membership Management Abuse
-
-Principal has permissions to add or remove users from specific groups, potentially targeting privileged or built-in AD groups.
-
-Add a controlled account to a privileged group
-
-```
-PowerView
+```powershell
+$sid = Convert-NameToSid <USER>
+Get-DomainObjectAcl -ResolveGUIDs -Identity * | ? {$_.SecurityIdentifier -eq $sid}
 ```
 
-- Help Desk users or IT staff with delegated rights over specific OUs or groups.
-    
-- Software-specific ACL changes (e.g., Exchange installation) that introduce excessive rights.
-    
-- **destructive modification**: Adding or removing users from groups can disrupt production workflows; changes must be reverted and documented.
-    
-
-## GMSA Password Retrieval
-
-Controlled principal has the ReadGMSAPassword right over a Group Managed Service Account.
-
-Read the password for a Group Managed Service Account
-
-```
-GMSAPasswordReader
-```
-
-- ReadGMSAPassword edge appearing in BloodHound data.
-    
-- **incomplete enumeration**: Failing to check for less common extended rights like Reanimate-Tombstones may result in missing viable persistence or movement vectors.
+> [!tip] Exchange installs, legacy configs, and "quick fix" permission grants are the most common sources of ACL misconfigs. If you see a help desk account or service account with GenericAll over a privileged group, that's the path.
