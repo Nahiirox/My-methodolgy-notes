@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "02 - Footprinting/03 - Host Based Enumeration/02 - SMB.md",
+                "file": "12 - Using Web Proxies/Using Web Proxies.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "02 - SMB"
+              "title": "Using Web Proxies"
             }
           }
         ]
@@ -156,13 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "02 - Footprinting/03 - Host Based Enumeration/02 - SMB.md",
+                "file": "12 - Using Web Proxies/Using Web Proxies.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of 02 - SMB"
+              "title": "Outline of Using Web Proxies"
             }
           }
         ],
@@ -185,40 +185,41 @@
   },
   "active": "5dd242a4c7437ef4",
   "lastOpenFiles": [
-    "15 - SQL Injection Fundamentals/Untitled.md",
-    "15 - SQL Injection Fundamentals/04 - SQL Injections",
-    "15 - SQL Injection Fundamentals/03 - MySQL/04 - SQL Operators.md",
-    "11 - Active Directory Enumeration & Attacks/07 - Cooking with Fire/01 - Kerberoasting - from Linux.md",
-    "06 - Shells & Payloads/02 - Shell Basic/02 - Bind Shells.md",
-    "06 - Shells & Payloads/02 - Shell Basic/01 - Anatomy of a Shell.md",
-    "05 - File Transfers/02 - File Transfer Methods/01 - Windows File Transfer Methods.md",
-    "15 - SQL Injection Fundamentals/03 - MySQL/03 - Query Results.md",
-    "15 - SQL Injection Fundamentals/03 - MySQL/02 - SQL Statements.md",
-    "15 - SQL Injection Fundamentals/03 - MySQL/01 - Intro to MySQL.md",
-    "12 - Using Web Proxies/02 - Web Proxy/05 - Repeating Requests.md",
-    "12 - Using Web Proxies/02 - Web Proxy/03 - Intercepting Responses.md",
-    "12 - Using Web Proxies/02 - Web Proxy/02 - Intercepting Web Requests.md",
-    "07 - Using the Metasploit Framework/04 - Additional Features/03 - Firewall and IDS - IPS Evasion.md",
-    "07 - Using the Metasploit Framework/01 - Introduction/01 - Preface & Introduction to Metasploit & Introduction to MSFconsole.md",
-    "06 - Shells & Payloads/07 - Additional Considerations/01 - Detection & Prevention.md",
-    "06 - Shells & Payloads/06 - Web Shells/04 - PHP Web Shells.md",
-    "06 - Shells & Payloads/06 - Web Shells/03 - Antak Webshell.md",
-    "06 - Shells & Payloads/06 - Web Shells/02 - Laudanum, One Webshell to Rule Them All.md",
-    "06 - Shells & Payloads/06 - Web Shells/01 - Introduction to Web Shells.md",
+    "10 - Pivoting, Tunneling, and Port Forwarding/Pivoting, Tunneling, and Port Forwarding.md",
+    "05 - File Transfers/03 - Detect or Be Detected/01 - Detection.md",
+    "05 - File Transfers/02 - File Transfer Methods/02 - Linux File Transfer Methods.md",
+    "05 - File Transfers/01 - Introduction/01 - Introduction.md",
+    "05 - File Transfers/File Transfers.md",
+    "07 - Using the Metasploit Framework/Metasploit Framework.md",
+    "08 - Password Attacks/Password Attacks.md",
+    "09 - Attacking Common Services/Attacking Common Services.md",
+    "11 - Active Directory Enumeration & Attacks/Active Directory Enumeration & Attacks.md",
+    "03 - Information Gathering - Web Edition/Information Gathering - Web Edition.md",
+    "02 - Footprinting/02 - Infrastructure Based Enumeration/02 - Cloud Resources.md",
     "06 - Shells & Payloads/05 - NIX Shells/02 - Spawning Interactive Shells.md",
     "06 - Shells & Payloads/05 - NIX Shells/01 - Infiltrating Unix-Linux.md",
-    "06 - Shells & Payloads/04 - Windows Shells/01 - Infiltrating Windows.md",
+    "06 - Shells & Payloads/Shells & Payloads.md",
+    "06 - Shells & Payloads/02 - Shell Basic/03 - Reverse Shells.md",
+    "06 - Shells & Payloads/02 - Shell Basic/01 - Anatomy of a Shell.md",
+    "06 - Shells & Payloads/02 - Shell Basic/02 - Bind Shells.md",
+    "05 - File Transfers/02 - File Transfer Methods/01 - Windows File Transfer Methods.md",
     "06 - Shells & Payloads/03 - Payloads/03 - Crafting Payloads with MSFvenom.md",
     "06 - Shells & Payloads/03 - Payloads/02 - Automating Payloads & Delivery with Metasploit.md",
     "06 - Shells & Payloads/03 - Payloads/01 - Introduction to Payloads.md",
+    "14 - Login Brute Forcing/Login Brute Forcing.md",
+    "14 - Login Brute Forcing/02 - Brute Force Attacks/03 - Hybrid Attacks.md",
+    "14 - Login Brute Forcing/02 - Brute Force Attacks/02 - Dictionary Attacks.md",
+    "14 - Login Brute Forcing/02 - Brute Force Attacks/01 - Brute Force Attacks.md",
+    "04 - Vulnerability Assessment/05 - Reporting/01 - Reporting.md",
+    "13 - Attacking Web Applications with Ffuf/13 - Attacking Web Applications with Ffuf",
+    "17 - XSS",
+    "16 - SQLMap Essentials",
+    "15 - SQL Injection Fundamentals/Untitled",
+    "15 - SQL Injection Fundamentals/06 - Mitigating",
+    "15 - SQL Injection Fundamentals/05 - Exploitation",
+    "15 - SQL Injection Fundamentals/04 - SQL Injections",
     "15 - SQL Injection Fundamentals/03 - MySQL",
     "15 - SQL Injection Fundamentals/02 - Databases",
-    "15 - SQL Injection Fundamentals/01 - Introduction",
-    "15 - SQL Injection Fundamentals",
-    "14 - Login Brute Forcing/05 - Custom Wordlists",
-    "14 - Login Brute Forcing/04 - Medusa",
-    "14 - Login Brute Forcing/03 - Hydra",
-    "14 - Login Brute Forcing/02 - Brute Force Attacks",
-    "14 - Login Brute Forcing/01 - Introduction/02 - Brute Force Attacks"
+    "15 - SQL Injection Fundamentals/01 - Introduction"
   ]
 }

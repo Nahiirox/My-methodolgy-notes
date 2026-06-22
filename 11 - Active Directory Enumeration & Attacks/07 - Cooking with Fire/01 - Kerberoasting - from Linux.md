@@ -64,3 +64,8 @@ Got cleartext → validate with CME → check for local admin across subnet if i
 
 
 
+
+
+
+
+
