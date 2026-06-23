@@ -13,15 +13,26 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "18 - File Inclusions/File Inclusions.md",
+                "file": "09 - Attacking Common Services/Attacking Common Services.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "File Inclusions"
+              "title": "Attacking Common Services"
+            }
+          },
+          {
+            "id": "96c6281ba58e4bdc",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -156,13 +167,12 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "18 - File Inclusions/File Inclusions.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of File Inclusions"
+              "title": "Outline"
             }
           }
         ],
@@ -183,12 +193,14 @@
       "bases:Create new base": false
     }
   },
-  "active": "5dd242a4c7437ef4",
+  "active": "96c6281ba58e4bdc",
   "lastOpenFiles": [
     "09 - Attacking Common Services/Attacking Common Services.md",
+    "09 - Attacking Common Services/08 - SMTP/01 - Attacking Email Services.md",
+    "09 - Attacking Common Services/03 - FTP/01 - Attacking FTP.md",
+    "08 - Password Attacks/Password Attacks.md",
     "18 - File Inclusions/File Inclusions.md",
     "18 - File Inclusions",
-    "08 - Password Attacks/Password Attacks.md",
     "08 - Password Attacks/03 - Remote Password Attacks/02 - Spraying, Stuffing, and Defaults.md",
     "08 - Password Attacks/03 - Remote Password Attacks/01 - Network Services.md",
     "08 - Password Attacks/02 - Password Cracking Techniques/02 - Introduction to John The Ripper.md",
@@ -210,8 +222,6 @@
     "06 - Shells & Payloads/02 - Shell Basic/03 - Reverse Shells.md",
     "06 - Shells & Payloads/02 - Shell Basic/01 - Anatomy of a Shell.md",
     "06 - Shells & Payloads/02 - Shell Basic/02 - Bind Shells.md",
-    "05 - File Transfers/02 - File Transfer Methods/01 - Windows File Transfer Methods.md",
-    "06 - Shells & Payloads/03 - Payloads/03 - Crafting Payloads with MSFvenom.md",
     "13 - Attacking Web Applications with Ffuf/13 - Attacking Web Applications with Ffuf",
     "17 - XSS",
     "16 - SQLMap Essentials",
