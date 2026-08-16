@@ -1,213 +1,167 @@
-# Nmap — Host Discovery, Scanning & Evasion
+# Network Enumeration with Nmap
 
-Nmap docs: https://nmap.org/book/toc.html — NSE scripts: https://nmap.org/nsedoc/index.html
+## Enumeration
 
-Always save every scan: `-oA <NAME>` dumps all three formats (.nmap, .gnmap, .xml). Convert XML to HTML: `xsltproc target.xml -o target.html`
+The goal is not gaining access — it's identifying all the ways we *could* attack the target. Tools alone don't get us there; it's about actively interacting with the individual services and knowing what to do with what they give us. When scanning, we're looking for exactly two things:
 
----
+1. Functions and/or resources that let us interact with the target or provide additional information
+2. Information that leads to even more important information for accessing the target
+
+Most findings come from misconfigurations or neglected service security — firewalls, GPOs, and updates alone are often not enough.
+
+Manual enumeration is critical. Scanning tools work with timeouts: a port that doesn't answer in time gets marked closed/filtered/unknown, and we simply never see a service that might have been our way in.
+
+## Introduction to Nmap
+
+```bash
+nmap <scan types> <options> <target>
+```
+
+Five techniques: host discovery, port scanning, service enumeration/detection, OS detection, scriptable interaction (NSE). Available scan types (`nmap --help`): `-sS/sT/sA/sW/sM` (SYN/Connect/ACK/Window/Maimon), `-sU` (UDP), `-sN/sF/sX` (Null/FIN/Xmas), `--scanflags`, `-sI` (idle), `-sY/sZ` (SCTP), `-sO` (IP protocol), `-b` (FTP bounce).
+
+TCP SYN scan (`-sS`) is the default when running as root (raw sockets) — fast, never completes the three-way handshake. SYN-ACK back = open, RST = closed, no response = filtered (firewall dropping/ignoring).
 
 ## Host Discovery
 
-Ping sweep a CIDR — no port scan, just alive check:
+Most effective method: ICMP echo requests — only works if firewalls allow it. Always store every scan (`-oA`) for comparison, documentation, reporting.
 
 ```bash
-sudo nmap <CIDR> -sn -oA tnet
+# network range — list live hosts only
+sudo nmap <TARGET_CIDR> -sn -oA tnet | grep for | cut -d" " -f5
+
+# from a provided IP list
+sudo nmap -sn -oA tnet -iL hosts.lst | grep for | cut -d" " -f5
+
+# multiple IPs / consecutive range in the last octet
+sudo nmap -sn -oA tnet <TARGET_IP1> <TARGET_IP2> <TARGET_IP3> | grep for | cut -d" " -f5
+sudo nmap -sn -oA tnet <TARGET_IP_BASE>-20 | grep for | cut -d" " -f5
+
+# single host
+sudo nmap <TARGET_IP> -sn -oA host
 ```
 
-Scan from a host list:
+`-sn` = no port scan. Hosts that don't answer may just be dropping ICMP — Nmap marks them inactive.
+
+On a local network, Nmap ARPs before sending anything ICMP. To actually test with ICMP echo requests:
 
 ```bash
-sudo nmap -sn -oA tnet -iL hosts.lst
+sudo nmap <TARGET_IP> -sn -oA host -PE --packet-trace --disable-arp-ping
+sudo nmap <TARGET_IP> -sn -oA host -PE --reason    # shows WHY a host counts as alive (e.g. arp-response)
 ```
 
-Force ICMP echo (instead of ARP which is default on LAN) — useful to confirm how host is detected:
+## Host and Port Scanning
+
+Six port states: `open`, `closed` (RST received — also proves host is alive), `filtered` (no response or error code), `unfiltered` (ACK scan only — reachable, state unknown), `open|filtered` (no response, firewall may protect it), `closed|filtered` (IP ID idle scans only).
+
+Port selection: `-p 21,22,25` (list), `-p 22-445` (range), `--top-ports=10`, `-p-` (all), `-F` (top 100). Default scan = top 1000 TCP ports.
+
+Reading a trace (`--packet-trace -Pn -n --disable-arp-ping` for a clean view):
+
+- SYN out, `RA` back within ~50ms → port closed
+- SYN out, silence, resend after ~1s → packets dropped by firewall → filtered (default `--max-retries` is 10)
+- SYN out, ICMP `type=3/code=3` (port unreachable) → packets rejected by firewall → filtered, but host alive — look closer at that port later
+
+Connect scan (`-sT`) completes the full handshake: accurate, but loud — logged on most systems, easily caught by IDS/IPS. Behaves like a normal client though, so it's gentle on the service itself. SYN scan (half-open) is the stealthier default.
+
+UDP (`-sU`): stateless, no acks, long timeouts → slow. Nmap sends empty datagrams; a response only comes if the application is configured to send one. ICMP code 3 = closed; other ICMP responses or no response = `open|filtered`.
+
+`-sV` adds version detection: reads banners, falls back to signature-based probing (e.g. SMBProgNeg probe against 445) — significantly longer scans.
+
+## Saving the Results
+
+Three formats: `-oN` (.nmap), `-oG` (.gnmap, grepable), `-oX` (.xml); `-oA target` writes all three. No full path given → saved in the current directory.
 
 ```bash
-sudo nmap <TARGET> -sn -PE --disable-arp-ping --packet-trace --reason
+sudo nmap <TARGET_IP> -p- -oA target
+xsltproc target.xml -o target.html    # XML → readable HTML report for documentation
 ```
 
-> [!tip] On the same LAN, Nmap defaults to ARP ping not ICMP. Use `--disable-arp-ping -PE` if you specifically need ICMP behavior or want to confirm the host responds to ICMP.
+## Service Enumeration
 
-More host discovery strategies: https://nmap.org/book/host-discovery-strategies.html
+Exact versions → known vulns, matching exploits, source code review. Workflow: quick top-ports scan first (low traffic, avoids getting blocked), then full `-p-` in the background, then `-sV` against the found ports.
 
----
+During long scans: `[Space bar]` prints status, `--stats-every=5s` does it periodically, `-v`/`-vv` shows ports the moment they're found.
 
-## Port States
-
-`open` = connection established. `closed` = RST received. `filtered` = no response or ICMP error (packet dropped). `unfiltered` = ACK scan only, reachable but open/closed unknown. `open|filtered` = no response, could be firewalled. `closed|filtered` = IP ID idle scan only.
-
----
-
-## Port Scanning
-
-Default SYN scan (requires root) — top 1000 TCP:
+Banner grabbing: after the handshake the server typically sends a banner (TCP packet with PSH+ACK). Nmap may drop details the banner actually contained — the SMTP banner `220 inlane ESMTP Postfix (Ubuntu)` reveals the distro, Nmap showed only "Postfix smtpd". Banners can also be removed/faked manually. Grab them yourself:
 
 ```bash
-sudo nmap <TARGET>
+nc -nv <TARGET_IP> 25
+sudo tcpdump -i eth0 host <YOUR_IP> and <TARGET_IP>   # watch the handshake + PSH-ACK banner
 ```
 
-All ports:
+## Nmap Scripting Engine
+
+Lua scripts in 14 categories: `auth`, `broadcast`, `brute`, `default` (used by `-sC`), `discovery`, `dos`, `exploit`, `external`, `fuzzer`, `intrusive`, `malware`, `safe`, `version`, `vuln`.
 
 ```bash
-sudo nmap <TARGET> -p-
+sudo nmap <TARGET_IP> -sC                                  # default scripts
+sudo nmap <TARGET_IP> --script <category>
+sudo nmap <TARGET_IP> --script <script1>,<script2>
+
+sudo nmap <TARGET_IP> -p 25 --script banner,smtp-commands
 ```
 
-Specific ports / ranges / top N / fast 100:
+`-A` (aggressive) = `-sV` + OS detection (`-O`) + traceroute + default scripts. On a web port it pulled Apache 2.4.29, WordPress 5.3.4 via `http-generator`, the page title, and Linux OS guesses.
+
+Vuln assessment:
 
 ```bash
-sudo nmap <TARGET> -p 22,80,445
-sudo nmap <TARGET> -p 22-445
-sudo nmap <TARGET> --top-ports=10
-sudo nmap <TARGET> -F
+sudo nmap <TARGET_IP> -p 80 -sV --script vuln
 ```
 
-TCP Connect scan (full 3-way handshake, no root needed, more detectable, use through proxychains):
+`http-enum` fingerprints the app and interesting paths (`/wp-login.php`, `/readme.html`), `http-wordpress-users` enumerates usernames (raise `http-wordpress-users.limit` if it stops early), `vulners` matches CPE against CVEs with links.
+
+## Performance
+
+Matters on big networks or low bandwidth. Every speedup trades completeness:
 
 ```bash
-nmap <TARGET> -sT -p <PORT>
+# RTT tuning — 39s → 12s on a /24, but 2 hosts fewer
+sudo nmap <TARGET_CIDR> -F --initial-rtt-timeout 50ms --max-rtt-timeout 100ms
+
+# retries (default 10) — 0 skips silent ports entirely, loses results
+sudo nmap <TARGET_CIDR> -F --max-retries 0
+
+# min rate — 30s → 9s, same results (best when whitelisted and bandwidth is known)
+sudo nmap <TARGET_CIDR> -F --min-rate 300
+
+# timing templates
+sudo nmap <TARGET_CIDR> -F -T 5
 ```
 
-UDP scan (slow — stateless, no ACK, long timeouts):
+`-T 0`–`-T 5` = paranoid / sneaky / polite / normal (default) / aggressive / insane. Too aggressive → security systems block us from the traffic alone.
+
+## Firewall and IDS/IPS Evasion
+
+Dropped packets: no response at all, Nmap retries, scan drags. Rejected packets: explicit answer — RST for TCP, or ICMP errors (Net/Host Unreachable, Net/Host/Port/Proto Prohibited, Port Unreachable).
+
+ACK scan (`-sA`) is harder for firewalls/IDS to filter than `-sS`/`-sT`: ACK-only packets are often passed because the firewall can't tell which side initiated the connection. Open ports then show as `unfiltered`:
 
 ```bash
-sudo nmap <TARGET> -sU -F
+sudo nmap <TARGET_IP> -p 21,22,25 -sA -Pn -n --disable-arp-ping --packet-trace
 ```
 
-UDP state logic: response received = open, ICMP type 3 code 3 = closed, no response = `open|filtered`.
+IDS vs IPS: IDS reports to the admin, IPS blocks on its own. Detection: work from several VPS with different IPs — if one host suddenly loses access, security measures exist and we continue from another VPS, quieter. Aggressively scanning a single port/service can also trigger a reaction, which tells us monitoring is in place.
 
-Version detection — banner grab + signature matching:
+Decoys — disguise origin with random source IPs, real IP randomly mixed in. Decoys must be alive, otherwise SYN-flood protections on the target may make the service unreachable:
 
 ```bash
-sudo nmap <TARGET> -p- -sV
+sudo nmap <TARGET_IP> -p 80 -sS -Pn -f --disable-arp-ping --packet-trace -D RND:5
 ```
 
-Show open ports as discovered (verbose), print progress every 5s:
+Spoofed packets often get filtered by ISPs/routers — alternatively use own VPS IPs combined with IP ID manipulation. If only certain subnets are blocked from a service, set the source IP manually:
 
 ```bash
-sudo nmap <TARGET> -p- -sV -v --stats-every=5s
+sudo nmap <TARGET_IP> -n -Pn -p 445 -O -S <SOURCE_IP> -e tun0
 ```
 
-Aggressive scan — `-sV -O --traceroute -sC` combined:
+DNS: queries (UDP 53) are usually passed. In a DMZ, `--dns-server <ns>,<ns>` lets us use the company's more-trusted internal resolvers. TCP 53 as source port is often trusted and weakly filtered by IDS/IPS:
 
 ```bash
-sudo nmap <TARGET> -p <PORT> -A
+sudo nmap <TARGET_IP> -p50000 -sS -Pn -n --disable-arp-ping --packet-trace --source-port 53
+
+# once confirmed open, interact through the same trick
+ncat -nv --source-port 53 <TARGET_IP> <PORT>
 ```
 
----
-
-## Grabbing Banners Manually
-
-Nmap sometimes misses banner info. Grab manually and capture with tcpdump:
-
-```bash
-sudo tcpdump -i <IFACE> host <ATTACK_IP> and <TARGET>
-nc -nv <TARGET> <PORT>
-```
-
-PSH flag in tcpdump = server sending data (banner). Contains more info than Nmap reports (e.g. OS from SMTP banner).
-
----
-
-## NSE Scripts
-
-Run default scripts:
-
-```bash
-sudo nmap <TARGET> -sC
-```
-
-Run by category:
-
-```bash
-sudo nmap <TARGET> --script <CATEGORY>
-```
-
-Run specific scripts:
-
-```bash
-sudo nmap <TARGET> -p 25 --script banner,smtp-commands
-```
-
-Vuln scan on a port:
-
-```bash
-sudo nmap <TARGET> -p 80 -sV --script vuln
-```
-
-Key categories: `auth`, `brute`, `default` (-sC), `discovery`, `exploit`, `safe`, `version`, `vuln`. NSE script reference: https://nmap.org/nsedoc/index.html
-
----
-
-## Performance Tuning
-
-Timing templates (0=paranoid → 5=insane, default is T3):
-
-```bash
-sudo nmap <CIDR> -F -T5
-```
-
-Reduce RTT timeout for faster sweeps (risk missing slower hosts):
-
-```bash
-sudo nmap <CIDR> -F --initial-rtt-timeout 50ms --max-rtt-timeout 100ms
-```
-
-Kill retries entirely (miss more, much faster):
-
-```bash
-sudo nmap <CIDR> -F --max-retries 0
-```
-
-Set minimum packet rate (whitebox / known bandwidth):
-
-```bash
-sudo nmap <CIDR> -F --min-rate 300
-```
-
-> [!warning] Aggressive RTT and retry reduction misses hosts. Use T4/T5 or `--max-retries 0` only when speed matters more than completeness. For CPTS exam, use T4 max unless explicitly testing evasion.
-
-Timing template details: https://nmap.org/book/performance-timing-templates.html
-
----
-
-## Firewall / IDS/IPS Evasion
-
-ACK scan — harder to filter than SYN because firewalls often pass ACK (assumes established session). Returns `unfiltered` for open ports, `filtered` for blocked:
-
-```bash
-sudo nmap <TARGET> -p 21,22,25 -sA -Pn -n --disable-arp-ping
-```
-
-Decoys — spoof source IPs, real IP buried among fakes (decoys must be live hosts):
-
-```bash
-sudo nmap <TARGET> -p 80 -sS -D RND:5 -Pn -n --disable-arp-ping
-```
-
-Spoof source IP (pair with `-e <IFACE>` to route correctly):
-
-```bash
-sudo nmap <TARGET> -p 445 -O -S <SPOOF_IP> -e tun0 -Pn -n
-```
-
-Source port spoofing — many firewalls trust traffic from port 53 (DNS). If a port is filtered, try scanning from port 53:
-
-```bash
-sudo nmap <TARGET> -p 50000 -sS --source-port 53 -Pn -n
-```
-
-Then connect with ncat from the same source port to confirm:
-
-```bash
-ncat -nv --source-port 53 <TARGET> <PORT>
-```
-
-DNS proxying — specify internal DNS server for queries (useful from DMZ):
-
-```bash
-sudo nmap <TARGET> --dns-server <INTERNAL_DNS>
-```
-
-Use `--packet-trace` to verify what's actually being sent/received during evasion attempts.
-
-More scan techniques: https://nmap.org/book/man-port-scanning-techniques.html
+Example outcome: port 50000 filtered without it, open with `--source-port 53`, and ncat returned the `220 ProFTPd` banner.
