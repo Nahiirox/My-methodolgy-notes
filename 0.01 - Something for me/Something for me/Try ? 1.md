@@ -1,4 +1,3 @@
-````markdown
 I will provide you with the **complete content of one CPTS module**.
 
 Transform it into a **concise, practical, methodology-focused penetration-testing reference** in clean Obsidian Markdown.
@@ -21,107 +20,79 @@ Do not turn the notes into a textbook.
 
 # 1. SOURCE FIDELITY — ABSOLUTE RULE
 
-The provided CPTS module is the **ONLY source**.
-
-Extract, condense, and restructure the module. Do not supplement it with outside knowledge.
+The provided CPTS module is the **ONLY source**. Extract, condense, and restructure it. Do not supplement it with outside knowledge.
 
 NEVER invent:
-- Commands
-- Flags
-- Tools
-- Payloads
-- Exploits
-- Techniques
-- Methodology steps
-- Attack paths
-- Wordlists
-- Files
-- URLs
-- Results
-- Credentials
+- Commands, flags, tools
+- Payloads, exploits, techniques
+- Methodology steps, attack paths
+- Wordlists, files, URLs
+- Results, credentials
 - Explanations not supported by the module
 
 If the module says:
 
 > Enumerate SMB shares.
 
-Do NOT create an `smbclient` command unless the module itself provides one.
+do NOT create an `smbclient` command unless the module itself provides one. If the module provides a command, preserve it. If the module provides useful methodology only as prose, preserve that methodology in concise form.
 
-If the module provides a command, preserve it.
+### Explicitly present ≠ automatically include
 
-If the module provides useful methodology only as prose, preserve that methodology in concise form.
-
-### Important distinction
-
-**Explicitly present does NOT mean automatically include.**
-
-The module may contain educational material that is technically correct but useless during quick practical lookup. Remove that material when it is merely:
-- introductory
-- theoretical
-- conceptual
-- basic syntax
-- protocol background
-- generic definitions
-- study-oriented discussion
-
-Your job:
+The module may contain correct but practically useless material. Remove it when it is merely introductory, theoretical, conceptual, basic syntax, protocol background, generic definitions, or study-oriented discussion.
 
 > **EXTRACT → FILTER → CONDENSE → STRUCTURE → QUICK REFERENCE**
-
-Not:
-
-> **TEACH → EXPAND → GENERALIZE → ADD KNOWLEDGE**
+> Not: **TEACH → EXPAND → GENERALIZE → ADD KNOWLEDGE**
 
 ---
 
-# 2. TARGET OUTPUT STYLE
+# 2. WHAT TO KEEP, WHAT TO CUT
 
-Write like a **professional pentester's field reference**.
+Keep anything that helps during an actual CPTS exam / HTB box:
+- knowing what to enumerate and what command to run
+- recognizing an interesting configuration or result
+- knowing what to investigate next; how one finding leads to another
+- attack paths and practical decision points
+- reproducing a technique from the module
+- useful files, resources, credentials
 
-Priorities:
+Remove anything that only teaches:
+- basic terminology, protocol theory, generic syntax
+- obvious command meanings (`get` downloads, `put` uploads)
+- introductory background, repeated information, study filler
 
-1. Practical attack/enumeration workflow
-2. Exact commands provided by the module
-3. Important flags/options
-4. Dangerous/misconfigured settings
-5. Payloads/scripts explicitly provided
-6. Enumeration findings and what they reveal
-7. Important files, paths, extensions, shares, directories
-8. Credentials/usernames/hashes explicitly provided
-9. Short context necessary to understand a technique
-10. Theory only when it directly affects practical testing
+Specific cuts:
+- **Port mappings** (`SMB → 445`, `FTP → 21`) unless the module uses the port operationally.
+- **Complete command-reference lists** — but keep any command that appears inside an actual attack/enumeration workflow.
+- **Module-end Summary sections** and **Skills Assessment / exercise / question sections** — drop them unless they contain commands or facts that appear nowhere else.
+- **Screenshots, diagrams, figures** — drop. If a figure's command or output matters and exists as text, keep the text.
+- **Module tables** — convert to plain bullets or lines (tables are banned in output, see Section 9).
 
-Use **high information density**.
+**When uncertain between keeping a practically useful detail and deleting it for brevity — keep it.**
 
-Prefer:
+No fixed length target. Good notes usually land around 10–20% of the module length; go longer whenever commands, payloads, or configuration justify it. Never cut practical content to hit a length.
+
+### Prose methodology is not useless
+
+Do NOT assume "no command = useless". If the module explains methodology, decision points, observations, or attack logic entirely in prose, preserve it — condensed aggressively, practical meaning intact:
 
 ```text
-### Enumeration
-1. Identify exposed services.
-2. Enumerate the service.
-3. Check configuration.
-4. Test the relevant weakness.
-````
+- Enumerate subdomains → resolve hosts → identify directly hosted infrastructure → inspect exposed services.
+```
 
-over long explanatory paragraphs.
-
-Do not turn every paragraph from the module into a bullet.
+When the module gives a workflow, preserve it as a concise numbered sequence. Only steps the module actually supports — no generic pentesting steps, no steps invented to fill gaps. Don't convert a workflow into a bare command list when the module expresses its logic in prose.
 
 ---
 
-# 3. PRESERVE THE MODULE STRUCTURE
+# 3. STRUCTURE — PRESERVE THE MODULE
 
-Preserve the module's **original section names and order**.
+Preserve the module's original section names and order. The notes must remain recognizable as a compressed version of the original module.
 
 Do not:
-
-* Rename sections
-* Merge sections
-* Reorder sections
-* Invent new major sections
-* Create summaries at the end
-
-Use:
+- rename sections
+- merge sections
+- reorder sections
+- invent new major sections
+- create summaries at the end
 
 ```markdown
 # Module Name
@@ -130,13 +101,9 @@ Use:
 #### Subsection
 ```
 
-You may reorganize information **inside an existing section** when it improves lookup speed.
+You may reorganize information freely **inside** an existing section when it improves lookup speed — but don't rewrite the module into a different curriculum.
 
-### Important
-
-Do NOT flatten the module into a generic tool cheat sheet.
-
-If the module contains:
+Do NOT flatten the module into a generic tool cheat sheet. If the module contains:
 
 ```text
 # FTP
@@ -146,695 +113,256 @@ If the module contains:
 ## Footprinting the Service
 ```
 
-preserve those sections.
-
-If a section contains only pure theory and no practical value, it may be removed.
+preserve those sections. A section containing only pure theory with no practical value may be removed entirely.
 
 ---
 
-# 4. REMOVE BASIC / TEXTBOOK MATERIAL
-
-I already understand basic IT, networking, common protocols, and basic tool syntax.
-
-Remove basic explanations such as:
-
-* "FTP is a file transfer protocol."
-* "SMB is used for file sharing."
-* "Port 445 is SMB."
-* "FTP `get` downloads a file."
-* "FTP `put` uploads a file."
-* "DNS A records contain IP addresses."
-* "SMTP is used for email."
-* Generic explanations of common commands.
-
-Do NOT include standard port mappings unless the module uses the port in a command or the port itself is operationally relevant.
-
-Do NOT reproduce complete command reference lists merely because the module contains them.
-
-For example, if the module lists:
-
-```text
-get = download
-put = upload
-ls = list
-```
-
-remove the definitions.
-
-However, if a command is used as part of an actual attack/enumeration workflow, preserve the command.
-
----
-
-# 5. DO NOT DELETE PRACTICAL METHODOLOGY
-
-This is critical.
-
-Do NOT assume:
-
-> "No command = useless."
-
-If the module explains a practical methodology, decision point, observation, or attack logic entirely in prose, preserve it.
-
-Examples worth keeping:
-
-* What to investigate first
-* What a finding can reveal
-* What to investigate after discovering something
-* How one finding leads to another
-* What configuration indicates a weakness
-* What a particular result means operationally
-* What attack path the module demonstrates
-* What information should be collected before proceeding
-
-Condense it aggressively, but preserve the practical meaning.
-
-Example:
-
-```text
-- Enumerate subdomains → resolve hosts → identify directly hosted infrastructure → inspect exposed services.
-```
-
-Do not add steps that the module never states.
-
----
-
-# 6. DO NOT CREATE AI-GENERATED "PRINCIPLES"
+# 4. NO AI-GENERATED FILLER SECTIONS
 
 Do NOT invent sections such as:
 
-* Core Principles
-* Key Takeaways
-* Best Practices
-* Pro Tips
-* Exam Tips
-* Common Mistakes
-* Why This Matters
-* Summary
-* Important Concepts
-* Methodology
-* Attack Strategy
-* Lessons Learned
+*Core Principles, Key Takeaways, Best Practices, Pro Tips, Exam Tips, Common Mistakes, Why This Matters, Summary, Important Concepts, Methodology, Attack Strategy, Lessons Learned*
 
-unless the **module itself contains that section or information**.
+unless the **module itself** contains that section or information.
 
-Do not transform ordinary content into artificial "AI methodology."
-
-If the module says:
-
-> Enumeration is iterative.
-
-You may preserve:
+If the module says "Enumeration is iterative", you may keep:
 
 ```text
 - Enumeration is iterative: findings guide subsequent enumeration.
 ```
 
-But do not create a new "Core Enumeration Principles" section unless the module itself has one.
+but you do not create a "Core Enumeration Principles" section.
 
 ---
 
-# 7. COMMANDS — PRESERVE, DO NOT INVENT
+# 5. COMMANDS, PAYLOADS, NORMALIZATION
 
-Include relevant commands explicitly present in the module.
+### Preserve, do not invent
 
-Preserve:
+Include commands explicitly present in the module. Preserve tool, syntax, flags, arguments, options, script names, payloads, query syntax, and important examples.
 
-* Tool
-* Syntax
-* Flags
-* Arguments
-* Options
-* Script names
-* Payloads
-* Query syntax
-* Important examples
+Do NOT generate commands from prose:
+- "Enumerate DNS records" with no command → no `dig`.
+- `dig any <TARGET_DOMAIN>` provided → keep it exactly.
 
-Do NOT generate commands from prose.
+Group related commands into logical blocks. Don't split every command into its own code block unless that improves lookup.
 
-If the module says:
+Short inline `#` comments for context are fine (own-notes style). Never alter the command syntax itself.
 
-> Enumerate DNS records.
+### Payloads / scripts / code
 
-and provides no command, do not invent `dig`.
+Preserve every technically relevant payload, script, query, or code example the module provides. Do not optimize, correct, improve, replace, rewrite, or add alternatives. Only apply placeholders and path normalization. Preserve meaningful differences between examples.
 
-If it provides:
+### Code blocks are not immutable
+
+Actively normalize commands **inside** code blocks — placeholders, wordlist/tool path stripping, lab-value normalization. A command isn't sacred just because it's fenced. Beyond that, don't modify or "improve" it.
+
+### Placeholders
+
+Replace lab-specific values:
+- IP → `<TARGET_IP>`
+- Domain → `<TARGET_DOMAIN>`
+- URL → `<TARGET_URL>`
+- Username / password → `<USERNAME>` / `<PASSWORD>`
+- Share → `<SHARE>`
+- SID → `<SID>`
+- Database / table → `<DATABASE>` / `<TABLE>`
+
+Only when the original value is actually lab-specific; don't replace generic examples that are technically meaningful. Don't create separate "Targets" / "Credentials" / "Variables" sections — placeholders live inside the content they belong to.
+
+### Path / wordlist normalization — critical
+
+Strip environment-specific install paths without destroying technically meaningful paths.
+
+**Wordlists — filename only:**
 
 ```bash
-dig any <TARGET_DOMAIN>
+wpscan --passwords rockyou.txt        # was: /usr/share/wordlists/rockyou.txt
+onesixtyone -c snmp.txt               # was: /opt/useful/seclists/Discovery/SNMP/snmp.txt
 ```
 
-preserve it.
+Preserve filename, extension, capitalization. Never replace the filename with a generic name.
 
-### Command grouping
-
-Group related commands into logical blocks when useful.
-
-Avoid splitting every single command into a separate code block unless it improves lookup.
-
----
-
-# 8. PLACEHOLDERS
-
-Replace lab-specific values with:
-
-* IP → `<TARGET_IP>`
-* Domain → `<TARGET_DOMAIN>`
-* URL → `<TARGET_URL>`
-* Username → `<USERNAME>`
-* Password → `<PASSWORD>`
-* Share → `<SHARE>`
-* SID → `<SID>`
-* Database → `<DATABASE>`
-* Table → `<TABLE>`
-
-Only use placeholders when the original value is actually lab-specific.
-
-Do NOT replace generic examples that are technically meaningful.
-
-Do NOT create separate "Targets", "Credentials", or "Variables" sections.
-
-Placeholders belong inside commands/examples or directly relevant technical content.
-
----
-
-# 9. PATH / WORDLIST NORMALIZATION
-
-This rule is extremely important.
-
-Remove environment-specific installation paths from commands **without destroying technically meaningful paths**.
-
-### Wordlists
-
-Always strip filesystem paths from wordlists.
-
-Convert:
+**Installed tools/scripts — drop filesystem prefixes and `./`:**
 
 ```bash
-wpscan --passwords /usr/share/wordlists/rockyou.txt
-```
-
-to:
-
-```bash
-wpscan --passwords rockyou.txt
-```
-
-Convert:
-
-```bash
-onesixtyone -c /opt/useful/seclists/Discovery/SNMP/snmp.txt
-```
-
-to:
-
-```bash
-onesixtyone -c snmp.txt
-```
-
-Preserve:
-
-* filename
-* extension
-* capitalization
-
-### Installed tools/scripts
-
-Remove unnecessary filesystem prefixes.
-
-Convert:
-
-```bash
-/usr/share/doc/impacket/examples/GetNPUsers.py
-```
-
-to:
-
-```bash
-GetNPUsers.py
-```
-
-Convert:
-
-```bash
-./odat.py all -s <TARGET_IP>
-```
-
-to:
-
-```bash
+GetNPUsers.py                          # was: /usr/share/doc/impacket/examples/GetNPUsers.py
 odat.py all -s <TARGET_IP>
-```
-
-Convert:
-
-```bash
-./ssh-audit.py <TARGET_IP>
-```
-
-to:
-
-```bash
 ssh-audit.py <TARGET_IP>
 ```
 
-### Technically meaningful paths
-
-DO NOT strip paths such as:
+**System/config paths — NEVER strip:**
 
 ```text
-/etc/exports
-/etc/passwd
-/etc/ssh/sshd_config
-/etc/bind/db.domain.com
-/etc/vsftpd.conf
+/etc/exports  /etc/passwd  /etc/ssh/sshd_config  /etc/bind/db.domain.com  /etc/vsftpd.conf
 ```
 
-These are meaningful configuration/system paths and must remain.
+The test: *is this path merely where a tool/wordlist is installed, or is the path itself technically relevant?* Strip the former, keep the latter.
 
-### Critical rule
+### Tools
 
-Never blindly remove `/` or filesystem paths.
+Keep the tools the module uses (`rpcclient`, `smbclient`, `smbmap`, CrackMapExec, `enum4linux-ng`...). Never add alternatives (`netexec`, `nxc`, `rustscan`, `ffuf`...) unless they appear in the module.
 
-Ask:
+### Duplication
 
-> Is this path merely showing where a tool/wordlist is installed, or is the path itself technically relevant?
-
-Strip the former.
-
-Preserve the latter.
+Consolidate exact repeats. Keep examples that differ in flags, targets, payloads, options, or attack context. Don't dedupe so aggressively that useful examples disappear.
 
 ---
 
-# 10. CODE BLOCKS ARE NOT IMMUTABLE
+# 6. TECHNICAL CONTENT TYPES
 
-Actively normalize commands **inside code blocks**.
+### Configuration / dangerous settings
 
-Do not preserve an original command unchanged merely because it is inside a fenced block.
-
-Apply:
-
-* Placeholder replacement
-* Wordlist path stripping
-* Tool/script path stripping
-* Lab-specific value normalization
-
-while preserving the command's actual syntax.
-
-Do not otherwise modify or "improve" commands.
-
----
-
-# 11. PAYLOADS / SCRIPTS / CODE
-
-Preserve every technically relevant payload, script, query, or code example explicitly provided by the module.
-
-Do not:
-
-* Optimize
-* Correct
-* Improve
-* Replace
-* Add alternatives
-* Rewrite the technique
-
-Only apply:
-
-* Required placeholders
-* Required path normalization
-
-Preserve meaningful differences between examples.
-
----
-
-# 12. CONFIGURATION / DANGEROUS SETTINGS
-
-Keep security-relevant configuration settings when the module presents them as:
-
-* dangerous
-* weak
-* insecure
-* exploitable
-* useful for enumeration
-* relevant to attack paths
-
-Do NOT add your own interpretation.
-
-Example:
+Keep security-relevant settings the module presents as dangerous, weak, insecure, exploitable, or enumeration-useful:
 
 ```text
 ### Dangerous Settings
 
 - `anonymous_enable=YES`
 - `anon_upload_enable=YES`
-- `no_root_squash`
 ```
 
-Do not turn these into long explanations.
+If the module states the practical consequence, keep it in one short line (`no_root_squash` → root-created files keep UID/GID 0). Don't add your own interpretation, don't write long explanations.
 
-If the module explicitly explains the practical consequence, preserve that consequence concisely.
+A config file mentioned in prose stays a path reference — don't generate `cat /etc/example.conf` unless the module provides it.
 
----
+### Findings / result interpretation
 
-# 13. ENUMERATION / ATTACK WORKFLOWS
-
-When the module gives a workflow, preserve it as a concise actionable sequence.
-
-Example:
-
-```markdown
-### Enumeration
-
-1. Identify exposed services.
-2. Fingerprint the service.
-3. Enumerate configuration.
-4. Check for dangerous settings.
-5. Enumerate users/shares/resources.
-6. Follow relevant findings.
-```
-
-Only use steps actually supported by the module.
-
-Do not add generic pentesting steps.
-
-Do not turn a workflow into a command list if the module expresses important logic in prose.
-
----
-
-# 14. FINDINGS / RESULT INTERPRETATION
-
-Keep information about **what a finding reveals** when it is explicitly stated in the module.
-
-Examples:
+Keep what a finding reveals when the module states it:
 
 ```text
 - TXT record → may reveal third-party providers.
-- `allow-transfer` → controls hosts permitted to receive zone transfers.
-- `no_root_squash` → root-created files retain UID/GID 0.
+- `allow-transfer` → hosts permitted to receive zone transfers.
 ```
 
-Keep the practical implication.
+Keep the practical implication, drop lengthy background. Never invent implications from your own knowledge.
 
-Remove lengthy background explanations.
+### Credentials / secrets
 
-Do NOT invent implications from your own knowledge.
+Preserve default credentials, default passwords, usernames, community strings, and example credentials the module explicitly provides. Never invent credentials. No separate credentials section unless the module itself has one.
+
+### Files / paths / extensions
+
+Extract useful config files, interesting files, registry paths, shares, directories, extensions, web paths, service files, zone files — with exact technically meaningful paths. Never invent paths.
+
+### URLs
+
+Keep only URLs relevant to exploitation, enumeration, reproduction, a technique, or a resource the module explicitly uses. Never fabricate URLs, don't copy every external link. Apply placeholders where appropriate.
 
 ---
 
-# 15. WORDLISTS
+# 7. VOICE — MY FIELD NOTES, NOT AI OUTPUT
 
-Include wordlists when they are used by the module.
+As important as source fidelity. Uniform, symmetrical, template-perfect notes read as AI-generated even when the content is correct. Actively avoid that.
 
-Use **filename only**.
+**Scope:** variation applies to how content is arranged *inside* each section — prose vs bullets vs code blocks, fragments vs sentences. The module's own section headings and their order are always preserved exactly (Section 3).
 
-Example:
+- Vary the internal arrangement per section. A short paragraph followed by one command block is fine; not everything must be bullets.
+- Break up bullet monocultures — where the logic reads naturally as a sentence or two, write the sentence.
+- Occasional `→` shorthand is fine (`null session → full user list`). Don't make it the default connector on every line; mix in plain phrasing ("this leaks the OS version", "means root can write here").
+- Don't bold every keyword. Reserve bold for settings/flags that actually need to jump out.
+- Terse, clipped phrasing is welcome ("check reuse", "same as above but SSH"). Not every line needs to be a complete, grammatically tidy sentence.
+- Don't restate a section's heading inside its content.
+- Vary sentence rhythm — short fragments next to longer lines, not a uniform AI cadence of similarly-sized bullets.
+- No filler connective tissue ("It is also worth noting that...", "Additionally,..."). State the fact.
+
+The test: it should look like something *I* typed while going through the module and taking my own shortcuts — not a document generated to a template.
+
+---
+
+# 8. WORKED EXAMPLE
+
+*Illustrative only — never copy content from this example into the output; always use the actual module.*
+
+Module excerpt (input):
 
 ```text
-subdomains-top1million-110000.txt
-snmp.txt
+FTP is one of the oldest protocols still in use, operating on a
+client-server model over TCP with separate command and data channels.
+[... more theory ...]
+
+## FTP Interaction
+
+  ls      - list directory contents
+  get     - download a file
+  put     - upload a file
+  status  - show session status
+
+## Dangerous Settings
+
+  anonymous_enable     allow anonymous logins
+  anon_upload_enable   allow anonymous uploads
+
+If anonymous_enable is set to YES and anon_upload_enable to YES, and the
+anonymous user has write access to a directory that is also served by a
+web server, we can upload a malicious file there and reach code execution.
+
+## Footprinting the Service
+
+nmap -sV -p21 -sC 10.129.14.128
+
+Anonymous login can be tested against a non-standard port as well:
+ftp anonymous@10.129.14.128 -p 2121
+
+Brute-forcing:
+hydra -l ftp -P /usr/share/wordlists/rockyou.txt ftp://10.129.14.128
 ```
 
-Never preserve:
+Desired output:
 
-```text
-/usr/share/wordlists/...
-/opt/useful/seclists/...
-```
+````markdown
+# FTP
 
-Do not replace the filename with a generic name.
+## Dangerous Settings
 
----
+- `anonymous_enable=YES`
+- `anon_upload_enable=YES`
 
-# 16. URLS / EXTERNAL RESOURCES
+anon write access + a directory also served by a web server → upload a payload there, code execution.
 
-Keep URLs only when they are technically relevant to:
-
-* exploitation
-* enumeration
-* reproduction
-* a technique
-* a useful resource explicitly used by the module
-
-Do not copy every external link from the module.
-
-Never fabricate URLs.
-
-Apply target placeholders where appropriate.
-
----
-
-# 17. CREDENTIALS / SECRETS
-
-Preserve credentials explicitly provided by the module when they are technically relevant.
-
-Examples:
-
-* Default credentials
-* Default passwords
-* Usernames
-* Community strings
-* Example credentials used by the technique
-
-Do not invent credentials.
-
-Do not create a separate credentials section unless the module itself has one.
-
----
-
-# 18. FILES / PATHS / EXTENSIONS
-
-Extract technically useful:
-
-* Configuration files
-* Interesting files
-* Registry paths
-* Shares
-* Directories
-* Extensions
-* Web paths
-* Service files
-* Zone files
-
-Preserve exact technically meaningful paths.
-
-Do not invent paths.
-
----
-
-# 19. DEFAULT CONFIGURATION SECTIONS
-
-If the module explicitly provides default configuration files or paths, preserve them.
-
-However:
-
-Do NOT invent commands such as:
+## Footprinting the Service
 
 ```bash
-cat /etc/example.conf
+nmap -sV -p21 -sC <TARGET_IP>
+
+# anon login test — module example ran on non-standard port 2121
+ftp anonymous@<TARGET_IP> -p 2121
+
+hydra -l ftp -P rockyou.txt ftp://<TARGET_IP>
 ```
+````
 
-unless the module itself provides that command.
-
-A configuration file mentioned in prose should remain a file/path reference, not become a generated command.
+What this demonstrates: theory dropped; "FTP Interaction" dropped entirely (pure command reference); settings table converted to bullets; prose consequence condensed to one line; lab IPs → placeholders; wordlist path stripped, filename kept; port kept because operationally used; one short comment preserves the module's context; a single `→`, not arrow-patterned lines throughout.
 
 ---
 
-# 20. PORTS
+# 9. FORMATTING
 
-Do not create generic port-reference material.
+Clean Obsidian Markdown.
 
-Keep ports only when:
-
-* used directly in a command
-* required to understand a specific service interaction
-* explicitly relevant to the technique
-* the module itself emphasizes the port
-
-Do not add:
-
-```text
-SMB → 445
-FTP → 21
-SSH → 22
-```
-
-unless the module uses that information operationally.
-
----
-
-# 21. TOOL NAMES
-
-Preserve tools explicitly used in the module.
-
-Do not add alternatives.
-
-If the module uses:
-
-```text
-rpcclient
-smbclient
-smbmap
-CrackMapExec
-enum4linux-ng
-```
-
-keep them.
-
-Do not add tools such as `netexec`, `nxc`, `rustscan`, `ffuf`, etc. unless they appear in the source module.
-
----
-
-# 22. DUPLICATION
-
-Remove **unnecessary duplication** while preserving meaningful differences.
-
-If the same command appears repeatedly with no meaningful difference, consolidate it.
-
-If later examples introduce:
-
-* different flags
-* different targets
-* different payloads
-* different options
-* different attack contexts
-
-preserve them.
-
-Do not aggressively deduplicate the point where useful examples disappear.
-
----
-
-# 23. FORMATTING
-
-Output must be clean Obsidian Markdown.
-
-Use:
-
-* `#`, `##`, `###`, `####`
-* Bullets
-* Numbered workflows
-* Inline code
-* Fenced code blocks
-
-Use appropriate code block languages:
-
-```text
-bash
-powershell
-python
-sql
-php
-text
-```
-
-when applicable.
+Use: `#` / `##` / `###` / `####` headings, bullets, numbered workflows, inline code, fenced code blocks with language tags (`bash`, `powershell`, `python`, `sql`, `php`, `text`) when applicable.
 
 Do NOT use:
+- Tables — commands must never appear inside tables
+- Emojis or decorative symbols
+- Generated TOCs
+- Long introductions, repetitive prose, artificial summaries
+- Excessive bolding
 
-* Tables
-* Emojis
-* Decorative symbols
-* Generated TOCs
-* Long introductions
-* Repetitive prose
-* Artificial summaries
-* Excessive bolding
-
-Commands must never be placed inside tables.
+Formatting varies naturally between sections per Section 7 — no forced identical structure, bolding pattern, or bullet density everywhere.
 
 ---
 
-# 24. IMPORTANT: DO NOT OVER-CONDENSE
+# FINAL CHECK
 
-The goal is **quick reference**, not maximum deletion.
+Before outputting, verify:
 
-Keep something if it helps me during an actual CPTS exam/HTB box to:
-
-* know what to enumerate
-* know what command to run
-* recognize an interesting configuration
-* recognize an interesting result
-* know what to investigate next
-* understand an attack path
-* reproduce a technique from the module
-* identify a useful file/resource/credential
-* understand a practical decision point
-
-Remove something if it only teaches:
-
-* basic terminology
-* protocol theory
-* generic syntax
-* obvious command meanings
-* introductory background
-* repeated information
-* study-oriented filler
-
-When uncertain between **keeping a practically useful detail** and deleting it for brevity, keep it.
-
----
-
-# 25. SOURCE-ORDER RULE
-
-Preserve the source module's information flow.
-
-Do not reorganize everything according to your own preferred pentesting methodology.
-
-The notes should remain recognizable as a compressed version of the original module.
-
-You are allowed to improve **local organization inside a section**, but not rewrite the module into a different curriculum.
-
----
-
-# 26. INTERNAL VALIDATION
-
-Before outputting, silently verify:
-
-### Source fidelity
-
-* Every technical fact comes from the module.
-* No outside cybersecurity knowledge was added.
-* No commands were invented from prose.
-* No tools were invented.
-* No payloads were invented.
-* No flags were invented.
-* No attack paths were invented.
-
-### Practicality
-
-* Practical methodology was preserved.
-* Decision points were preserved.
-* Useful findings and interpretations were preserved.
-* Relevant commands were preserved.
-* Relevant configuration weaknesses were preserved.
-* Relevant payloads/scripts were preserved.
-
-### Filtering
-
-* Basic definitions removed.
-* Generic protocol theory removed.
-* Basic command explanations removed.
-* Standard port mappings removed unless operationally relevant.
-* Artificial AI-generated principles removed.
-* Study-oriented filler removed.
-
-### Normalization
-
-* Lab IPs/domains/credentials normalized.
-* Wordlist filesystem paths removed.
-* Tool installation paths removed.
-* Meaningful system/configuration paths preserved.
-* Filenames and extensions preserved.
-
-### Formatting
-
-* Original section names/order preserved.
-* No invented major sections.
-* No tables.
-* No TOC.
-* No summary.
-* No fluff.
-* Commands are easy to locate.
-* Output is valid Obsidian Markdown.
+- **Fidelity** — every fact, command, tool, flag, payload, URL, and credential comes from the module; nothing invented, nothing supplemented.
+- **Practicality** — methodology, decision points, findings/interpretations, commands, config weaknesses, payloads all preserved.
+- **Filtering** — basic definitions, protocol theory, generic syntax, port mappings, filler all removed.
+- **Normalization** — lab values replaced; wordlist/tool install paths stripped; system/config paths intact; filenames and extensions preserved.
+- **Structure** — original section names/order kept; no invented sections, tables, TOC, or summary.
+- **Voice** — internal arrangement varies naturally between sections; reads like field notes, not a template.
 
 ---
 
@@ -842,23 +370,10 @@ Before outputting, silently verify:
 
 Output **ONLY the finished Obsidian Markdown notes**.
 
-Do not explain your decisions.
-
-Do not describe what you removed.
-
-Do not provide a summary.
-
-Do not mention this prompt.
-
-Do not add information from outside the module.
-
-Do not make the notes artificially shorter just to reduce length.
+Do not explain your decisions. Do not describe what you removed. Do not provide a summary. Do not mention this prompt. Do not add information from outside the module. Do not make the notes artificially shorter just to reduce length.
 
 The final result should feel like:
 
-> **The CPTS module compressed into a professional, practical field reference — retaining the module's real methodology, attack logic, commands, findings, and useful technical details while removing textbook material and AI-generated filler.**
+> **My own compressed field notes from working through the CPTS module — retaining the real methodology, attack logic, commands, findings, and useful technical details while removing textbook material, AI-generated filler, and template-uniform formatting.**
 
-**Read → filter → preserve practical methodology → preserve exact technical content → normalize → condense → structure → output.**
-
-```
-```
+**Read → filter → preserve practical methodology → preserve exact technical content → normalize → condense → structure with natural variation → output.**
