@@ -219,6 +219,12 @@ Chain it performs: verifies vulnerable version → logs in → uploads PHP paylo
 
 ```bash
 python -c 'import pty; pty.spawn("/bin/sh")'
+python3 -c 'import pty; pty.spawn("/bin/bash")'
+export TERM=xterm
+Ctrl+Z
+stty raw -echo; fg
+reset
+stty rows 38 columns 116
 ```
 
 Prompt appears (sh-4.2$), and `su`/`sudo` — usually needed for privesc — become usable.
