@@ -11,12 +11,14 @@
             "id": "4e1d8df1950f8c7f",
             "type": "leaf",
             "state": {
-              "type": "pdf",
+              "type": "markdown",
               "state": {
-                "file": "13 - Attacking Web Applications with Ffuf/Attacking Web Applications with Ffuf - cheatsheet.pdf"
+                "file": "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
+                "mode": "preview",
+                "source": false
               },
-              "icon": "lucide-file-text",
-              "title": "Attacking Web Applications with Ffuf - cheatsheet"
+              "icon": "lucide-file",
+              "title": "Linux Fundamentals"
             }
           }
         ]
@@ -159,7 +161,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "13 - Attacking Web Applications with Ffuf/Attacking Web Applications with Ffuf - cheatsheet.pdf",
+                "file": "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -188,36 +190,37 @@
   },
   "active": "4e1d8df1950f8c7f",
   "lastOpenFiles": [
-    "22 - Attacking Common Applications/Attacking Common Applications - cheatsheet.pdf",
+    "0.01 - Something for me/Something for me/Something i need.md",
+    "0.01 - Something for me/Something for me/My prompt.md",
+    "0.01 - Something for me/Something for me/Try ? 1.md",
+    "0.01 - Something for me/Something for me/Try ?.md",
+    "23 - Linux Privilege Escalation/Linux Privilege Escalation.md",
+    "06 - Shells & Payloads/Shells & Payloads.md",
+    "23 - Linux Privilege Escalation",
+    "06 - Shells & Payloads/Shells & Payloads - cheatsheet.pdf",
+    "22 - Attacking Common Applications/Attacking Common Applications.md",
     "02 - Footprinting/Footprinting.md",
+    "01 - Network Enumeration with Nmap/Nmap.md",
+    "05 - File Transfers/File Transfers.md",
+    "13 - Attacking Web Applications with Ffuf/Attacking Web Applications with Ffuf - cheatsheet.pdf",
+    "22 - Attacking Common Applications/Attacking Common Applications - cheatsheet.pdf",
     "15 - SQL Injection Fundamentals/SQL Injection Fundamentals - cheatsheet.pdf",
     "21 - Web Attacks/Web Attacks - cheatsheet.pdf",
     "16 - SQLMap Essentials/SQLMap Essentials - cheatsheet.pdf",
     "19 - File Upload Attacks/File Upload Attacks - cheatsheet.pdf",
     "18 - File Inclusions/File Inclusion - cheatsheet.pdf",
     "17 - XSS/Cross-Site Scripting (XSS) - cheatsheet.pdf",
-    "20 - Command Injections/Command Injections - cheatsheet.pdf",
-    "14 - Login Brute Forcing/Login Brute Forcing - cheatsheet.pdf",
-    "13 - Attacking Web Applications with Ffuf/Attacking Web Applications with Ffuf - cheatsheet.pdf",
-    "01 - Network Enumeration with Nmap/Nmap.md",
-    "22 - Attacking Common Applications/Attacking Common Applications.md",
-    "06 - Shells & Payloads/Shells & Payloads.md",
     "10 - Pivoting, Tunneling, and Port Forwarding/Pivoting, Tunneling, and Port Forwarding.md",
     "13 - Attacking Web Applications with Ffuf/FUFF.md",
-    "0.01 - Something for me/Something for me/Try ?.md",
     "21 - Web Attacks/Web Attacks.md",
     "20 - Command Injections/Command Injections.md",
     "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
-    "0.01 - Something for me/Something for me/Try ? 1.md",
-    "0.01 - Something for me/Something for me/Something i need.md",
-    "0.01 - Something for me/Something for me/My prompt.md",
     "03 - Information Gathering - Web Edition/Information Gathering - Web Edition.md",
     "09 - Attacking Common Services/Attacking Common Services.md",
     "19 - File Upload Attacks/01 - File Upload Attacks.md",
     "17 - XSS/01 - XSS.md",
     "18 - File Inclusions/File Inclusions.md",
     "16 - SQLMap Essentials/SQLMAP.md",
-    "05 - File Transfers/File Transfers.md",
     "15 - SQL Injection Fundamentals/SQL Injection.md",
     "04 - Vulnerability Assessment/Vulnerability Assessment.md",
     "14 - Login Brute Forcing/Login Brute Forcing.md",
