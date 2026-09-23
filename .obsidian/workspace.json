@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
+                "file": "04 - Vulnerability Assessment/Vulnerability Assessment.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Linux Fundamentals"
+              "title": "Vulnerability Assessment"
             }
           }
         ]
@@ -161,7 +161,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
+                "file": "04 - Vulnerability Assessment/Vulnerability Assessment.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -190,6 +190,7 @@
   },
   "active": "4e1d8df1950f8c7f",
   "lastOpenFiles": [
+    "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
     "0.01 - Something for me/Something for me/Something i need.md",
     "0.01 - Something for me/Something for me/My prompt.md",
     "0.01 - Something for me/Something for me/Try ? 1.md",
@@ -214,7 +215,6 @@
     "13 - Attacking Web Applications with Ffuf/FUFF.md",
     "21 - Web Attacks/Web Attacks.md",
     "20 - Command Injections/Command Injections.md",
-    "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
     "03 - Information Gathering - Web Edition/Information Gathering - Web Edition.md",
     "09 - Attacking Common Services/Attacking Common Services.md",
     "19 - File Upload Attacks/01 - File Upload Attacks.md",
