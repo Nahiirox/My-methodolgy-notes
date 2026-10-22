@@ -1,46 +1,70 @@
+---
+icon: binoculars
+layout:
+  width: default
+  title:
+    visible: true
+  description:
+    visible: true
+  tableOfContents:
+    visible: true
+  outline:
+    visible: true
+  pagination:
+    visible: true
+  metadata:
+    visible: true
+  tags:
+    visible: true
+  actions:
+    visible: true
+  anchors:
+    visible: true
+---
+
 # Footprinting
 
 ## Enumeration Principles
 
-Enumeration is information gathering via active (scans) and passive (third-party providers) methods, run as a loop: what we find determines the next query. OSINT is a separate procedure—purely passive, with no active enumeration.
+Enumeration combines active checks with passive sources. Treat it as a loop: each finding drives the next query. OSINT is separate and remains passive.
 
-The goal is not to get at the systems but to find all the ways to get there. Don't make the classic mistake: find SSH/RDP/WinRM and immediately brute-force weak credentials. That's noisy, gets you blacklisted, and you don't know the defensive measures yet.
+Map the attack surface before attempting access. Do not start password attacks after spotting SSH, RDP, or WinRM. That is noisy and reveals little about the target's controls.
 
-Questions to work through against everything found:
+For every finding, ask:
 
 ```
 What can we see? Why can we see it? What image does it create? What do we gain, how can we use it?
 What can we NOT see? Why not? What image results from what we do not see?
 ```
 
-1. There is more than meets the eye—consider all points of view.
-2. Distinguish between what we see and what we do not see.
-3. There are always ways to gain more information—understand the target.
+1. Consider other explanations and vantage points.
+2. Record both exposed and missing information.
+3. Identify the next source or check that can reduce uncertainty.
 
 ## Enumeration Methodology
 
-Six layers act like walls between us and the target: find the gaps instead of smashing through headfirst. The process splits into three levels: infrastructure-based, host-based, and OS-based enumeration. Layers 1–2 do not really apply to intranet/AD, which is covered in other modules.
+Six layers separate the tester from the target. Look for gaps between them. The process covers infrastructure, hosts, and operating systems. Layers 1–2 rarely apply to intranet or AD testing.
 
-1. **Internet Presence** — domains, subdomains, vHosts, ASN, netblocks, IPs, cloud instances, and security measures. Goal: identify all target systems and interfaces that can be tested. This is even more important when the contract allows looking for additional hosts.
-2. **Gateway** — firewalls, DMZ, IPS/IDS, EDR, proxies, NAC, network segmentation, VPN, and Cloudflare. Goal: understand what we're dealing with and what to watch out for.
-3. **Accessible Services** — service type, functionality, configuration, port, version, and interface. Every service was installed for a reason; understand it to communicate with and exploit it. This is the main layer of this module.
+1. **Internet Presence** — domains, subdomains, vHosts, ASN, netblocks, IPs, cloud instances, and security measures. Identify all target systems and testable interfaces. This matters most when the contract permits additional-host discovery.
+2. **Gateway** — firewalls, DMZ, IPS/IDS, EDR, proxies, NAC, network segmentation, VPN, and Cloudflare. Identify controls and testing constraints.
+3. **Accessible Services** — service type, functionality, configuration, port, version, and interface. Understand each service before interacting with it. This is the module's main layer.
 4. **Processes** — PID, processed data, tasks, source, and destination. Every command or function execution has at least one source and one target; identify the dependencies.
 5. **Privileges** — groups, users, permissions, restrictions, and environment. Privileges are often overlooked by admins, especially in AD and multi-area admin environments.
 6. **OS Setup** — OS type, patch level, network configuration, OS environment, configuration files, and sensitive private files. This reflects the admins' skills and what internal information can be gleaned.
 
-A methodology is a summary of systematic procedures, not a step-by-step guide. Collections of tools and commands are a cheat sheet, not the methodology.
+A methodology defines the order and purpose of checks. A command list is only a reference.
 
-Not every gap found leads inside, and time is always limited—but there is nearly always a way in. Even a four-week test cannot guarantee that no vulnerabilities remain.
+Not every finding is exploitable. Time is limited, and a test cannot prove the absence of vulnerabilities.
 
 ## Domain Information
 
-Passive gathering means staying hidden and navigating as a customer or visitor, with no direct active scans. Start with the company's main website: read the texts and think about what technologies and structures each offered service requires, such as application development, IoT, hosting, data science, or IT security.
+Passive gathering uses public sources without sending probes to target infrastructure. Start with the main site. Link each advertised service to the technologies and supporting infrastructure it likely requires.
 
-Take the developer's view: services are bound to technical aspects needed to provide them. Deep OSINT is covered in OSINT: Corporate Recon.
+Think from the delivery team's perspective. Public services require specific platforms, vendors, and integrations. Deep OSINT belongs in Corporate Recon.
 
 ### Online Presence
 
-The SSL certificate of the main website is a first source. A certificate often covers several subdomains, most likely still active.
+Start with the main site's TLS certificate. Subject alternative names often expose active subdomains.
 
 crt.sh queries Certificate Transparency logs. Under RFC 6962, every CA-issued certificate gets logged; Let's Encrypt entries end up there too.
 
@@ -51,19 +75,19 @@ curl -s https://crt.sh/\?q\=<TARGET_DOMAIN>\&output\=json | jq .
 curl -s https://crt.sh/\?q\=<TARGET_DOMAIN>\&output\=json | jq . | grep name | cut -d":" -f2 | grep -v "CN=" | cut -d'"' -f2 | awk '{gsub(/\\n/,"\n");}1;' | sort -u
 ```
 
-Next, filter out hosts hosted by third-party providers, which cannot be tested without permission, and retain company-hosted hosts:
+Remove third-party hosts that are out of scope. Retain company-managed hosts:
 
 ```bash
 for i in $(cat subdomainlist);do host $i | grep "has address" | grep <TARGET_DOMAIN> | cut -d" " -f1,4;done
 ```
 
-Build an IP list using the same loop with `cut -d" " -f4 >> ip-addresses.txt`, then run the IPs through Shodan. Shodan indexes internet-connected systems and their open ports, including HTTP/HTTPS, FTP, SSH, SNMP, Telnet, RTSP, and SIP, along with organization, SSL versions, and DH parameters.
+Build an IP list with `cut -d" " -f4 >> ip-addresses.txt`, then check it in Shodan. Shodan can expose indexed ports, banners, organization data, TLS versions, and DH parameters.
 
 ```bash
 for i in $(cat ip-addresses.txt);do shodan host $i;done
 ```
 
-Note interesting IPs for later active investigation.
+Record IPs for later active investigation.
 
 ### DNS Records
 
@@ -76,7 +100,7 @@ dig any <TARGET_DOMAIN>
 * **NS** → name servers, usually identifying the hosting provider
 * **TXT** → verification keys for third-party providers plus SPF/DMARC/DKIM
 
-TXT records are where hidden third parties show up.
+TXT records can reveal third-party providers.
 
 | Finding            | Meaning                                                                                                                |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
@@ -90,7 +114,7 @@ TXT records are where hidden third parties show up.
 
 ## Cloud Resources
 
-S3 buckets on AWS, blobs on Azure, and cloud storage on GCP can be accessible without authentication when misconfigured. Cloud storage often gets a DNS entry so employees can reach it easily. An `s3-website-us-west-2.amazonaws.com` entry in host resolution is a strong hint.
+Misconfigured AWS buckets, Azure blobs, and GCP storage may allow unauthenticated access. Organizations often assign DNS names for easy staff access. An `s3-website-us-west-2.amazonaws.com` resolution is a useful indicator.
 
 Ways to find storage:
 
@@ -99,13 +123,13 @@ Ways to find storage:
 * domain.glass: infrastructure overview; also shows Cloudflare's security assessment status. `Safe` indicates a layer-2 security measure was found.
 * GrayHatWarfare: discover AWS/Azure/GCP storage, sort and filter by file format, search company-name abbreviations, and search files simultaneously.
 
-Leaked files can include `id_rsa` or `id_rsa.pub`. Downloading a private key may allow passwordless logins to machines.
+Look for `id_rsa` and `id_rsa.pub`. A leaked private key can provide passwordless access.
 
 ## Staff
 
-Employees on LinkedIn and Xing reveal the makeup of teams, technologies, programming languages, and software in use.
+LinkedIn and Xing profiles reveal teams, technologies, languages, and products in use.
 
-Job postings are especially valuable. One example listed:
+Job listings often provide the clearest technology inventory:
 
 * Java/C#/C++
 * Python/Ruby/PHP/Perl
@@ -121,17 +145,17 @@ Job postings are especially valuable. One example listed:
 * Redis
 * NumPy
 
-If the Atlassian Suite is in use, potentially accessible resources may exist.
+Atlassian deployments can expose additional discovery targets.
 
-Employee profiles reveal what people work with, such as React, Svelte, AngularJS, or Django. For a technology like Django, search for its security misconfigurations, such as the OWASP Top10 for Django GitHub repository. Best practices tell us what to look for because many follow them blindly and even name files exactly as shown in instructions.
+Profiles can expose application frameworks such as React, Svelte, AngularJS, or Django. For each framework, research common deployment mistakes and published hardening guidance. Teams often reuse documented filenames and layouts.
 
-Public GitHub projects of employees can leak a personal email address in a file or a hardcoded JWT token in a web application.
+Public employee repositories may expose personal email addresses or hardcoded tokens.
 
 LinkedIn search can filter by connections, location, company, school, industry, and titles. For infrastructure and technology identification, look for employees working in both development and security; they can hint at security measures in place.
 
 ## FTP
 
-FTP is a clear-text protocol. Credentials are usually required, but anonymous FTP is a common configuration. TFTP is UDP-based, has no user authentication, relies entirely on file read/write permissions, and does not support directory listing. It is intended for local or protected networks only.
+FTP is clear text. It normally requires credentials, but anonymous access is common. TFTP uses UDP, has no authentication or directory listing, and relies on file permissions. Use it only on protected networks.
 
 ### Default Configuration
 
@@ -175,7 +199,7 @@ wget -m --no-passive ftp://anonymous:anonymous@<TARGET_IP>
 Downloading all files is noisy. Nobody legitimately downloads every file, and it may trigger alarms.
 {% endhint %}
 
-FTP shares synchronized with a web server are common because developers want quick file access. Internal systems are often poorly hardened because they are assumed to be unreachable from outside. Upload access can lead to LFI for system command execution, direct webshell or reverse shell access, and FTP logs may also lead to RCE.
+FTP shares may synchronize with web roots for developer access. Write access can enable file inclusion abuse, web shells, reverse shells, or log-based RCE.
 
 ### Footprinting the Service
 
@@ -215,7 +239,7 @@ openssl s_client -connect <TARGET_IP>:21 -starttls ftp
 
 ## SMB
 
-Samba provides SMB on Linux and Unix through SMB/CIFS. Older NetBIOS-based communication runs over TCP 137–139, while direct CIFS runs over TCP 445.
+Samba implements SMB/CIFS on Linux and Unix. NetBIOS services use TCP 137–139. Direct CIFS uses TCP 445.
 
 ### Default Configuration
 
@@ -223,7 +247,7 @@ Samba provides SMB on Linux and Unix through SMB/CIFS. Older NetBIOS-based commu
 cat /etc/samba/smb.conf | grep -v "#\|\;"
 ```
 
-The configuration contains a `[global]` section and one section for each share. Share settings override global settings and are often configured incorrectly.
+The configuration has a `[global]` section and one section per share. Share settings override global settings.
 
 Relevant options include:
 
@@ -291,7 +315,7 @@ On the server side, `smbstatus` shows who is connected, from which host, and to 
 sudo nmap <TARGET_IP> -sV -sC -p139,445
 ```
 
-Nmap provides limited information, such as version, NetBIOS name, and whether message signing is enabled but not required. Use manual RPC enumeration through a null session:
+Nmap reports the version, NetBIOS name, and signing status. Follow with manual RPC enumeration through a null session:
 
 ```bash
 rpcclient -U "" <TARGET_IP>
@@ -324,7 +348,7 @@ smbmap -H <TARGET_IP>                                    # share permissions per
 crackmapexec smb <TARGET_IP> --shares -u '' -p ''        # shows READ/WRITE + signing status
 ```
 
-`enum4linux-ng` automates much of this:
+`enum4linux-ng` automates many of these checks:
 
 ```bash
 git clone https://github.com/cddmp/enum4linux-ng.git && cd enum4linux-ng
@@ -344,12 +368,12 @@ Important output includes:
 * Password policy, such as `min_pw_length: 5`, `DOMAIN_PASSWORD_COMPLEX: false`, and `lockout_threshold: None`.
 
 {% hint style="info" %}
-Use more than one tool. Tools are programmed differently and return different information. Verify manually; do not blindly trust automation.
+Cross-check with more than one tool. Results differ by implementation. Verify important findings manually.
 {% endhint %}
 
 ## NFS
 
-NFS is Linux and Unix file sharing with no authentication mechanism of its own. Authentication resides in RPC options, while authorization maps UID/GID. Clients and servers do not need matching UID/GID mappings, so NFS belongs only in trusted networks.
+NFS is a Linux and Unix file-sharing protocol without built-in authentication. RPC options provide authentication, while UID/GID mappings provide authorization. Use NFS only on trusted networks.
 
 ### Default Configuration
 
@@ -496,7 +520,7 @@ Relevant commands:
 telnet <TARGET_IP> 25
 ```
 
-`VRFY` checks whether a mailbox exists. Depending on configuration, the server may respond with `252 2.0.0 <anything>` even for garbage usernames. Do not fully trust it, or automated tools that rely on it.
+`VRFY` checks whether a mailbox exists. Some servers return `252 2.0.0 <anything>` for invalid usernames. Verify results independently.
 
 Through a web proxy:
 
