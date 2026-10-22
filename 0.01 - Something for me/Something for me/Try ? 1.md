@@ -117,7 +117,7 @@ preserve those sections. A section containing only pure theory with no practical
 
 ---
 
-# 4. NO AI-GENERATED FILLER SECTIONS
+# 4. NO TEMPLATE-GENERATED FILLER SECTIONS
 
 Do NOT invent sections such as:
 
@@ -251,9 +251,9 @@ Keep only URLs relevant to exploitation, enumeration, reproduction, a technique,
 
 ---
 
-# 7. VOICE — MY FIELD NOTES, NOT AI OUTPUT
+# 7. VOICE — MY FIELD NOTES, NOT TEMPLATE OUTPUT
 
-As important as source fidelity. Uniform, symmetrical, template-perfect notes read as AI-generated even when the content is correct. Actively avoid that.
+As important as source fidelity. Uniform, symmetrical, template-perfect notes read as template-generated even when the content is correct. Actively avoid that.
 
 **Scope:** variation applies to how content is arranged *inside* each section — prose vs bullets vs code blocks, fragments vs sentences. The module's own section headings and their order are always preserved exactly (Section 3).
 
@@ -263,8 +263,8 @@ As important as source fidelity. Uniform, symmetrical, template-perfect notes re
 - Don't bold every keyword. Reserve bold for settings/flags that actually need to jump out.
 - Terse, clipped phrasing is welcome ("check reuse", "same as above but SSH"). Not every line needs to be a complete, grammatically tidy sentence.
 - Don't restate a section's heading inside its content.
-- Vary sentence rhythm — short fragments next to longer lines, not a uniform AI cadence of similarly-sized bullets.
-- No filler connective tissue ("It is also worth noting that...", "Additionally,..."). State the fact.
+- Vary sentence rhythm — short fragments next to longer lines, not a uniform uniform cadence of similarly-sized bullets.
+- No filler connective tissue ("Also...", "..."). State the fact.
 
 The test: it should look like something *I* typed while going through the module and taking my own shortcuts — not a document generated to a template.
 
@@ -374,6 +374,6 @@ Do not explain your decisions. Do not describe what you removed. Do not provide 
 
 The final result should feel like:
 
-> **My own compressed field notes from working through the CPTS module — retaining the real methodology, attack logic, commands, findings, and useful technical details while removing textbook material, AI-generated filler, and template-uniform formatting.**
+> **My own compressed field notes from working through the CPTS module — retaining the real methodology, attack logic, commands, findings, and useful technical details while removing textbook material, template-generated filler, and template-uniform formatting.**
 
 **Read → filter → preserve practical methodology → preserve exact technical content → normalize → condense → structure with natural variation → output.**

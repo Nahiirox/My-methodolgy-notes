@@ -138,7 +138,7 @@ versionedkeywords / versionedmorekeywords   versioned-comment per keyword
 
 ## OS Exploitation
 
-File ops need privileges (MySQL: LOAD DATA + INSERT to read via `LOAD DATA LOCAL INFILE '/etc/passwd' INTO TABLE passwd;`; write additionally needs `secure_file_priv` permitting it). DBA makes it all likely — check with `--is-dba` first (`current user is DBA: True/False`).
+File ops need privileges (MySQL: LOAD DATA + INSERT to read via `LOAD DATA LOCAL INFILE '/etc/passwd' INTO TABLE passwd;`; write also needs `secure_file_priv` permitting it). DBA makes it all likely — check with `--is-dba` first (`current user is DBA: True/False`).
 
 **Read files:**
 

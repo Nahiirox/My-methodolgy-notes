@@ -21,7 +21,7 @@ himself — not a textbook, not a tutorial, not a blog post.
 
 ## VOICE
 
-- No filler. No "this is useful when". No "it's worth noting". No motivational prose.
+- No filler. No "this is useful when". No "worth noting". No motivational prose.
 - No emojis. No tables. Ever.
 - Write like someone who already knows the concept and just needs the reference.
 - Bold only failure conditions and critical terms — not random nouns.
