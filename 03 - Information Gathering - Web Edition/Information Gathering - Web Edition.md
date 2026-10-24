@@ -1,187 +1,219 @@
 # Web Reconnaissance
 
-Recon = the Information Gathering phase before vuln assessment/exploitation. Goals: identify assets (pages, subdomains, IPs, technologies), discover hidden info (backups, configs, internal docs), analyse the attack surface, gather intel for exploitation or social engineering.
-
 ## Introduction
+![[Pasted image 20261024043530.png]]
+Active recon = direct interaction, higher detection risk. Passive = publicly available info, stealthier but less comprehensive.
 
-Two approaches — active (direct interaction, detectable) vs passive (public sources only, stealthy):
+**Active:** port scanning (`nmap`, `masscan`, `unicornscan`), vuln scanning (Nessus, OpenVAS, Nikto), network mapping (traceroute, nmap), banner grabbing (`nc`, `curl`), OS fingerprinting (nmap `-O`, Xprobe2), service enumeration (nmap `-sV`), web spidering (Burp Spider, ZAP Spider, Scrapy).
 
-- Active: port scanning (Nmap, Masscan, Unicornscan), vulnerability scanning (Nessus, OpenVAS, Nikto), network mapping (traceroute), banner grabbing (netcat, curl), OS fingerprinting (`nmap -O`), service enumeration (`nmap -sV`), web spidering (Burp Spider, OWASP ZAP). Anything active can trip IDS/firewalls; scanners sending exploit payloads are the loudest.
-- Passive: search engine queries, WHOIS lookups, DNS record analysis (dig, nslookup, host, dnsenum, fierce, dnsrecon), web archive analysis (Wayback Machine), social media, code repositories (GitHub/GitLab). Normal internet activity — very low detection risk.
+**Passive:** search engines, WHOIS, DNS (`dig`, `nslookup`, `host`, `dnsenum`, `fierce`, `dnsrecon`), Wayback Machine, social media, code repos.
 
 ## WHOIS
 
-Query/response protocol for registered resources — domains, IP blocks, ASNs.
+Query the domain registration database for registrant, admin/tech contacts, creation/expiry dates, name servers.
 
 ```bash
 whois <TARGET_DOMAIN>
 ```
 
-A record holds: registrar, registrant / administrative / technical contacts, creation + expiration dates, name servers. Recon value:
+Fields that matter in recon: name servers (hosting provider), registrant org, creation date (young domain = phishing indicator), privacy service (hidden registrant), registrar abuse history.
 
-- Contacts (names, emails, phones) → social engineering / phishing targets
-- Name servers and IPs → hints at network infrastructure and hosting
-- Historical WHOIS (e.g. WhoisFreaks) → ownership/contact/infrastructure changes over time
+Historical WHOIS via WhoisFreaks to track ownership changes.
 
 ## Utilising WHOIS
 
-```bash
-sudo apt install whois -y
-whois facebook.com
-```
+Reading WHOIS is the whole skill:
 
-Reading the output:
+- **Registration date just days old** → phishing / disposable infra
+- **Registrant behind privacy service** → suspicious
+- **Name servers at a known bulletproof host** → strong phishing indicator
+- **Registrant on free anonymous email, address in high-cybercrime country, lax-abuse registrar** → likely compromised/bulletproof C2
+- **Clustered registration dates + shared name servers across many domains** → single threat actor
 
-- Registrar + creation/expiry dates → legitimacy, how established the domain is
-- Registrant organization + contact → who's behind it
-- Domain statuses (`clientDeleteProhibited`, `clientTransferProhibited`, `clientUpdateProhibited`, server-side equivalents) → domain locked against changes/transfers
-- NS records inside the domain itself → org runs its own DNS (common for large orgs)
-
-WHOIS rarely gives individual employees or specific vulns — combine it with other recon techniques.
+Established domains (e.g., facebook.com): all six lock statuses set, NS inside the domain, Registrant/Admin/Tech all populated. Hardened. WHOIS alone rarely reveals employees or vulns — combine with other recon.
 
 ## DNS
+![Flowchart showing two main sections: User Database and Data Collection. Includes steps like 'Check User', 'Send to Source Database', 'Store Data', and 'Send to UI System'.](https://mermaid.ink/svg/pako:eNptkk1uwjAQha8y8rpcIItWkAAtUNQmlSrksDDxlEQQT-QfJIS4ex2nNG1arzx-n5-ex3NhBUlkEdtr0ZSwSnMFfhm36w425DTEVDfOou60do15XGJxMBCLosQtjEb3MLk8vcCMnJIP156ceA3WFIiYZ6ikgWSdwatDfQZLkKKh4wn1dnBngyZceuQxKYWFNS39jjtTWfyCvdsgb2t9c-wN4-CU_A7dy8mPjFOeYuG0qU4IK6KDa4bgLdjck9ZpZcC_20e7dWmYbRroGU-JLKxFjZCh7h88C_KCv62Sf9RFUJd87GxJurLCtsH-cssuUlfMu8blit2xGnUtKul_-NKKObMl1pizyG-l0Iec5erqOeEsZWdVsMhqh3dMk9uXLPoQR-Mr10hhMamE73L9fYqysqSfuwEKc3T9BOe0sj4)
+**Records worth knowing operationally:**
 
-Resolution chain: client cache → resolver (ISP) → root server → TLD server (.com/.org) → authoritative server → answer, cached along the way.
+- **A / AAAA** — IPv4 / IPv6
+- **CNAME** — alias; a CNAME pointing at an outdated server (`dev.example.com CNAME oldserver.example.net`) is a lead
+- **MX** — mail servers
+- **NS** — nameservers; usually reveals hosting provider
+- **TXT** — verification keys, SPF, DMARC, service leaks (`_1password=...`)
+- **SOA** — zone admin contact, primary NS
+- **SRV** — service hostname + port
+- **PTR** — reverse lookup
 
-Hosts file = local override of DNS: `/etc/hosts` (Linux/macOS), `C:\Windows\System32\drivers\etc\hosts` (Windows). Format `<IP> <hostname> [alias]`; changes apply immediately. Used for dev redirects, connectivity tests, blocking (point a domain at `0.0.0.0`).
-
-A zone is the part of the namespace one entity manages; the zone file on the DNS server defines its records:
+**Hosts file** — local DNS override, bypasses DNS.
 
 ```text
-$TTL 3600
-@       IN SOA   ns1.example.com. admin.example.com. (
-                2024060401 3600 900 604800 86400 )
-@       IN NS    ns1.example.com.
-@       IN NS    ns2.example.com.
-@       IN MX 10 mail.example.com.
-www     IN A     192.0.2.1
-mail    IN A     198.51.100.1
-ftp     IN CNAME www.example.com.
+# /etc/hosts (Linux/macOS), C:\Windows\System32\drivers\etc\hosts (Windows)
+<IP Address>    <Hostname> [<Alias> ...]
+
+127.0.0.1       myapp.local
+0.0.0.0         unwanted-site.com
 ```
-
-Record types: A / AAAA (→ IPv4/IPv6), CNAME (alias → hostname), MX (mail), NS (delegation), TXT (verification, SPF etc.), SOA (zone admin info), SRV (service host+port), PTR (reverse lookup).
-
-Recon angles:
-
-- CNAME pointing at an outdated server → likely vulnerable system
-- NS records → hosting provider; an `A` record like `loadbalancer.example.com` → load balancer
-- New subdomain appearing (e.g. `vpn.`) → new entry point
-- TXT `_1password=...` → org uses 1Password → phishing/social engineering angle
 
 ## Digging DNS
 
-Tools: `dig` (most versatile), `nslookup` / `host` (quick checks), `dnsenum` / `fierce` / `dnsrecon` (automated enumeration), `theHarvester` (emails + DNS from many sources), online lookup services.
+**dig** — the workhorse. Query any record type against a specific server.
 
 ```bash
-dig <TARGET_DOMAIN> A          # default lookup is A anyway
-dig <TARGET_DOMAIN> MX|NS|TXT|CNAME|SOA
-dig @1.1.1.1 <TARGET_DOMAIN>   # query a specific name server
-dig +trace <TARGET_DOMAIN>     # full resolution path
-dig -x 192.168.1.1             # reverse lookup
-dig +short <TARGET_DOMAIN>     # just the answer
+dig <TARGET_DOMAIN>
+dig <TARGET_DOMAIN> A
+dig <TARGET_DOMAIN> AAAA
+dig <TARGET_DOMAIN> MX
+dig <TARGET_DOMAIN> NS
+dig <TARGET_DOMAIN> TXT
+dig <TARGET_DOMAIN> CNAME
+dig <TARGET_DOMAIN> SOA
+dig @1.1.1.1 <TARGET_DOMAIN>
+dig +trace <TARGET_DOMAIN>
+dig -x <TARGET_IP>
+dig +short <TARGET_DOMAIN>
 dig +noall +answer <TARGET_DOMAIN>
-dig <TARGET_DOMAIN> ANY        # often ignored per RFC 8482
+dig <TARGET_DOMAIN> ANY
 ```
 
-Output anatomy: header (status, flags qr/rd/ad, section counts), question, answer (name, TTL, record), footer (server, timing). Some servers detect/block excessive queries — respect rate limits.
+`ANY` unreliable — many servers ignore it per RFC 8482.
+
+Output has four sections: header (status, flags, counts), question, answer, footer (query time, server, timestamp, size). Header flags worth reading: `qr` (response), `rd` (recursion desired), `ad` (authentic data).
+
+`+short` drops everything except the answer:
+
+```bash
+dig +short <TARGET_DOMAIN>
+```
 
 ## Subdomains
 
-Subdomains often host what the main site doesn't link to: dev/staging environments (relaxed security), hidden login portals/admin panels, legacy applications (outdated software), accidentally exposed documents and configs.
+Subdomains often host the things not linked from the main site:
+
+- **dev/staging** — relaxed security, sometimes vulnerable
+- **hidden login panels** — admin portals meant to be internal
+- **legacy apps** — forgotten, outdated, vulnerable
+- **sensitive files** — internal docs, configs, exposed by accident
 
 Two enumeration approaches:
 
-1. Active — direct queries against the target's DNS: zone transfer attempts (rarely work), brute-forcing wordlists against the domain (dnsenum, ffuf, gobuster).
-2. Passive — external sources only: Certificate Transparency logs (subdomains in the SAN field), search engines (`site:` operator), DNS aggregation databases.
+**Active** — zone transfer attempt (`dig axfr`), brute force (`dnsenum`, `ffuf`, `gobuster`).
 
-Combine both — active is comprehensive but detectable, passive is stealthier but incomplete.
+**Passive** — Certificate Transparency logs, search engines (`site:`), aggregated DNS databases.
+
+Active is complete but noisy; passive is quiet but incomplete. Run both.
 
 ## Subdomain Bruteforcing
 
-Process: pick a wordlist (general-purpose, targeted at the industry/tech, or custom from gathered intel) → iterate `word.domain` → A/AAAA lookup for each → validate what resolves.
+Four steps: pick wordlist → append to domain → DNS lookup (A/AAAA) → keep what resolves.
 
-Tools: dnsenum, fierce, dnsrecon, amass (extensive data sources), assetfinder (quick/lightweight), puredns (powerful resolving + filtering).
+Wordlist types:
+- **General-purpose** — dev, staging, blog, mail, admin, test
+- **Targeted** — industry/tech-specific
+- **Custom** — from intel gathered elsewhere
 
 ```bash
 dnsenum --enum <TARGET_DOMAIN> -f subdomains-top1million-20000.txt -r
 ```
 
-`--enum` = tuning shortcut, `-f` = wordlist, `-r` = recursive brute-forcing (found subdomain → enumerate its subdomains). dnsenum also tries zone transfers, scrapes Google, does reverse lookups and WHOIS on its own.
+`--enum` tuning shortcut, `-f` wordlist, `-r` recursive (enumerate subdomains of found subdomains).
+
+Other tools: `fierce`, `dnsrecon`, `amass`, `assetfinder`, `puredns`.
 
 ## DNS Zone Transfers
-
-AXFR = full copy of a zone between name servers. If access controls are misconfigured, anyone can pull the whole zone file: complete subdomain list, their IPs, NS records — a full map of DNS infrastructure.
+![[Pasted image 20261024043633.png]]
+**AXFR** pulls the full zone from primary to secondary. If `allow-transfer` is loose, anyone gets it.
 
 ```bash
-dig axfr @<NS> <TARGET_DOMAIN>
-dig axfr @nsztm1.digi.ninja zonetransfer.me    # public demo target that allows it
+dig axfr @<NAMESERVER> <TARGET_DOMAIN>
 ```
 
-Mostly fixed in modern setups (transfers restricted to trusted secondaries), but the attempt costs nothing and even a refusal tells you something about the server's configuration.
+```bash
+dig axfr @nsztm1.digi.ninja zonetransfer.me
+```
+
+Success hands you every subdomain, IP, and NS record in the zone — including internal hosts that are never linked publicly. Even a failed attempt tells you something about server config.
 
 ## Virtual Hosts
+![[Pasted image 20261024043647.png]]
 
-Subdomain = DNS record. Virtual host = web server (Apache/Nginx/IIS) config serving many sites on one IP, selected by the HTTP Host header — the header acts as a switch into the matching DocumentRoot. VHosts can exist without any DNS record: map the name in `/etc/hosts` and the server will still serve it.
+**Subdomain** = DNS record. **VHost** = web server config matched on the `Host` header. A vhost can exist with no DNS record at all — which is why you fuzz for it.
 
-That's why VHost fuzzing matters: it finds public AND non-public subdomains/vhosts by throwing hostnames at a known IP. VHosts aren't limited to subdomains — entirely different domains can share the server.
+Apache example:
 
-Hosting types: name-based (Host header, most common, cheap), IP-based (one IP per site, better isolation), port-based (different ports on one IP).
-
-```bash
-gobuster vhost -u http://<TARGET_IP> -w <wordlist_file> --append-domain
+```apacheconf
+<VirtualHost *:80>
+    ServerName www.example1.com
+    DocumentRoot /var/www/example1
+</VirtualHost>
+<VirtualHost *:80>
+    ServerName www.example2.org
+    DocumentRoot /var/www/example2
+</VirtualHost>
 ```
 
-`--append-domain` is required in newer gobuster versions (builds full hostnames from the wordlist). Useful extras: `-t` threads, `-k` ignore TLS cert errors, `-o` save output. Example hit: `forum.<TARGET_DOMAIN>` Status 200. VHost scanning is loud — IDS/WAF may notice.
+Three types: **name-based** (Host header, most common), **IP-based** (unique IP per site), **port-based** (different port per site).
+
+```bash
+gobuster vhost -u http://<TARGET_IP> -w <WORDLIST> --append-domain
+```
+
+`--append-domain` required in newer Gobuster — without it the full vhost name isn't constructed. Other flags: `-t` threads, `-k` ignore TLS errors, `-o` output file.
+
+Vhost fuzzing is loud — IDS/WAF bait. Confirm scope first.
 
 ## Certificate Transparency Logs
 
-CT logs are public, append-only ledgers of every issued SSL/TLS cert. Every CA must submit to multiple logs; anyone can inspect them. For recon: certs list subdomains in their SAN field — a definitive, historical record no wordlist can match, including subdomains behind old/expired certs that may still run outdated software.
-
-Search options: crt.sh (free web UI + API, simple) and Censys (advanced filtering, API, free registration).
+**CT logs** — public, append-only ledger of every issued cert. Sanctioned record of subdomains, not guesswork. Includes subdomains from old/expired certs, which may still be live and unpatched.
 
 ```bash
-curl -s "https://crt.sh/?q=<TARGET_DOMAIN>&output=json" | jq -r '.[]
- | select(.name_value | contains("dev")) | .name_value' | sort -u
+curl -s "https://crt.sh/?q=<TARGET_DOMAIN>&output=json" | jq -r '.[] | select(.name_value | contains("dev")) | .name_value' | sort -u
 ```
+
+**crt.sh** — free, no registration, limited filtering. **Censys** — deeper filtering by domain, IP, cert attribute; requires registration.
 
 ## Fingerprinting
 
-Identify the tech stack so exploits can be targeted and misconfigurations spotted. Techniques: banner grabbing, HTTP headers (`Server`, `X-Powered-By`), crafted probe responses, page content/scripts. Tools: Wappalyzer (browser extension), BuiltWith, WhatWeb, Nmap, Netcraft, wafw00f (WAF detection).
-
-Banner chasing through redirects — each hop adds info:
+Extract server tech, version, CMS, WAF from headers, error responses, and page content.
 
 ```bash
-curl -I http://<TARGET_DOMAIN>       # Server: Apache/2.4.41 (Ubuntu), redirect to https
-curl -I https://<TARGET_DOMAIN>      # X-Redirect-By: WordPress
-curl -I https://www.<TARGET_DOMAIN>  # Link: .../wp-json/... → WordPress REST API exposed
+curl -I <TARGET_DOMAIN>
 ```
 
-Check for a WAF before fuzzing anything:
+Read `Server:`, `X-Powered-By:`. Redirects often leak more than the destination — `X-Redirect-By: WordPress` is a direct tell. `Link:` headers with `/wp-json/` confirm WordPress.
 
 ```bash
 pip3 install git+https://github.com/EnableSecurity/wafw00f
-wafw00f <TARGET_DOMAIN>              # e.g. "behind Wordfence (Defiant) WAF"
+wafw00f <TARGET_DOMAIN>
 ```
 
-Nikto, software-identification modules only:
+Tells you whether a WAF sits in front (Wordfence, Cloudflare, etc.) before you start probing.
 
 ```bash
 nikto -h <TARGET_DOMAIN> -Tuning b
 ```
 
-Example findings: Apache 2.4.41 outdated, WordPress installation + `/wp-login.php`, `/license.txt` (software identification), missing HSTS / X-Content-Type-Options, `Content-Encoding: deflate` → potential BREACH.
+`-Tuning b` = software identification modules only. Output worth noting: server version vs current, missing `Strict-Transport-Security`, missing `X-Content-Type-Options`, `x-redirect-by`, exposed `license.txt`, discovered CMS and login paths, cookie flags on login pages.
+
+Other tools: Wappalyzer, BuiltWith, WhatWeb, Netcraft.
 
 ## Crawling
+![[Pasted image 20261024043727.png]]
 
-Automated browsing: fetch seed URL → parse → queue links → repeat. Breadth-first (map the whole width, good overview) vs depth-first (follow one path deep, good for specific content). Crawling follows real links — unlike fuzzing, which guesses them.
+**Breadth-first** — wide before deep. Good for structure overview.
 
-Extract: internal/external links, HTML comments, metadata, and sensitive files (`.bak`, `.old`, `web.config`, `settings.php`, `error_log`, `access_log` — credentials, API keys, source snippets).
+**Depth-first** — follow one path to the end before backtracking. Good for reaching deep content.
 
-Context is where the value is: several links pointing into `/files/` → check it manually → directory listing enabled with backup archives and internal documents. A comment mentioning a "file server" plus that `/files/` find = exposed file server. Connect the dots instead of reading each item alone.
+What to extract:
+
+- **Links** (internal/external) — site structure, hidden pages, external relationships
+- **Comments** — users leak internal process, versions, hints
+- **Metadata** — titles, descriptions, authors, dates
+- **Sensitive files** — `.bak`, `.old`, `web.config`, `settings.php`, `error_log`, `access_log`
+
+Value is in correlation, not single findings. A cluster of URLs pointing at `/files/` is worth visiting by hand — directory listing enabled there turns a mundane link list into exposed backups and internal docs. A comment mentioning a "file server" then reinforces it.
 
 ## robots.txt
-
-`/robots.txt` in the site root, per the Robots Exclusion Standard. Records of `User-agent:` (`*` = all bots) plus directives:
 
 ```text
 User-agent: *
@@ -195,13 +227,19 @@ Crawl-delay: 10
 Sitemap: https://www.example.com/sitemap.xml
 ```
 
-For recon: Disallow entries are a free list of directories the owner wants hidden — admin panels, private content, backups. Allowed/disallowed paths sketch the site structure beyond the visible navigation. Watch for honeypot directories planted to trap crawlers.
+`Disallow` entries are the interesting part — owners are telling you where the sensitive stuff is. Honeypot directories also get planted here to catch bots that ignore the file.
 
 ## Well-Known URIs
 
-RFC 8615 standardizes `/.well-known/` as the place for a site's metadata and service configs; IANA maintains the registry. Notable entries: `security.txt` (vuln reporting contacts, RFC 9116), `change-password`, `openid-configuration`, `assetlinks.json`, `mta-sts.txt`.
+Standardised location under `/.well-known/` per RFC 8615. Worth requesting:
 
-`/.well-known/openid-configuration` (OpenID Connect Discovery) returns JSON worth grabbing:
+- `/.well-known/security.txt` — security contact
+- `/.well-known/change-password` — password change page
+- `/.well-known/openid-configuration` — OIDC config
+- `/.well-known/assetlinks.json` — digital asset ownership
+- `/.well-known/mta-sts.txt` — SMTP MTA-STS policy
+
+`openid-configuration` is the most productive:
 
 ```json
 {
@@ -211,80 +249,107 @@ RFC 8615 standardizes `/.well-known/` as the place for a site's metadata and ser
   "userinfo_endpoint": "https://example.com/oauth2/userinfo",
   "jwks_uri": "https://example.com/oauth2/jwks",
   "response_types_supported": ["code", "token", "id_token"],
+  "subject_types_supported": ["public"],
   "id_token_signing_alg_values_supported": ["RS256"],
   "scopes_supported": ["openid", "profile", "email"]
 }
 ```
 
-Gives auth/token/userinfo endpoints, the JWKS key set location, supported scopes, response types and signing algorithms — a full map of the IdP implementation.
+Each field is a target: auth/token/userinfo endpoints to test, `jwks_uri` for keys, supported scopes to map what's available, signing algorithms to spot weak config.
 
 ## Creepy Crawlies
 
-Crawlers: Burp Suite Spider, OWASP ZAP (spider + scanner), Scrapy (Python framework for custom spiders), Apache Nutch (large-scale, Java).
+Tools: Burp Spider, OWASP ZAP Spider, Scrapy (custom crawlers), Apache Nutch (large-scale).
 
-ReconSpider — HTB's custom Scrapy spider:
+ReconSpider run:
 
 ```bash
 pip3 install scrapy
-wget -O ReconSpider.zip https://academy.hackthebox.com/storage/modules/144/ReconSpider.v1.2.zip
+wget -O ReconSpider.zip <URL>
 unzip ReconSpider.zip
 python3 ReconSpider.py http://<TARGET_DOMAIN>
 ```
 
-Output lands in `results.json`, keyed by data type: `emails`, `links`, `external_files` (PDFs etc.), `js_files`, `form_fields`, `images`, `videos`, `audio`, `comments` (HTML comments from source).
+Output lands in `results.json` with these keys: `emails`, `links`, `external_files`, `js_files`, `form_fields`, `images`, `videos`, `audio`, `comments`. Emails feed phishing; external files and JS hide paths and endpoints; HTML comments carry dev leftovers.
 
 ## Search Engine Discovery
 
-Using search engines as OSINT tools. Core operators:
+Core operators:
+
+- `site:` — restrict to a domain
+- `inurl:` — term in URL
+- `filetype:` — file type
+- `intitle:` — term in title
+- `intext:` / `inbody:` — term in body
+- `cache:` — cached copy
+- `link:` — pages linking to a URL
+- `related:` — similar sites
+- `info:` — page summary
+- `numrange:` — numeric range
+- `allintext:` / `allinurl:` / `allintitle:` — all terms, body/URL/title
+- `AND` / `OR` / `NOT` — boolean
+- `*` — wildcard
+- `..` — numeric range
+- `" "` — exact phrase
+- `-` — exclude
+
+Common dorks:
 
 ```text
-site:example.com                only this domain
-inurl:login / allinurl:         term(s) in the URL
-intitle:"confidential report" / allintitle:   term(s) in the title
-intext:"password reset" / allintext:          term(s) in the body
-filetype:pdf                    file type
-cache:example.com               cached version
-link: / related: / info:        backlinks, similar sites, page summary
-numrange:1000-2000              numbers in a range (also 100..500)
-"exact phrase"
-AND / OR / NOT                  boolean
-* wildcard, -excluded_term
+site:<TARGET_DOMAIN> inurl:login
+site:<TARGET_DOMAIN> (inurl:login OR inurl:admin)
+site:<TARGET_DOMAIN> filetype:pdf
+site:<TARGET_DOMAIN> (filetype:xls OR filetype:docx)
+site:<TARGET_DOMAIN> inurl:config.php
+site:<TARGET_DOMAIN> (ext:conf OR ext:cnf)
+site:<TARGET_DOMAIN> inurl:backup
+site:<TARGET_DOMAIN> filetype:sql
 ```
 
-Google Dorking = combining operators to surface sensitive content. Standard patterns (more in the Google Hacking Database):
-
-```text
-site:example.com (inurl:login OR inurl:admin)             # login pages
-site:example.com (filetype:xls OR filetype:docx)          # exposed documents
-site:example.com inurl:config.php                          # config files
-site:example.com (ext:conf OR ext:cnf)                     # config extensions
-site:example.com inurl:backup
-site:example.com filetype:sql                              # database backups
-```
+Google Hacking Database for more.
 
 ## Web Archives
 
-The Wayback Machine (Internet Archive, archiving since 1996) stores dated snapshots of full page content. Recon uses:
+**Wayback Machine** — snapshots since 1996. Crawl → archive → access; frequency varies by site popularity.
 
-- Old pages, directories, files and subdomains no longer live but possibly still reachable or exposing sensitive info/flaws
-- Diffing snapshots over time → structural, content and technology changes
-- OSINT on past activities, employees, tech choices
-- Fully passive — no touch on the target's infrastructure
+For recon: old pages, directories, files, subdomains that no longer exist but may still be live; tech changes over time; content as OSINT. All passive — you never touch the target.
 
-Usage: enter the URL, pick a capture date.
+Feed any URL from earlier recon and check the earliest and latest captures.
 
 ## Automating Recon
 
-Frameworks: FinalRecon (modular all-in-one), Recon-ng (module framework), theHarvester (emails, subdomains, hosts, names, ports, banners from public sources), SpiderFoot (OSINT automation across many data sources), OSINT Framework (tool/resource collection).
+Frameworks: FinalRecon, Recon-ng, theHarvester, SpiderFoot, OSINT Framework.
 
-FinalRecon:
+FinalRecon setup:
 
 ```bash
-git clone https://github.com/thewhiteh4t/FinalRecon.git && cd FinalRecon
+git clone https://github.com/thewhiteh4t/FinalRecon.git
+cd FinalRecon
 pip3 install -r requirements.txt
-chmod +x finalrecon.py
-
-finalrecon.py --headers --whois --url http://<TARGET_DOMAIN>
+chmod +x ./finalrecon.py
+./finalrecon.py --help
 ```
 
-Modules: `--headers`, `--sslinfo`, `--whois`, `--crawl` (HTML/CSS/JS, links, images, robots.txt, sitemap.xml, JS links, Wayback), `--dns` (40+ record types incl. DMARC), `--sub` (crt.sh, AnubisDB, ThreatMiner, CertSpotter, Facebook/VirusTotal/Shodan/BeVigil APIs), `--dir` (custom wordlists + extensions), `--wayback` (last 5 years of URLs), `--ps` (fast port scan), `--full` (everything). Extras: `-w` wordlist, `-e` extensions, `-d` custom DNS, `-T` timeout, `-o` export format. Results auto-export to `~/.local/share/finalrecon/dumps/`.
+Modules and flags:
+
+```text
+--headers    header information
+--sslinfo    SSL certificate info
+--whois      Whois lookup
+--crawl      crawl target
+--dns        DNS enumeration (40+ record types incl. DMARC)
+--sub        subdomain enumeration (crt.sh, AnubisDB, ThreatMiner, CertSpotter, Facebook, VirusTotal, Shodan, BeVigil)
+--dir        directory search
+--wayback    Wayback URLs (last 5 years)
+--ps         fast port scan
+--full       full recon
+```
+
+Extra: `-nb` hide banner, `-dt` dir threads, `-pt` port threads, `-T` timeout, `-w` wordlist, `-r` allow redirects, `-s` toggle SSL verify, `-sp` SSL port, `-d` custom DNS, `-e` file extensions, `-o` export format, `-cd` export dir, `-k` API key.
+
+```bash
+./finalrecon.py --headers --whois --url http://<TARGET_DOMAIN>
+./finalrecon.py --full --url http://<TARGET_DOMAIN>
+```
+
+Exports land in `~/.local/share/finalrecon/dumps/`.
