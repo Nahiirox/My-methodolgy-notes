@@ -144,7 +144,7 @@ Pro-only. Crawler + passive/active scanning.
 
 Free equivalent: Spider + passive + active scanning.
 
-- **Spider** — right-click request > Attack > Spider (HUD: second button on right pane). Auto-offers to add the site to scope. Results in Sites tab tree / HUD Sites Tree button. **Ajax Spider** (third button on right pane) additionally catches links requested via JavaScript AJAX after page load — run it after the normal Spider for extra coverage, at the cost of time.
+- **Spider** — right-click request > Attack > Spider (HUD: second button on right pane). Auto-offers to add the site to scope. Results in Sites tab tree / HUD Sites Tree button. **Ajax Spider** (third button on right pane) also catches links requested via JavaScript AJAX after page load — run it after the normal Spider for extra coverage, at the cost of time.
 - **Passive scanner** — runs automatically on every Spider/response; alerts populate as you go (HUD alerts: left = current page, right = whole app). Alerts tab in the main UI shows details + affected pages.
 - **Active scan** — Active Scan button (right pane); auto-runs Spider first if no site tree. Attacks all identified pages/params; watch progress and sent requests in the UI. High alerts = the compromise-capable ones (module demo: Remote OS Command Injection, PoC `127.0.0.1&cat /etc/passwd&`, evidence `root:x:0:0...` — click through to the exact request/response and replay it).
 - **Reporting** — Report > Generate HTML Report (also XML/Markdown).
