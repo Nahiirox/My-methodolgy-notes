@@ -1,2 +1,0 @@
-# 06 - Shells & Payloads
-

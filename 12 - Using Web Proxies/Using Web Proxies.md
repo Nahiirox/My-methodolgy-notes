@@ -1,155 +1,433 @@
-# Web Proxies
+# Using Web Proxies
 
-Web proxies sit between browser/app and back-end server as a MITM for HTTP/HTTPS — capture every request/response, intercept and modify mid-flight, replay with changes. Beyond capture/replay: vuln scanning, fuzzing, crawling, app mapping, request analysis, config testing, code review support. The two tools: **Burp Suite** (best UI, built-in Chromium; Pro-only = active scanner, fast Intruder, some extensions) and **OWASP ZAP** (fully free/open-source, no throttling, HUD, gaining parity). Learn both — same concepts, pick per engagement.
+## Intro to Web Proxies
+
+MITM tools between browser/app and server that capture, view, and modify HTTP/HTTPS traffic, unlike full packet sniffers like Wireshark.
+
+### Burp Suite
+
+Pro/Enterprise-only: active scanner, fast Intruder, loading certain extensions. Free Community edition covers most pentesting needs.
+
+### OWASP Zed Attack Proxy (ZAP)
+
+Free and open-source, no paid-tier throttling or feature limits, unlike Burp Community edition.
 
 ## Setting Up
 
-Both run on Windows/macOS/Linux, pre-installed on Pwnbox/Parrot/Kali. Both are Java apps (JRE bundled; `java -jar </path/to/burpsuite.jar>` works cross-platform).
+Install and launch Burp Suite and ZAP. Both are pre-installed on PwnBox, Parrot, and Kali.
 
-- **Burp startup:** temporary project (community can't save; Pro can persist projects/active scans) → Use Burp Defaults → Start Burp.
-- **ZAP startup:** `zaproxy` or menu → "No, do not persist" for a temp session.
+### Burp Suite
 
-Dark theme: Burp > Settings > User interface > Display; ZAP > Tools > Options > Display > Flat Dark.
+```bash
+burpsuite # launch from terminal
+java -jar <FILE> # cross-platform jar launch, needs JRE
+```
+
+Community edition: temporary projects only, no saving. Pro/Enterprise: can save or open projects on disk.
+
+### ZAP
+
+```bash
+zaproxy # launch from terminal
+java -jar <FILE> # cross-platform jar launch, needs JRE
+```
+
+Prompts for a new or temporary project on launch, unlike free Burp.
 
 ## Proxy Setup
 
-Fastest path: the pre-configured browser (proxy + CA cert already set).
+Configure a browser, or use the pre-configured browser, to route traffic through Burp/ZAP for interception.
 
-- Burp: Proxy > Intercept > **Open Browser**.
-- ZAP: Firefox icon at the end of the top bar.
+### Pre-Configured Browser
 
-Real browser instead: point it at the proxy — both default to `127.0.0.1:8080` (change under Burp Proxy > Proxy settings > Proxy listeners, or ZAP Tools > Options > Network > Local Servers/Proxies). **FoxyProxy** extension makes switching one click: Options > Add > IP 127.0.0.1, port 8080, name it Burp/ZAP.
+Comes with proxy settings and CA certificate pre-installed.
 
-**CA certificate** — without it HTTPS traffic stalls on trust prompts:
+Burp: (Proxy>Intercept), Open Browser button.  
+ZAP: Firefox icon at the end of the top toolbar.
 
-- Burp: browse to `http://burp` → CA Certificate.
-- ZAP: Tools > Options > Network > Server Certificates > Save (Generate makes a new one).
+### Proxy Setup
 
-Install in Firefox: `about:preferences#privacy` → View Certificates → Authorities → Import → "Trust this CA to identify websites" + email users.
+Default proxy port: 8080 (both tools). Change: Burp (Proxy>Proxy settings>Proxy listeners), ZAP (Tools>Options>Network>Local Servers/Proxies). Firefox proxy port must match.
+
+FoxyProxy Firefox extension for fast proxy switching (pre-installed and pre-configured in PwnBox). Add entry: IP `127.0.0.1`, Port `8080`.
+
+### Installing CA Certificate
+
+Needed so HTTPS traffic routes properly without manual accept prompts.
+
+Burp: browse to `http://burp`, click CA Certificate to download.  
+ZAP: (Tools>Options>Network>Server Certificates), Save (Generate creates a new cert).  
+Firefox import: `about:preferences#privacy` > View Certificates > Authorities tab > Import > trust the CA for websites and for email users.
 
 ## Intercepting Web Requests
 
-Burp: Proxy > Intercept, toggle "Intercept is on/off", Forward/Drop the held request.
+Hold an HTTP request before it reaches the server to inspect or edit it, then forward it.
 
-ZAP: interception off by default — green button or CTRL+B toggles; "step" (right of the break button) forwards. ZAP's **HUD** (button at end of top bar) puts the controls in the browser: second button on left pane = intercept; on a caught request: **Step** (send + break on next, examine each step) vs **Continue** (send the rest through).
+### Intercepting Requests
 
-Manipulation workflow: intercept → edit request inline → forward. Classic demo: page restricts an IP field to numbers via front-end JS; intercept the POST, change `ip=1` to `ip=;ls;` → response comes back as `ls` output = command injection. Same mechanism drives SQLi, XSS, XXE, upload bypasses, auth bypass, deserialization tests.
+#### Burp
+
+Default: on. Toggle in (Proxy>Intercept), `Intercept is on/off` button.
+
+Click Forward repeatedly to skip unrelated intercepted requests until the target request appears.
+
+#### ZAP
+
+Default: off (green button = pass-through). Toggle: `CTRL+B` or the top bar button.
+
+HUD: enable via the button at the end of the top bar, controls ZAP features inside the pre-configured browser. Left pane, 2nd button toggles request interception.
+
+`Step` sends the request and keeps breaking on further requests | `Continue` forwards and passes remaining requests through
+
+### Manipulating Intercepted Requests
+
+Tests SQL injection, command injection, upload bypass, auth bypass, XSS, XXE, error handling, deserialization.
+
+Example: a numeric-only front-end field can still accept shell metacharacters if the back end does not validate input.
+
+```text
+;ls;
+```
 
 ## Intercepting Responses
 
-Intercept the server's response before the browser renders it — rewrite HTML to suit the test:
+Edit the server's response before it reaches the browser, e.g. to enable or reveal form fields.
 
-Burp: Proxy > Proxy settings > Response interception rules > enable Intercept Response. Force refresh (CTRL+SHIFT+R), forward the request, the response is held — edit `type="number"` → `type="text"`, `maxlength="3"` → `maxlength="100"`, forward again. Works for enabling disabled buttons persistently (per page load).
+### Burp
 
-ZAP: click **Step** on the intercepted request and the response gets caught automatically; edit + Continue.
+Enable: (Proxy>Proxy settings), check Intercept Response under Response interception rules. Force a full refresh with `CTRL+SHIFT+R`.
 
-ZAP HUD shortcuts (left pane): light-bulb button = show hidden fields / enable disabled fields without intercepting; **Comments** button (add via +) flags HTML comment positions inline with hover content. Burp's equivalents live under Proxy > Proxy settings > Response modification rules (e.g. "Unhide hidden form fields").
+```html
+<input type="text" id="ip" name="ip" min="1" max="255" maxlength="100"
+    oninput="javascript: if (this.value.length > this.maxLength) this.value = this.value.slice(0, this.maxLength);"
+    required>
+```
+
+Can persistently unhide disabled/hidden HTML fields via (Proxy>Proxy settings>Response modification rules), e.g. Unhide hidden form fields, without editing each response.
+
+### ZAP
+
+`Step` on an intercepted request also intercepts and shows its response.
+
+HUD light bulb icon (3rd button, left pane): shows/enables hidden or disabled fields without intercepting the response.  
+HUD Comments button (add via `+` on left pane): flags positions of HTML comments in the page.
 
 ## Automatic Modification
 
-Rules that rewrite every request/response in flight — no manual interception.
+Apply match-and-replace rules to all outgoing requests or incoming responses automatically, instead of editing each one.
 
-**Requests (match & replace):**
+### Automatic Request Modification
 
-- Burp: Proxy > Proxy settings > HTTP match and replace > Add — Type `Request header`, Match `^User-Agent.*$`, Replace `User-Agent: HackTheBox Agent 1.0`, Regex true.
-- ZAP: CTRL+R (Replacer) > Add — Match Type `Request Header (will add if not present)`, Match String `User-Agent`, Replacement `HackTheBox Agent 1.0`. The Initiators tab scopes where the rule applies (default: all HTTP(S)).
+#### Burp Match and Replace
 
-**Responses:** same idea — Type `Response body`, Match `type="number"`, Replace `type="text"`, no regex needed for exact strings. Survives page refreshes, so the front-end bypass sticks.
+(Proxy>Proxy settings>HTTP match and replace rules), Add.
+
+Example: Type `Request header`, Match `^User-Agent.*$` (regex), Replace `User-Agent: HackTheBox Agent 1.0`
+
+#### ZAP Replacer
+
+Access: `CTRL+R` or Options>Replacer.
+
+Fields: Match Type (e.g. `Request Header`, adds header if not present), Match String, Replacement String, Enable. Also supports `Request Header String` with a regex pattern.
+
+Initiators tab sets where the rule applies (default: all HTTP(S) messages).
+
+### Automatic Response Modification
+
+(Proxy>Options>Match and Replace), Add. Example: Type `Response body`, Match `type="number"`, Replace `type="text"`, Regex false. Add a second rule: Match `maxlength="3"`, Replace `maxlength="100"`.
+
+Refresh with `CTRL+SHIFT+R`, changes persist across refreshes.
 
 ## Repeating Requests
 
-Resend any historical request with edits, response shown in-tool — no re-intercept cycle.
+Resend a previously proxied request with edits, without re-intercepting it each time.
 
-History lives in Burp Proxy > HTTP History (or ZAP's bottom History pane / HUD). Both keep WebSockets history too (async updates/data-fetching — advanced testing). Burp shows both Original and Edited versions of a modified request (pane header toggle); ZAP shows only the final.
+### Proxy History
 
-- Burp: CTRL+R on a request → Repeater (CTRL+SHIFT+R) → edit → **Send**. Right-click > Change Request Method flips POST↔GET without rewriting.
-- ZAP: right-click > Open/Resend with Request Editor → Send; Method drop-down for any verb.
-- HUD: click a history entry → **Replay in Console** or **Replay in Browser** (rendered).
+Burp: (Proxy>HTTP History). Shows filtering/sorting, and both Original and Edited request if the request was modified (toggle in the pane header).  
+ZAP: bottom History pane (HUD) or History tab (main UI). Shows only the final/modified request.
+
+Both tools also log WebSockets history (async requests).
+
+### Repeating Requests
+
+#### Burp
+
+Send to Repeater: `CTRL+R`. Open Repeater tab: `CTRL+SHIFT+R`. Send button sends the request.
+
+Right-click request > Change Request Method to switch GET/POST without rewriting it.
+
+#### ZAP
+
+Right-click request > Open/Resend with Request Editor. Send button resends; Method dropdown switches HTTP verb.
+
+HUD: click a request in the bottom History pane to open the Request Editor. `Replay in Console` shows the response in the HUD, `Replay in Browser` renders it in the browser.
 
 ## Encoding/Decoding
 
-URL-encode anything that would break request parsing: space (end-of-data), `&` (param delimiter), `#` (fragment). Burp Repeater: select text → CTRL+U or Convert Selection > URL; can enable encode-as-you-type. ZAP auto-encodes request data behind the scenes.
+Encode and decode request/response data to interact correctly with the server and inspect encoded values.
 
-Both ship full encoders for HTML / Unicode / Base64 / ASCII hex:
+### URL Encoding
 
-- Burp: **Decoder** tab (input → Encode as/Decode as; output pane can be re-encoded with another scheme directly). Newer Burp also has the **Inspector** in Proxy/Repeater for inline URL/Base64 decode.
-- ZAP: CTRL+E = Encoder/Decoder/Hash; Decode tab auto-tries schemes; custom tabs can mix chosen encoders.
+Required so request data and headers are read correctly; unencoded data can cause server errors.
 
-Typical flow: find base64 cookie `eyJ1c2VybmFtZSI6Imd1ZXN0IiwgImlzX2FkbWluIjpmYWxzZX0=` → decode → `{"username":"guest", "is_admin":false}` → flip to admin/true → re-encode → paste into Repeater/Request Editor.
+`space` marks end of data if unencoded | `&` parameter delimiter | `#` fragment identifier
+
+Burp: select text, right-click (Convert Selection>URL>URL-encode key characters) or `CTRL+U`. Can URL-encode as typed (enable via right-click).  
+ZAP: auto-encodes request data before sending.
+
+Other types: Full URL-Encoding, Unicode URL encoding.
+
+### Decoding
+
+Decode data a web app has encoded (e.g. a cookie) to inspect the original value.
+
+`HTML` | `Unicode` | `Base64` | `ASCII hex`
+
+Burp: Decoder tab, or Inspector panel (in Proxy/Repeater) for quick encode/decode.  
+ZAP: Encoder/Decoder/Hash (`CTRL+E`), auto-decodes known formats in the Decode tab. Add custom tabs via `Add New Tab`.
+
+### Encoding
+
+Re-encode modified data back to its original format (e.g. base64) before sending it.
+
+Burp: chain encodings by selecting a new method in the Decoder output pane.  
+ZAP: copy the output text, paste into the input field above to chain.
 
 ## Proxying Tools
 
-Route CLI tools and thick clients through the proxy (slows them down — only when investigating):
+Route a command-line tool or thick client through a web proxy (`http://127.0.0.1:8080`) to inspect its HTTP traffic.
 
-- **proxychains** — universal. In `/etc/proxychains.conf`, comment the socks line and add `http 127.0.0.1 8080`; run with `-q` for quiet mode:
+Proxying slows a tool down. Only proxy when investigating its requests, not for normal use.
 
-```bash
-proxychains -q curl http://SERVER_IP:PORT
-```
+### Proxychains
 
-- **Metasploit** — per-module `set PROXIES HTTP:127.0.0.1:8080`:
+Edit `/etc/proxychains.conf`, comment the last line, add:
 
 ```text
-use auxiliary/scanner/http/robots_txt
-set PROXIES HTTP:127.0.0.1:8080
-set RHOST <TARGET_IP>
-set RPORT <PORT>
-run
+#socks4         127.0.0.1 9050
+http 127.0.0.1 8080
 ```
 
-Any other tool: same pattern — find its proxy setting, point it at 127.0.0.1:8080.
+```bash
+proxychains -q curl http://<TARGET_IP>:<PORT>
+```
+
+`-q` quiet mode, suppresses connection info output.
+
+### Metasploit
+
+```bash
+msfconsole
+```
+
+Set a proxy on any module with `set PROXIES <TYPE>:<IP>:<PORT>`.
+
+```text
+msf6 > use auxiliary/scanner/http/robots_txt
+msf6 auxiliary(scanner/http/robots_txt) > set PROXIES HTTP:127.0.0.1:8080
+msf6 auxiliary(scanner/http/robots_txt) > set RHOST <TARGET_IP>
+msf6 auxiliary(scanner/http/robots_txt) > set RPORT <PORT>
+msf6 auxiliary(scanner/http/robots_txt) > run
+```
 
 ## Burp Intruder
 
-Burp's fuzzer — fuzz directories, subdomains, params, values; replaces ffuf/gobuster/wfuzz for most jobs. **Community is throttled to 1 req/sec** (CLI tools do ~10k/s) — short queries only; Pro is unlimited and among the best fuzzers available.
+Burp's fuzzer: fuzzes pages, directories, sub-domains, parameters, and values. Free Community version throttled to 1 request/second.
 
-Workflow: CTRL+I sends a Proxy History request to Intruder.
+CLI alternatives: ffuf, dirbuster, gobuster, wfuzz.
 
-1. **Positions** — wrap the fuzz target with `§` (or select + Add §). Directory fuzzing: `GET /§DIRECTORY§/`. Keep the two trailing blank lines.
-2. **Payloads** — set 1 (per position, tied to attack type — Sniper = one position; Cluster Bomb = several). Payload Types: Simple List (basic), Runtime file (streamed line-by-line — use for huge wordlists to spare memory), Character Substitution (permutations). Load `/opt/useful/seclists/Discovery/Web-Content/common.txt`; multiple loads append (combine/customize).
-3. **Payload Processing** — rules per item: e.g. Skip if matches regex `^\..*$` to drop dot-prefixed entries; can also suffix extensions, filter, etc.
-4. **Payload Encoding** — URL-encode toggle per character set (leave on).
-5. **Settings** — retries to 0 if desired; **Grep - Match**: clear defaults, add `200 OK`, disable "Exclude HTTP Headers" → results get a flag column to sort by. Grep - Extract pulls just a slice of long responses. Resource Pool caps network use for big attacks.
+### Target
 
-Start Attack → sort by flag/status/length → `/admin/` pops with 200. Same machinery does credential brute-forcing and AD password spraying against OWA/VPN/RDS/Citrix/custom AD-auth portals.
+Send request to Intruder: right-click in Proxy History > Send to Intruder, or `CTRL+I`. Open Intruder tab: `CTRL+SHIFT+I`.
+
+### Positions
+
+Mark a payload position: wrap the word with `§` or select it and click `Add §`.
+
+Attack type `Sniper`: one payload position, iterates one payload set through it.
+
+Keep the two trailing blank lines at the end of the request or the server returns an error.
+
+### Payloads
+
+#### Payload Position & Payload Type
+
+Payload set choice depends on attack type and number of payload positions marked.
+
+`Simple list` basic wordlist, iterates each line | `Runtime file` loads line-by-line, less memory, use for large wordlists | `Character substitution` char list + replacements, tries all permutations
+
+#### Payload Configuration
+
+Load wordlist: Load button (file) or Add (manual entries, one at a time). Multiple loads append to the same list, for combining wordlists.
+
+Wordlist example: `common.txt` (seclists Discovery/Web-Content).
+
+#### Payload Processing
+
+Rule `Skip if matches regex` with pattern `^\..*$` skips wordlist lines starting with `.`.
+
+#### Payload Encoding
+
+URL-encodes payloads before sending (enabled by default). Encodes: `./^=<>&+?*:;'{}|^`
+
+### Settings
+
+Grep - Match: flags responses containing a string/regex (e.g. `200 OK`). Clear the default list, Add the target string. Disable `Exclude HTTP Headers` if the match is in headers, not body.
+
+Grep - Extract: pulls out and shows only a specific part of a lengthy response instead of all of it.
+
+Resource Pool tab: controls network resource usage, useful for large attacks.
+
+### Attack
+
+Sort results by the grep-match column, Status, or Length to find hits.
+
+Also usable for AD password spraying (OWA, SSL VPN portals, RDS, Citrix, custom AD-auth apps).
 
 ## ZAP Fuzzer
 
-No paid tier, no throttle — the free alternative to Intruder, slightly fewer features.
+ZAP's fuzzer. Not throttled, unlike free Burp Intruder.
 
-Right-click request > Attack > Fuzz:
+### Fuzz
 
-1. **Locations** — select text (e.g. `test` in the path) > Add → green marker + payload window.
-2. **Payloads** — Add → type File (own wordlist), **File Fuzzers** (built-in databases — dirbuster directory-list etc.), Numberzz (number sequences with increments).
-3. **Processors** — per-payload transforms: Base64 encode/decode, MD5/SHA-1/256/512, URL encode/decode, Prefix/Postfix String, Script (custom). Use URL Encode to avoid server errors on special chars; Generate Preview shows the final payload shape.
-4. **Options** — Concurrent Scanning Threads (e.g. 20 — bounded by CPU and server limits); **Depth first** (all words on one position before next: every password for one user) vs **Breadth first** (each word across all positions: one password tried for every user).
+Open: right-click request > (Attack>Fuzz).
 
-Start Fuzzer → sort by Response code (200s), Size Resp. Body (a different-sized page = different page), or RTT (time-based SQLi detection).
+#### Locations
+
+Select the target word, click Add (right pane) to mark the fuzz location (green marker).
+
+#### Payloads
+
+`File` wordlist from a file | `File Fuzzers` built-in wordlist databases | `Numberzz` generates number sequences with custom increments
+
+Example: File Fuzzers > dirbuster > `directory-list-1.0.txt`. More databases installable from the ZAP Marketplace.
+
+#### Processors
+
+`Base64 Decode/Encode` | `MD5 Hash` | `SHA-1/256/512 Hash` | `Prefix String` adds a string before the payload | `Postfix String` adds a string after the payload | `Script` runs a custom script on each payload
+
+Used here: `URL Encode`, to avoid server errors from special characters. Preview with Generate Preview.
+
+#### Options
+
+Concurrent Scanning Threads: set higher (e.g. 20) for faster scans, limited by CPU and server connection limits.
+
+`Depth First` tries all payloads on one position before the next position (e.g. all passwords for one user) | `Breadth First` tries each payload across all positions before the next payload (e.g. one password across all users before the next password)
+
+### Start
+
+Sort results by response code for hits. `Size Resp. Body` differing from others may mean a different page. `RTT` indicates time-based attacks (e.g. time-based SQLi).
 
 ## Burp Scanner
 
-Pro-only. Crawler + passive/active scanning.
+Pro-only. Crawler builds the site structure, Scanner runs passive and active vulnerability analysis.
 
-**Target scope first** — Target > Site map (everything the proxy has seen) > right-click > Add to scope (Burp offers to restrict all features to in-scope only). Remove dangerous items from scope (logout endpoints), or use advanced scope control with regex includes/excludes.
+### Target Scope
 
-**Crawler** — Dashboard > New Scan > Crawl. Follows links/forms to map the site; does NOT fuzz for unreferenced paths (that's Intruder/Content Discovery). Scan configuration: custom (speed/limits/login behavior) or preset library (e.g. "Crawl strategy - fastest"). Application login tab: give creds or record a manual login so the crawl covers authenticated content.
+Start a scan via: right-click a request in Proxy History (Scan to configure, or Passive/Active Scan for defaults); New Scan button (Dashboard) on custom targets; or scan items already in scope.
 
-**Passive scan** — no new requests; analyzes already-visited pages (missing headers, potential DOM XSS). Run via right-click > Do passive scan. Results in Dashboard > Issue activity with severity + confidence (hunt High/Certain first).
+Site map: (Target>Site map).
 
-**Active scan** — right-click > Do active scan, or New Scan > Crawl and Audit. Full sequence: crawl + fuzz for pages → passive scan everything → verify passively-found issues with requests → JavaScript analysis → fuzz insertion points/params for XSS, command injection, SQLi. Audit configurations select vuln classes and insertion points (preset: "critical issues only"). Watch live requests in the Logger tab. Filter Issue activity to High/Certain → e.g. OS command injection on the `ip` parameter, with advisory + request/response proof.
+Add to scope: right-click item > Add to scope. Remove: right-click an in-scope item > Remove from scope (exclude risky endpoints, e.g. logout).  
+Scope detail/config: (Target>Scope). Advanced scope control supports regex include/exclude.
 
-**Reporting** — Site map > right-click host > Issue > Report issues for this host. Pick format and contents; HTML opens in a browser with severity/confidence summary, PoCs, remediation. Appendix material for the real report — never a raw-tool deliverable.
+Adding the first item to scope prompts the option to restrict all Burp features to in-scope items only.
+
+### Crawler
+
+New Scan (Dashboard) auto-populates in-scope items.
+
+`Crawl` maps linked pages only, no fuzzing for unreferenced pages (use Intruder/Content Discovery for that) | `Crawl and Audit` runs the crawler then the passive and active scanner
+
+Scan config: New (custom) or Select from library (presets, e.g. `Crawl strategy - fastest`).  
+Application login tab: provide credentials, or record a manual login sequence, for authenticated crawl coverage.
+
+Progress: Dashboard > Tasks. Results: (Target>Site map), updated after the crawl.
+
+### Passive Scanner
+
+Analyzes already-visited page source for potential vulnerabilities, sends no new requests. Only suggests unverified findings, with a confidence rating per finding.
+
+Start: right-click a target/request > Do passive scan.  
+Review: Dashboard > View Details > Issue activity tab, or the Dashboard Issue activity pane. Prioritize High severity + Certain confidence; review all levels for sensitive apps.
+
+### Active Scanner
+
+- Crawls and fuzzes (like dirbuster/ffuf) to find all pages
+- Runs a Passive Scan on identified pages
+- Sends requests to verify Passive Scan findings
+- Runs JavaScript analysis for further vulnerabilities
+- Fuzzes insertion points/parameters for XSS, Command Injection, SQL Injection, and other common vulnerabilities
+
+Start: right-click a request > Do active scan, or New Scan > Crawl and Audit.
+
+Audit config: vuln types to test (default all), payload insertion points. Preset example: `Audit checks - critical issues only`. Login details optional, same as Crawl config.
+
+Requests log: View details > Logger tab, or the main Logger tab.  
+Filter results by severity/confidence (e.g. High + Certain) in the Issue activity pane.
+
+### Reporting
+
+Export: (Target>Site map), right-click target > (Issue>Report issues for this host). Choose export format and which severity/confidence levels to include.
+
+Don't submit raw scanner output as the final client deliverable. Use it as appendix/raw data only.
 
 ## ZAP Scanner
 
-Free equivalent: Spider + passive + active scanning.
+Spider builds the site map, then passive and active scans find vulnerabilities.
 
-- **Spider** — right-click request > Attack > Spider (HUD: second button on right pane). Auto-offers to add the site to scope. Results in Sites tab tree / HUD Sites Tree button. **Ajax Spider** (third button on right pane) also catches links requested via JavaScript AJAX after page load — run it after the normal Spider for extra coverage, at the cost of time.
-- **Passive scanner** — runs automatically on every Spider/response; alerts populate as you go (HUD alerts: left = current page, right = whole app). Alerts tab in the main UI shows details + affected pages.
-- **Active scan** — Active Scan button (right pane); auto-runs Spider first if no site tree. Attacks all identified pages/params; watch progress and sent requests in the UI. High alerts = the compromise-capable ones (module demo: Remote OS Command Injection, PoC `127.0.0.1&cat /etc/passwd&`, evidence `root:x:0:0...` — click through to the exact request/response and replay it).
-- **Reporting** — Report > Generate HTML Report (also XML/Markdown).
+### Spider
+
+Builds the site map, similar to Burp's Crawler.
+
+Start: right-click request > (Attack>Spider), or HUD right pane 2nd button (Spider Start).
+
+Prompts to add the site to scope automatically if it is not already in scope.
+
+Progress: HUD Spider button, or main UI Spider tab (auto-switches).  
+Results: main UI Sites tab, or HUD right pane 1st button (Sites Tree).
+
+Ajax Spider (HUD right pane, 3rd button): also finds links loaded via JS/AJAX requests, slower but can catch links the normal Spider misses. Run after the normal Spider finishes.
+
+### Passive Scanner
+
+Runs automatically on every response during Spider/browsing, before any Active Scan. Finds issues from source, e.g. missing security headers, DOM-based XSS.
+
+HUD: left pane = alerts on the current page, right pane = all alerts found app-wide. Main UI Alerts tab for full detail.
+
+### Active Scanner
+
+Start: HUD right pane Active Scan button (auto-runs Spider first if not already done), or right-click request > Attack menu.
+
+High alerts usually mean direct compromise potential. Click the alert's URL to see the request/response; replay via HUD or Request Editor.
+
+```text
+127.0.0.1&cat /etc/passwd&
+```
+
+### Reporting
+
+Generate: (Report>Generate HTML Report), choose save location. Also exports as XML or Markdown.
 
 ## Extensions
 
-- **Burp BApp Store** (Extensions tab): sort by Popularity. Some Pro-only; some need Jython etc. installed first. Demo: Decoder Improved → extra encoders/hashes (Hash With > MD5). Worth exploring: Active Scan++, Autorize, Backslash Powered Scanner, Java Deserialization Scanner, JS Link Finder, Retire.JS, Software Version Reporter, CSRF Scanner, Headers Analyzer, CSP Auditor, CMS Scanner, AWS Security Checks, .NET Beautifier, J2EEScan...
-- **ZAP Marketplace** (Manage Add-ons > Marketplace): Release/Beta/Alpha stability grades. Demo: install **FuzzDB Files** + **FuzzDB Offensive** → new File Fuzzers wordlists appear, e.g. `fuzzdb > attack > os-cmd-execution > command_execution-unix.txt` — run the fuzzer with it and the command injection pops multiple payload variants (handy against WAFs).
+Add community-built features: Burp via the BApp Store, ZAP via the Marketplace.
+
+### BApp Store
+
+Access: Extensions tab > BApp Store sub-tab. Sort by Popularity.
+
+Some extensions are Pro-only; some need extra dependencies (e.g. `Jython`) installed first.
+
+Example: Decoder Improved adds extra encoders/hashing (e.g. `Hash With>MD5`) in its own tab.
+
+.NET Beautifier, J2EEScan, Software Vulnerability Scanner, Software Version Reporter, Active Scan++, Additional Scanner Checks, AWS Security Checks, Backslash Powered Scanner, Wsdler, Java Deserialization Scanner, C02, Cloud Storage Tester, CMS Scanner, Error Message Checks, Detect Dynamic JS, Headers Analyzer, HTML5 Auditor, PHP Object Injection Check, JavaScript Security, Retire.JS, CSP Auditor, Random IP Address Header, Autorize, CSRF Scanner, JS Link Finder
+
+### ZAP Marketplace
+
+Access: Manage Add-ons button > Marketplace tab.
+
+`Release` stable | `Beta` / `Alpha` may be unstable
+
+Example: FuzzDB Files + FuzzDB Offensive add-ons add wordlists to File Fuzzers, e.g. an OS command injection list at `fuzzdb>attack>os-cmd-execution` (`command_execution-unix.txt`).

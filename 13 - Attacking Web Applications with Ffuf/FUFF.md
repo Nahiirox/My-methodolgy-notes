@@ -1,146 +1,186 @@
 # Attacking Web Applications with Ffuf
 
-Ffuf = the go-to web fuzzer: send wordlist-driven requests, read response codes/sizes, separate real pages from 404 noise. Covers directories, files/extensions, vhosts, parameters, and parameter values. Hundreds of requests per second, so what would take hours manually finishes in seconds.
+## Introduction
+
+ffuf is a web fuzzer for directories, files and extensions, vhosts, PHP parameters, and parameter values.
+
+ffuf: https://github.com/ffuf/ffuf
 
 ## Web Fuzzing
 
-Fuzzing = throwing varied input at an interface and studying the reaction (SQLi → special characters, buffer overflow → growing strings; web → wordlists of common paths). Servers don't publish their page tree — we probe with common names and let the HTTP code answer: 404 = no page, 200 = real page.
+Finds hidden pages and directories with wordlists. Response 404 means missing, 200 means it exists.
 
-Wordlists: don't build your own — **SecLists** (`/opt/useful/SecLists` on Pwnbox) covers every fuzzing category, passwords included. The standard directory wordlist:
+### Fuzzing
 
-```text
-/opt/useful/seclists/Discovery/Web-Content/directory-list-2.3-small.txt
+Sending many inputs to an interface to study how it reacts.
+
+### Wordlists
+
+SecLists: https://github.com/danielmiessler/SecLists
+
+```bash
+locate directory-list-2.3-small.txt
 ```
 
-It starts with copyright comments that pollute results — `-ic` strips them.
+`-ic` ignores the copyright comment lines at the top of the wordlist
 
 ## Directory Fuzzing
 
-Core ffuf pattern: `-w` wordlist (optionally `:KEYWORD` to name it) + `-u` URL with the keyword where the fuzz target sits:
+Fuzzes web directories by placing the keyword assigned to the wordlist where the directory would be in the URL.
+
+### Ffuf
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://SERVER_IP:PORT/FUZZ
+apt install ffuf -y
 ```
 
-~88k requests in under 10 seconds at the default 40 threads. `-t 200` pushes it faster but can DoS a remote target or choke your own connection — don't. Results show `[Status: 301, Size: 326, ...]` per hit; a 301/200 directory with an empty page still means access (not 404/403) — go fuzz pages under it.
+`-u` target URL | `-w` wordlist path, optional :KEYWORD | `-H` header | `-X` HTTP method, default GET | `-b` cookie data | `-d` POST data | `-o` write output to file | `-c` colored output | `-t` threads, 200 is faster but can DoS a remote site
 
-Key flags for the rest of the module: `-H` header, `-X` method, `-b` cookies, `-d` POST data, `-mc/-ms` matchers (default match = 200,204,301,302,307,401,403), `-fc/-fs` filters, `-o` output.
+### Directory Fuzzing
+
+```bash
+ffuf -w directory-list-2.3-small.txt:FUZZ -u http://<TARGET_IP>:<PORT>/FUZZ
+```
+
+Empty page without 404 or 403 means the directory exists and is accessible.
 
 ## Page Fuzzing
 
-**Extension fuzzing first** — find what the site runs before fuzzing filenames. Guessing from server headers (apache → php, IIS → asp/aspx) is unreliable; fuzz it instead. Every site has `index.*`, so fuzz the extension on it (the web-extensions wordlist already contains the dot):
+Finds hidden pages in a directory. Identify the page extension first, then fuzz filenames with it.
+
+### Extension Fuzzing
+
+Fuzz the extension on index, since most sites have an index file. A Server header guess (Apache .php, IIS .asp or .aspx) is less practical than fuzzing.
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/web-extensions.txt:FUZZ -u http://SERVER_IP:PORT/blog/indexFUZZ
+ffuf -w web-extensions.txt:FUZZ -u http://<TARGET_IP>:<PORT>/<DIRECTORY>/indexFUZZ # fuzz extension on index
 ```
 
-`.php` returns 200 → PHP site. (Two wordlists with two keywords — `FUZZ_1.FUZZ_2` — fuzz name and extension together when needed.)
+The wordlist already contains the dot, so do not add one after index.
 
-**Page fuzzing** with the known extension:
+A 200 response shows the extension the site uses. Two wordlists need a unique keyword each, such as FUZZ_1.FUZZ_2.
+
+### Page Fuzzing
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://SERVER_IP:PORT/blog/FUZZ.php
+ffuf -w directory-list-2.3-small.txt:FUZZ -u http://<TARGET_IP>:<PORT>/<DIRECTORY>/FUZZ.php
 ```
 
-Read the Size column: `index` at size 0 = empty page; anything non-zero has content worth visiting.
+Size 0 means an empty page, other 200 hits have content.
 
 ## Recursive Fuzzing
 
-Automate the directory → subdirectory → files loop:
+Starts a new scan under every directory found, automating directory and file fuzzing across the whole site.
+
+### Recursive Flags
+
+Always set a depth, deep trees take very long. Then rerun on the most interesting directories.
+
+`-recursion` enable recursive scan | `-recursion-depth` max depth, 1 fuzzes main directories and direct sub-directories only | `-e` extension, such as .php, usually site-wide | `-v` full URLs
+
+Recursion needs the URL to end in FUZZ and only supports the FUZZ keyword.
+
+### Recursive Scanning
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://SERVER_IP:PORT/FUZZ -recursion -recursion-depth 1 -e .php -v
+ffuf -w directory-list-2.3-small.txt:FUZZ -u http://<TARGET_IP>:<PORT>/FUZZ -recursion -recursion-depth 1 -e .php -v
 ```
-
-`-recursion` re-scans every newly found directory; `-recursion-depth 1` stops at direct subdirectories (deep trees explode the scan time — depth-limit first, then re-run targeted at interesting branches); `-e .php` appends the extension (effectively doubles the wordlist — with and without); `-v` prints full URLs so you can tell which file belongs to which directory. Costs ~6× the requests of the flat scan, but one command yields the whole tree.
 
 ## DNS Records
 
-Browsers resolve names via `/etc/hosts` then public DNS. Internal/lab hostnames like `academy.htb` exist in neither → "can't connect". Add them:
+Browsers resolve names through /etc/hosts, then public DNS. A name in neither fails to connect, so add it to /etc/hosts.
 
 ```bash
-sudo sh -c 'echo "SERVER_IP  academy.htb" >> /etc/hosts'
+sudo sh -c 'echo "<TARGET_IP>  <TARGET_DOMAIN>" >> /etc/hosts'
 ```
 
-If the named domain serves the same site as the raw IP, the next move is hunting sub-domains under it.
+Add the port to the URL when browsing.
 
 ## Sub-domain Fuzzing
 
-Finds **public** sub-domains — ones with DNS records pointing at a working server. SecLists has dedicated lists under `/opt/useful/seclists/Discovery/DNS/`:
+Finds sub-domains (`*.<TARGET_DOMAIN>`) that have a public DNS record.
+
+### Sub-domains
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u https://FUZZ.inlanefreight.com/
+ffuf -w subdomains-top1million-5000.txt:FUZZ -u https://FUZZ.<TARGET_DOMAIN>/
 ```
 
-Hits = resolvable, live sub-domains (support, ns3, blog, www...). On a non-public domain (academy.htb), the same scan returns all errors — the main domain only resolves via /etc/hosts, and no other sub-domain exists in public DNS. That's not "no sub-domains"; it's "no public ones" — see vhost fuzzing.
+Finds only public DNS records. A main domain in /etc/hosts does not cover its sub-domains.
 
 ## Vhost Fuzzing
 
-**VHost** = sub-domain served on the same server/IP (one IP, multiple sites). May lack public DNS records entirely — sub-domain fuzzing can't see them. Vhost fuzzing hits the IP we already have and varies the `Host:` header instead:
+A vhost is a sub-domain served on the same server and IP. It may or may not have a public DNS record.
+
+### Vhosts vs. Sub-domains
+
+Sub-domain fuzzing finds only public sub-domains. Vhost fuzzing on a known IP finds public and non-public ones.
+
+### Vhosts Fuzzing
+
+Fuzzes the Host header, so the wordlist does not go into /etc/hosts.
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u http://academy.htb:PORT/ -H 'Host: FUZZ.academy.htb'
+ffuf -w subdomains-top1million-5000.txt:FUZZ -u http://<TARGET_DOMAIN>:<PORT>/ -H 'Host: FUZZ.<TARGET_DOMAIN>'
 ```
 
-Everything returns 200 — the default page always answers. The tell is response **size**: a recognized VHost serves its own page, which differs from the default. Filter out the default size and the real VHosts are what's left:
-
-```bash
-ffuf -w /opt/useful/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u http://academy.htb:PORT/ -H 'Host: FUZZ.academy.htb' -fs 900
-```
-
-Verify by adding the hit to `/etc/hosts` (`admin.academy.htb`) and browsing — different content and a 404 on paths that exist on the main host confirm a separate VHost.
+Every word returns 200. A real vhost returns a different response size.
 
 ## Filtering Results
 
-Default filtering keeps 200/204/301/302/307/401/403 and drops 404. When everything returns 200 (vhost fuzzing, custom 404 pages), filter on the response body fingerprint instead:
+Match or filter results by status code, size, words, lines, or regexp. Default matcher keeps 200,204,301,302,307,401,403.
 
-- `-fs` / `-ms` — response size (the workhorse: filter the constant default-page size)
-- `-fw` / `-mw` — word count; `-fl` / `-ml` — line count
-- `-fr` / `-mr` — regexp on response
-- `-fc` / `-mc` — status codes and ranges
+`-mc` match status codes, `all` for everything | `-ml` match lines | `-mr` match regexp | `-ms` match size | `-mw` match words
 
-Use **matching** when you know what a hit looks like, **filtering** when you know what the misses look like (the usual case — grab the size from the noise responses and exclude it).
+`-fc` filter status codes | `-fl` filter lines | `-fr` filter regexp | `-fs` filter size | `-fw` filter words
+
+`-fc` `-fl` `-fs` `-fw` take comma separated lists and ranges.
+
+Use a filter when the wrong response size is known and the valid one is not.
+
+```bash
+ffuf -w subdomains-top1million-5000.txt:FUZZ -u http://<TARGET_DOMAIN>:<PORT>/ -H 'Host: FUZZ.<TARGET_DOMAIN>' -fs <SIZE> # filter default response size
+```
+
+Add the found vhost to /etc/hosts before browsing, and keep the current port.
 
 ## Parameter Fuzzing - GET
 
-Pages like `admin.php` refusing access without a login may accept an undocumented parameter (`?param1=key`). GET params hang off the URL after `?` — put the keyword there:
+Finds unpublished GET parameters a page accepts. They tend to be less tested and less secured, so test them for web vulnerabilities.
+
+### GET Request Fuzzing
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ -u http://admin.academy.htb:PORT/admin/admin.php?FUZZ=key -fs xxx
+ffuf -w burp-parameter-names.txt:FUZZ -u http://<TARGET_DOMAIN>:<PORT>/<DIRECTORY>/<TARGET_FILE>?FUZZ=key -fs <SIZE> # filter default response size
 ```
-
-(-fs xxx = whatever the default response size turns out to be.) Hits can be dead ends — a deprecated parameter still responds differently but is no longer in use.
-
-Fuzzing parameters regularly exposes unpublished ones: less tested, less secured — prime targets for the vulnerability classes covered elsewhere.
 
 ## Parameter Fuzzing - POST
 
-POST data lives in the request body, not the URL. `-d` sets the data, `-X POST` the method, and PHP only accepts `application/x-www-form-urlencoded`:
+POST data goes in the request data field, not in the URL.
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ -u http://admin.academy.htb:PORT/admin/admin.php -X POST -d 'FUZZ=key' -H 'Content-Type: application/x-www-form-urlencoded' -fs xxx
+ffuf -w burp-parameter-names.txt:FUZZ -u http://<TARGET_DOMAIN>:<PORT>/<DIRECTORY>/<TARGET_FILE> -X POST -d 'FUZZ=key' -H 'Content-Type: application/x-www-form-urlencoded' -fs <SIZE> # fuzz POST parameters
+curl http://<TARGET_DOMAIN>:<PORT>/<DIRECTORY>/<TARGET_FILE> -X POST -d '<PARAM>=key' -H 'Content-Type: application/x-www-form-urlencoded' # test found parameter
 ```
 
-Verify hits directly:
-
-```bash
-curl http://admin.academy.htb:PORT/admin/admin.php -X POST -d 'id=key' -H 'Content-Type: application/x-www-form-urlencoded'
-```
-
-A changed error (`Invalid id!`) confirms the parameter is live.
+PHP accepts only application/x-www-form-urlencoded for POST data, set it with -H.
 
 ## Value Fuzzing
 
-Last hop: fuzz the accepted parameter's value. Pre-made lists work for guessable values (usernames); custom parameters need a custom list. For a numeric `id`, generate one:
+Fuzzes the value of a working parameter with a pre-made or custom wordlist matching the expected value type.
+
+### Custom Wordlist
+
+Look for a matching list in SecLists first, such as for usernames. For an id parameter, build a number list.
 
 ```bash
-for i in $(seq 1 1000); do echo $i >> ids.txt; done
+for i in $(seq 1 1000); do echo $i >> <WORDLIST>; done
 ```
 
-Fuzz the value position:
+### Value Fuzzing
 
 ```bash
-ffuf -w ids.txt:FUZZ -u http://admin.academy.htb:PORT/admin/admin.php -X POST -d 'id=FUZZ' -H 'Content-Type: application/x-www-form-urlencoded' -fs xxx
+ffuf -w <WORDLIST>:FUZZ -u http://<TARGET_DOMAIN>:<PORT>/<DIRECTORY>/<TARGET_FILE> -X POST -d '<PARAM>=FUZZ' -H 'Content-Type: application/x-www-form-urlencoded' -fs <SIZE>
 ```
 
-Hit → replay with curl → flag. The whole module's chain in one breath: fuzz directories → fuzz extensions → fuzz pages → recurse → vhost-fuzz past the public DNS boundary → fuzz GET params → fuzz POST params → build a value list → fuzz the value.
+Send the hit value with the curl POST request from the previous section.

